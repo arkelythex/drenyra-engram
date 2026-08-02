@@ -25,3 +25,20 @@ jobs:
           bun-version: "1.3.11"
       - run: bun install --frozen-lockfile
       - run: bun run test
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: bun install --frozen-lockfile
+      # Build dist, run the full suite, verify the packaged file manifest.
+      - run: bun run verify:package
+      # Prove the PUBLISHED artifact works: npm pack -> install .tgz -> the
+      # library entry resolves under plain Node.
+      - run: node scripts/verify-packed-install.mjs

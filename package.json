@@ -3,18 +3,30 @@
   "version": "0.0.1-prealpha.1",
   "description": "Scope-first institutional accounting memory core — observations, immutable revision history, lifecycle transitions, and the non-authorization boundary. Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; sequence/revision counters are JSON integers, never floats.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "files": [
-    "core",
-    "store",
-    "search",
-    "lifecycle",
-    "authority",
+    "dist",
     "contracts",
-    "index.ts"
+    "README.md",
+    "LICENSE"
   ],
+  "exports": {
+    ".": "./dist/index.js",
+    "./core": "./dist/core/index.js",
+    "./store": "./dist/store/index.js",
+    "./search": "./dist/search/index.js",
+    "./lifecycle": "./dist/lifecycle/index.js",
+    "./authority": "./dist/authority/index.js"
+  },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:package": "node scripts/build.mjs && bun run test && node scripts/verify-package-files.mjs",
+    "prepack": "bun run verify:package",
+    "prepublishOnly": "bun run typecheck && bun run verify:package && node scripts/verify-packed-install.mjs"
   },
   "dependencies": {},
   "devDependencies": {

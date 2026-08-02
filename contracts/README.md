@@ -1,6 +1,6 @@
 # Drenyra Engram — Contracts
 
-> **Status: draft (pre-alpha).** These contracts define the memory engine's public surface. Nothing is frozen until Phase 1 of the [ROADMAP](../ROADMAP.md) completes.
+> **Status: draft (pre-alpha) with a frozen-for-0.1 subset.** These contracts define the memory engine's public surface. Engine/storage decisions are frozen by [ADR-001](../docs/decisions/ADR-001-engine-strategy.md) (engine strategy) and [ADR-002](../docs/decisions/ADR-002-storage-authority.md) (storage authority). The bullets marked **frozen-for-0.1** in each contract are normative; the rest stay draft until Phase 1 of the [ROADMAP](../ROADMAP.md) completes.
 
 ## Index
 
@@ -35,3 +35,15 @@ runtime dependencies) lives under the repository root:
 The mandatory cross-tenant isolation conformance test lives in
 [`search/__tests__/scope-isolation.test.ts`](../search/__tests__/scope-isolation.test.ts)
 and runs with `bun run test`.
+
+## Frozen engine/storage decisions
+
+[ADR-001](../docs/decisions/ADR-001-engine-strategy.md) — **accepted**: the
+standalone Go daemon is the long-term engine, but v0.1 ships as a TypeScript
+package. `contracts/` is the frozen surface; the TypeScript implementation is the
+**reference, not the destination**.
+
+[ADR-002](../docs/decisions/ADR-002-storage-authority.md) — **accepted**:
+PostgreSQL is the transactional authority in the v0.1 integration path; the
+in-memory store is a reference/development adapter and is **never canonical**;
+local SQLite arrives only in v0.2+ with the standalone engine.

@@ -1,0 +1,18 @@
+// Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents;
+// no float is ever used for money; sequence/revision counters are JSON integers,
+// never floats.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["core", "store", "search", "lifecycle", "authority", "index.ts"],
+  "exclude": ["node_modules", "dist", "coverage", "**/__tests__/**", "vitest.config.ts"]
+}

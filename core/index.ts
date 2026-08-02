@@ -1,0 +1,9 @@
+/**
+ * Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents;
+ * no float is ever used for money; sequence/revision counters are JSON integers,
+ * never floats.
+ *
+ * `drenyra-engram/core` — public entry for the core memory model
+ * (observation, scope, provenance, validation helpers).
+ */
+export * from "./types.js";

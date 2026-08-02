@@ -39,8 +39,23 @@ draft ──► reviewed ──► promoted ──► superseded
 1. **Promotion is explicit.** Nothing auto-promotes to institutional knowledge.
 2. **Re-submission is new-version, not in-place edit.** History is preserved.
 3. **Unknown states fail closed.** A lifecycle state the engine does not know is treated as not-promoted.
-4. **Judgments and conflicts are first-class.** A memory that conflicts with another must be related, not silently dropped.
+    4. **Judgments and conflicts are first-class.** A memory that conflicts with another must be related, not silently dropped.
+
+## Frozen semantics (v0.1)
+
+> The bullets in this section are **frozen-for-0.1**: normative, enforced by the
+> conformance suite, and carried unchanged into the standalone Go engine
+> (ADR-001). The rules above stay `0.1-draft` until the Phase 1 freeze review.
+
+1. **UNKNOWN states fail closed.** An observation never enters an unknown
+   authority state: the engine recognizes exactly `draft`, `reviewed`,
+   `promoted`, `superseded`. An unknown state observed at read time is treated
+   as **not-promoted** — never as authority.
+2. **Supersede requires an explicit target id.** `supersede` must name the
+   replacing observation (`targetId`); an observation never supersedes itself,
+   and a missing or unknown target throws instead of silently marking
+   `superseded`.
 
 ## Conformance
 
-Vectors cover: legal/illegal transitions, expiry staleness, supersession routing, promotion explicitness, and fail-closed unknown states.
+Vectors cover: legal/illegal transitions, expiry staleness, supersession routing, promotion explicitness, fail-closed unknown states, and the frozen-for-0.1 semantics above (including the explicit-target supersede requirement).

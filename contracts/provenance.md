@@ -21,7 +21,22 @@ Every observation records at creation:
 1. **Written at creation.** Provenance is captured when the observation is created; it is not editable afterward.
 2. **Corrections are new observations.** A mistaken observation is superseded, never rewritten in place.
 3. **Auditable end to end.** Every state in [lifecycle](lifecycle.md) can be traced to an actor and timestamp.
-4. **Provenance is not identity.** Provenance records the writer; content identity is derived from content + scope.
+    4. **Provenance is not identity.** Provenance records the writer; content identity is derived from content + scope.
+
+## Frozen semantics (v0.1) — migration policy
+
+> This policy is **frozen-for-0.1**: normative, enforced by the conformance
+> suite, and carried unchanged into the standalone Go engine (ADR-001). It binds
+> every storage adapter, including the PostgreSQL authority (ADR-002).
+
+1. **Observation schema is versioned.** Every stored observation declares its
+   observation schema `version`; adapters can report the store layout version.
+2. **Migrations are additive and reversible.** A migration may add fields or
+   relations; it never rewrites or drops existing revisions in place, and each
+   step can be rolled back.
+3. **A corrupt store fails closed.** Corruption (checksum mismatch, unreadable
+   layout) is detected and reported; silent repair is forbidden — a corrupt
+   store stops serving reads/writes instead of fabricating data.
 
 ## The non-authorization boundary
 
@@ -44,4 +59,4 @@ Consequences, enforced by contract:
 
 ## Conformance
 
-Vectors cover: provenance immutability, correction-via-supersede, audit tracing, and absence of any authorization surface in the public API.
+Vectors cover: provenance immutability, correction-via-supersede, audit tracing, absence of any authorization surface in the public API, and the frozen-for-0.1 migration policy above.
