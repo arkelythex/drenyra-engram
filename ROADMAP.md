@@ -31,8 +31,12 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 
 - [x] **v0.2 foundation:** Go module (`github.com/arkelythex/drenyra-engram`), core types + validators (RUC 11 digits, period YYYYMM), lifecycle machine, SQLite store (modernc.org/sqlite, pure Go — immutable history + schema guards), scope-first search with the MANDATORY cross-tenant isolation property, and the CLI (`save | search | context | doctor`). 40 Go tests green; non-authorization boundary enforced (no authorize/approve/allow commands).
 - [x] CLI polish: `compare`, `review`, `promote`, `supersede` commands (45 Go tests green; compare verdict matrix incl. supersedes-with-source-check)
-- [x] MCP + HTTP surfaces (shared domain services `internal/server/api.go`; `mcp` stdio + POST /mcp; `serve` REST /v1 + token; 85 Go tests green)
-- [ ] Local/cloud sync
+- [x] MCP + HTTP surfaces (shared domain services `internal/server/api.go`; `mcp` stdio + POST /mcp; `serve` REST /v1 + token; 87 Go tests green)
+- [x] Local/cloud sync — additive, provenance-preserving, conflict-visible
+  reconciliation (`sync --from <src> --to <dst>`; full revision history +
+  relations + audit trail; lifecycle via transition replay; divergent chains
+  surfaced with `conflicts_with` relations, never silently resolved; cloud
+  deferred per non-goals) — 100 Go tests green
 
 ## Phase 3 — Ecosystem maturity (alpha → beta)
 

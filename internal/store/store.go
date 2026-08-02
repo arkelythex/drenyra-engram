@@ -361,6 +361,175 @@ func validityExpiresAt(v *core.Validity) string {
 }
 
 // ──────────────────────────────────────────────
+// Sync import — additive, validated, idempotent
+// ──────────────────────────────────────────────
+
+// ImportObservation inserts an observation VERBATIM (original id, revision,
+// scope, content and provenance) — the sync path (internal/sync). Save never
+// does this: Save always creates a NEW revision on the (topicKey, scope) chain,
+// which would destroy cross-store identity. Import semantics:
+//
+//   - additive: an INSERT only; the immutability triggers keep enforcing that
+//     content, scope and provenance never change after write;
+//   - validated: the same fail-closed validators as Save (topic key, title,
+//     scope, content, provenance, validity, revision >= 1);
+//   - idempotent: importing an id that already exists with IDENTICAL immutable
+//     columns (status excluded — lifecycle converges via transition replay, the
+//     sync engine's job) is a no-op (false, nil);
+//   - fail closed on tamper: an id that exists with DIFFERENT immutable bytes
+//     is IMPORT_CONFLICT — sync never silently overwrites history.
+func (s *SQLiteStore) ImportObservation(observation core.Observation) (bool, error) {
+	if strings.TrimSpace(observation.Identity.ID) == "" {
+		return false, errors.New("INVALID_IMPORT: id must be a non-empty string")
+	}
+	if strings.TrimSpace(observation.Identity.TopicKey) == "" {
+		return false, errors.New("INVALID_TOPIC_KEY: topicKey must be a non-empty string")
+	}
+	if strings.TrimSpace(observation.Title) == "" {
+		return false, errors.New("INVALID_TITLE: title must be a non-empty string")
+	}
+	if observation.Revision < 1 {
+		return false, errors.New("INVALID_IMPORT: revision must be a positive integer")
+	}
+	if err := core.AssertValidScope(observation.Scope); err != nil {
+		return false, err
+	}
+	if err := core.AssertValidContent(observation.Content); err != nil {
+		return false, err
+	}
+	if err := core.AssertValidProvenance(observation.Provenance); err != nil {
+		return false, err
+	}
+	if err := core.AssertValidValidity(observation.Validity); err != nil {
+		return false, err
+	}
+	status := observation.AuthorityStatus
+	if status == "" {
+		status = core.StatusDraft
+	}
+	if !validAuthorityStatus(status) {
+		return false, fmt.Errorf("INVALID_IMPORT: unknown authority status %q", status)
+	}
+
+	if existing, ok := s.FindByID(observation.Identity.ID); ok {
+		if sameImmutableObservation(existing, observation) {
+			return false, nil // already present and identical — no-op
+		}
+		return false, fmt.Errorf("IMPORT_CONFLICT: observation %s already exists with different immutable content — sync never overwrites history", observation.Identity.ID)
+	}
+
+	_, err := s.db.Exec(`
+		INSERT INTO observations (
+			id, topic_key, title, type, scope_kind, organization_id, company_id, ruc, period,
+			what, why, where_text, learned, authority_status, effective_at, expires_at,
+			actor, timestamp, source, session, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		observation.Identity.ID, observation.Identity.TopicKey, observation.Title, observation.Type,
+		string(observation.Scope.Kind), observation.Scope.OrganizationID, observation.Scope.CompanyID,
+		observation.Scope.RUC, observation.Scope.Period,
+		observation.Content.What, observation.Content.Why, observation.Content.Where, observation.Content.Learned,
+		string(observation.AuthorityStatus), validityEffectiveAt(observation.Validity), validityExpiresAt(observation.Validity),
+		observation.Provenance.Actor, observation.Provenance.Timestamp, observation.Provenance.Source, observation.Provenance.Session,
+		observation.Revision,
+	)
+	if err != nil {
+		return false, fmt.Errorf("persistence error: import observation: %w", err)
+	}
+	return true, nil
+}
+
+// validAuthorityStatus reports whether status is one of the four known
+// lifecycle states (fail closed on anything else).
+func validAuthorityStatus(status core.AuthorityStatus) bool {
+	switch status {
+	case core.StatusDraft, core.StatusReviewed, core.StatusPromoted, core.StatusSuperseded:
+		return true
+	}
+	return false
+}
+
+// sameImmutableObservation compares every column the immutability triggers
+// protect (status excluded — the only mutable field, owned by the lifecycle
+// machine and the transition-replay path).
+func sameImmutableObservation(a, b core.Observation) bool {
+	return a.Identity.TopicKey == b.Identity.TopicKey &&
+		a.Title == b.Title &&
+		a.Type == b.Type &&
+		core.ScopeEquals(a.Scope, b.Scope) &&
+		a.Content == b.Content &&
+		a.Revision == b.Revision &&
+		validityEffectiveAt(a.Validity) == validityEffectiveAt(b.Validity) &&
+		validityExpiresAt(a.Validity) == validityExpiresAt(b.Validity) &&
+		a.Provenance == b.Provenance
+}
+
+// ImportTransition inserts a lifecycle audit-trail record VERBATIM (the sync
+// path). Idempotent: an identical (observation_id, from_status, to_status,
+// actor, timestamp) row is a no-op (false, nil); a NEW row is inserted with
+// the record's original provenance (true, nil). The audit trail is history —
+// it crosses stores verbatim, never rewritten.
+func (s *SQLiteStore) ImportTransition(record core.StatusTransitionRecord) (bool, error) {
+	if strings.TrimSpace(record.ObservationID) == "" {
+		return false, errors.New("INVALID_IMPORT: observationId must be a non-empty string")
+	}
+	if !validAuthorityStatus(record.From) || !validAuthorityStatus(record.To) {
+		return false, errors.New("INVALID_IMPORT: from and to statuses must be known lifecycle states")
+	}
+
+	var existing int
+	err := s.db.QueryRow(`
+		SELECT 1 FROM transition_log
+		WHERE observation_id = ? AND from_status = ? AND to_status = ? AND actor = ? AND timestamp = ?`,
+		record.ObservationID, string(record.From), string(record.To), record.Actor, record.Timestamp,
+	).Scan(&existing)
+	if err == nil {
+		return false, nil // identical row already present — no-op
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("persistence error: check transition: %w", err)
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO transition_log (observation_id, from_status, to_status, actor, timestamp)
+		VALUES (?, ?, ?, ?, ?)`,
+		record.ObservationID, string(record.From), string(record.To), record.Actor, record.Timestamp,
+	)
+	if err != nil {
+		return false, fmt.Errorf("persistence error: import transition: %w", err)
+	}
+	return true, nil
+}
+
+// ApplyImportedStatus advances an observation's authority status WITHOUT
+// writing a transition_log row — SYNC-ONLY: the corresponding audit record is
+// imported separately by the sync engine (ImportTransition), so the log row
+// already exists; writing a second one would duplicate the audit trail. Never
+// used by the CLI/lifecycle surface (which goes through
+// ApplyStatusTransition). The advance is forward-only by contract: the sync
+// engine checks the sink is BEHIND before calling.
+func (s *SQLiteStore) ApplyImportedStatus(observationID string, to core.AuthorityStatus, meta core.TransitionMeta) (core.Observation, error) {
+	if !validAuthorityStatus(to) {
+		return core.Observation{}, errors.New("INVALID_TRANSITION: unknown target status")
+	}
+	result, err := s.db.Exec(`UPDATE observations SET authority_status = ? WHERE id = ?`, string(to), observationID)
+	if err != nil {
+		return core.Observation{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return core.Observation{}, err
+	}
+	if affected == 0 {
+		return core.Observation{}, fmt.Errorf("OBSERVATION_NOT_FOUND: %s", observationID)
+	}
+	observation, ok := s.FindByID(observationID)
+	if !ok {
+		return core.Observation{}, fmt.Errorf("OBSERVATION_NOT_FOUND: %s", observationID)
+	}
+	return observation, nil
+}
+
+// ──────────────────────────────────────────────
 // Reads
 // ──────────────────────────────────────────────
 
@@ -376,9 +545,9 @@ type rowScanner interface {
 func scanObservation(rs rowScanner) (core.Observation, error) {
 	var (
 		id, topicKey, title, typ, scopeKind, orgID, companyID, ruc, period string
-		what, why, whereText, learned, status, effAt, expAt string
-		actor, timestamp, source, session string
-		revision int
+		what, why, whereText, learned, status, effAt, expAt                string
+		actor, timestamp, source, session                                  string
+		revision                                                           int
 	)
 	if err := rs.Scan(
 		&id, &topicKey, &title, &typ, &scopeKind, &orgID, &companyID, &ruc, &period,
