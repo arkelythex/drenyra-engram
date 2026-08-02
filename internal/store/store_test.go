@@ -145,8 +145,8 @@ func TestSaveScopeIsPartOfIdentity(t *testing.T) {
 	s := newTestStore(t)
 	a, err := s.Save(core.SaveInput{
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: testScope(testRucA),
-		Content: core.Content{What: "first version", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
+		Scope:      testScope(testRucA),
+		Content:    core.Content{What: "first version", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
 		Provenance: core.Provenance{Actor: "test-agent", Timestamp: testT, Source: "go-test"},
 	})
 	if err != nil {
@@ -154,8 +154,8 @@ func TestSaveScopeIsPartOfIdentity(t *testing.T) {
 	}
 	b, err := s.Save(core.SaveInput{
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: testScope(testRucB),
-		Content: core.Content{What: "first version", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
+		Scope:      testScope(testRucB),
+		Content:    core.Content{What: "first version", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
 		Provenance: core.Provenance{Actor: "test-agent", Timestamp: testT, Source: "go-test"},
 	})
 	if err != nil {
@@ -179,14 +179,14 @@ func TestFindByScopeExactFilter(t *testing.T) {
 	s := newTestStore(t)
 	if _, err := s.Save(core.SaveInput{
 		TopicKey: "topic.a", Title: "A", Type: "policy", Scope: testScope(testRucA),
-		Content: core.Content{What: "version a", Why: "w", Where: "r", Learned: "l"},
+		Content:    core.Content{What: "version a", Why: "w", Where: "r", Learned: "l"},
 		Provenance: core.Provenance{Actor: "test-agent", Timestamp: testT, Source: "go-test"},
 	}); err != nil {
 		t.Fatalf("save A: %v", err)
 	}
 	if _, err := s.Save(core.SaveInput{
 		TopicKey: "topic.b", Title: "B", Type: "policy", Scope: testScope(testRucB),
-		Content: core.Content{What: "version b", Why: "w", Where: "r", Learned: "l"},
+		Content:    core.Content{What: "version b", Why: "w", Where: "r", Learned: "l"},
 		Provenance: core.Provenance{Actor: "test-agent", Timestamp: testT, Source: "go-test"},
 	}); err != nil {
 		t.Fatalf("save B: %v", err)
@@ -455,5 +455,39 @@ func TestRelationBetweenReadsDirectionalRelation(t *testing.T) {
 	}
 	if _, ok := s.RelationBetween(a.Observation.Identity.ID, "missing"); ok {
 		t.Fatal("RelationBetween with a missing pair must report not found")
+	}
+}
+
+// TestImportTransitionRejectsNonAdjacent: a crafted audit record like
+// draft -> superseded (impossible from the source's own adjacent-only log) is
+// rejected fail-closed — sync must never jump states or fabricate provenance.
+func TestImportTransitionRejectsNonAdjacent(t *testing.T) {
+	s := newTestStore(t)
+	saved, err := s.Save(validInput("topic/adj", "x"))
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	id := saved.Observation.Identity.ID
+
+	_, err = s.ImportTransition(core.StatusTransitionRecord{
+		ObservationID: id,
+		From:          core.StatusDraft,
+		To:            core.StatusSuperseded,
+		Actor:         "crafted",
+		Timestamp:     "2026-01-15T12:00:00Z",
+	})
+	if err == nil {
+		t.Fatal("non-adjacent transition record must be rejected")
+	}
+	// Adjacent records pass.
+	ok, err := s.ImportTransition(core.StatusTransitionRecord{
+		ObservationID: id,
+		From:          core.StatusDraft,
+		To:            core.StatusReviewed,
+		Actor:         "test",
+		Timestamp:     "2026-01-15T12:00:00Z",
+	})
+	if err != nil || !ok {
+		t.Fatalf("adjacent record must import: ok=%v err=%v", ok, err)
 	}
 }

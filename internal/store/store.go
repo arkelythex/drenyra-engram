@@ -478,6 +478,13 @@ func (s *SQLiteStore) ImportTransition(record core.StatusTransitionRecord) (bool
 	if !validAuthorityStatus(record.From) || !validAuthorityStatus(record.To) {
 		return false, errors.New("INVALID_IMPORT: from and to statuses must be known lifecycle states")
 	}
+	// Fail closed on non-adjacent audit records: the source's own log is
+	// adjacent-only (written by ApplyStatusTransition), so a record like
+	// draft -> superseded can only come from a corrupt/crafted source. It is
+	// rejected here so sync never jumps states or fabricates provenance.
+	if !core.IsLegalTransition(record.From, record.To) {
+		return false, fmt.Errorf("INVALID_TRANSITION: %s → %s is not an adjacent legal transition — reject crafted audit record", record.From, record.To)
+	}
 
 	var existing int
 	err := s.db.QueryRow(`
@@ -859,9 +866,11 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 			return DoctorReport{}, fmt.Errorf("corrupt store: expected table %q is missing: %w", table, err)
 		}
 	}
-	var triggerName string
-	if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'observations_no_delete'`).Scan(&triggerName); err != nil {
-		return DoctorReport{}, fmt.Errorf("corrupt store: immutability trigger missing: %w", err)
+	for _, trigger := range []string{"observations_no_delete", "observations_immutable_content"} {
+		var triggerName string
+		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&triggerName); err != nil {
+			return DoctorReport{}, fmt.Errorf("corrupt store: immutability trigger %q missing: %w", trigger, err)
+		}
 	}
 
 	version, err := readSchemaVersion(s.db)
