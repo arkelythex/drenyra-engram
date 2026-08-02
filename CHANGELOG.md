@@ -7,6 +7,22 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## 0.0.1-prealpha.4 — 2026-08-02
+
+### Added — Full chain revision history (GET /v1/chain, engram_chain)
+
+- **`GET /v1/chain?topicKey=<key>&ruc=&period=&organizationId=`** — the full
+  revision history of a (topicKey, exact scope) chain, ordered by revision
+  ascending (the counterpart of context/get_by_topic which return only the
+  latest). Store `FindChain` (additive to the Store interface), server API
+  `Chain`, and the 13th MCP tool `engram_chain`.
+- Needed by the Drenyra fiscal-memory adapter (`findById`/`findRevisions`
+  map to this surface) — the first consumer that requires every revision of
+  a topic key, not just the current one.
+- 4 new Go tests (API history + structural isolation, HTTP route + fail
+  closed, MCP tool) — total 104 Go tests green; `go test -race ./...`
+  clean on all 6 packages; build + vet clean.
+
 ## 0.0.1-prealpha.3 — 2026-08-02
 
 ### Added — Local/cloud sync (ADR-001 v0.2, Phase 2 complete)

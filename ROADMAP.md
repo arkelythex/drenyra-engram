@@ -36,7 +36,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
   reconciliation (`sync --from <src> --to <dst>`; full revision history +
   relations + audit trail; lifecycle via transition replay; divergent chains
   surfaced with `conflicts_with` relations, never silently resolved; cloud
-  deferred per non-goals) — 100 Go tests green
+  deferred per non-goals) — 104 Go tests green
 
 ## Phase 3 — Ecosystem maturity (alpha → beta)
 
