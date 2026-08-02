@@ -410,3 +410,50 @@ func TestDoctorReportsHealth(t *testing.T) {
 		t.Fatal("dbPath must be reported")
 	}
 }
+
+// Additional lifecycle-relation tests live below.
+
+// makeTestInput builds a save input for a fresh chain on the test scope.
+func makeTestInput(topicKey, what string) core.SaveInput {
+	return core.SaveInput{
+		TopicKey: topicKey,
+		Title:    "base rate",
+		Type:     "policy",
+		Scope:    testScope(testRucA),
+		Content: core.Content{
+			What:    what,
+			Why:     "standard for goods",
+			Where:   "Peru",
+			Learned: "applies to all",
+		},
+		Provenance: core.Provenance{Actor: "test-agent", Timestamp: testT, Source: "go-test"},
+	}
+}
+
+func TestRelationBetweenReadsDirectionalRelation(t *testing.T) {
+	s := newTestStore(t)
+	a, err := s.Save(makeTestInput("memory.relations.probe.a", "first version"))
+	if err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	b, err := s.Save(makeTestInput("memory.relations.probe.b", "second version"))
+	if err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+
+	if err := s.Relate(a.Observation.Identity.ID, b.Observation.Identity.ID, core.RelationSupersedes, nil); err != nil {
+		t.Fatalf("relate: %v", err)
+	}
+
+	// The recorded edge reads back in the recorded direction only.
+	relation, ok := s.RelationBetween(a.Observation.Identity.ID, b.Observation.Identity.ID)
+	if !ok || relation != string(core.RelationSupersedes) {
+		t.Fatalf("RelationBetween(a, b) = %q, %v; want %q, true", relation, ok, core.RelationSupersedes)
+	}
+	if _, ok := s.RelationBetween(b.Observation.Identity.ID, a.Observation.Identity.ID); ok {
+		t.Fatal("RelationBetween(b, a) must not find the reverse edge")
+	}
+	if _, ok := s.RelationBetween(a.Observation.Identity.ID, "missing"); ok {
+		t.Fatal("RelationBetween with a missing pair must report not found")
+	}
+}

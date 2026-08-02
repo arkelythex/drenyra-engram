@@ -69,6 +69,9 @@ type Store interface {
 	// status.
 	ListByAuthority(status core.AuthorityStatus) ([]core.Observation, error)
 	Relate(fromID, toID string, relation core.Relation, meta *core.RelationMeta) error
+	// RelationBetween returns the relation recorded from fromID to toID (the
+	// first matching row in insertion order), if any.
+	RelationBetween(fromID, toID string) (string, bool)
 	// SuccessorOf returns the successor of a superseded observation (routes
 	// readers onward).
 	SuccessorOf(observationID string) (core.Observation, bool)
@@ -525,6 +528,20 @@ func (s *SQLiteStore) Relate(fromID, toID string, relation core.Relation, meta *
 		return err
 	}
 	return tx.Commit()
+}
+
+// RelationBetween returns the relation recorded from fromID to toID (the first
+// matching row in insertion order), if any. Relations are directional: a
+// supersedes row is stored from the superseded observation to its replacement,
+// so RelationBetween(old, replacement) returns "supersedes" while the reverse
+// pair does not.
+func (s *SQLiteStore) RelationBetween(fromID, toID string) (string, bool) {
+	var relation string
+	err := s.db.QueryRow(`SELECT relation FROM relations WHERE from_id = ? AND to_id = ? ORDER BY rowid LIMIT 1`, fromID, toID).Scan(&relation)
+	if err != nil {
+		return "", false
+	}
+	return relation, true
 }
 
 // SuccessorOf returns the successor of a superseded observation (the first

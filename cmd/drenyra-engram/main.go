@@ -18,6 +18,12 @@
 // observations saved without a period.
 //
 // Exit codes: 0 ok, 1 runtime error, 2 usage error.
+//
+// Lifecycle surface (contracts/lifecycle.md): review/promote/supersede move
+// an observation along the only legal chain draft → reviewed → promoted →
+// superseded; supersede REQUIRES a --target and records a `supersedes`
+// relation. compare reports identity/scope/content deltas plus a relation
+// verdict between two stored observations.
 
 package main
 
@@ -27,6 +33,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
@@ -55,6 +62,14 @@ func run(args []string) int {
 		return cmdContext(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
+	case "compare":
+		return cmdCompare(args[1:])
+	case "review":
+		return cmdReview(args[1:])
+	case "promote":
+		return cmdPromote(args[1:])
+	case "supersede":
+		return cmdSupersede(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -226,6 +241,254 @@ func cmdDoctor(args []string) int {
 	return emit(report)
 }
 
+// ──────────────────────────────────────────────
+// compare — identity / scope / content deltas + relation verdict
+// ──────────────────────────────────────────────
+
+// compareOutput is the JSON shape of the compare command.
+type compareOutput struct {
+	IDA             string               `json:"idA"`
+	IDB             string               `json:"idB"`
+	IdentityMatch   bool                 `json:"identityMatch"`
+	ScopeMatch      string               `json:"scopeMatch"`
+	StatusA         core.AuthorityStatus `json:"statusA"`
+	StatusB         core.AuthorityStatus `json:"statusB"`
+	ContentDeltas   contentDeltas        `json:"contentDeltas"`
+	RelationVerdict string               `json:"relationVerdict"`
+}
+
+// contentDeltas flags which of the four structured fields differ between the
+// two observations (contracts/memory.md rule 1: What/Why/Where/Learned).
+type contentDeltas struct {
+	What    bool `json:"what"`
+	Why     bool `json:"why"`
+	Where   bool `json:"where"`
+	Learned bool `json:"learned"`
+}
+
+func cmdCompare(args []string) int {
+	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram compare <idA> <idB> [--db <path>]") }
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 2 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	a, ok := st.FindByID(rest[0])
+	if !ok {
+		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
+	}
+	b, ok := st.FindByID(rest[1])
+	if !ok {
+		return fail("OBSERVATION_NOT_FOUND: %s", rest[1])
+	}
+
+	identityMatch := a.Identity.ID == b.Identity.ID || a.Identity.TopicKey == b.Identity.TopicKey
+
+	return emit(compareOutput{
+		IDA:             a.Identity.ID,
+		IDB:             b.Identity.ID,
+		IdentityMatch:   identityMatch,
+		ScopeMatch:      compareScopeMatch(a.Scope, b.Scope),
+		StatusA:         a.AuthorityStatus,
+		StatusB:         b.AuthorityStatus,
+		ContentDeltas:   compareContentDeltas(a.Content, b.Content),
+		RelationVerdict: compareRelationVerdict(st, a, b, identityMatch),
+	})
+}
+
+// compareScopeMatch reports how two scopes relate: "exact" (equal scope per
+// core.ScopeEquals — period participates in equality), "partial" (same
+// company/RUC with a different organization or period) or "none" otherwise.
+func compareScopeMatch(a, b core.Scope) string {
+	if core.ScopeEquals(a, b) {
+		return "exact"
+	}
+	if a.Kind == core.ScopeKindCompany && b.Kind == core.ScopeKindCompany &&
+		a.CompanyID == b.CompanyID && a.RUC == b.RUC &&
+		(a.OrganizationID != b.OrganizationID || a.Period != b.Period) {
+		return "partial"
+	}
+	return "none"
+}
+
+func compareContentDeltas(a, b core.Content) contentDeltas {
+	return contentDeltas{
+		What:    a.What != b.What,
+		Why:     a.Why != b.Why,
+		Where:   a.Where != b.Where,
+		Learned: a.Learned != b.Learned,
+	}
+}
+
+// compareRelationVerdict decides how the two observations relate:
+//   - "supersedes" — the relations table records A→B as `supersedes` AND A (the
+//     superseded source) is stored as superseded — a completed supersede pair.
+//     The successor B is typically draft/promoted, never superseded itself.
+//   - "related" — the observations share a topicKey;
+//   - "not_conflict" — otherwise.
+//
+// The supersedes check runs first so a completed supersede pair wins over the
+// weaker shared-topicKey signal.
+func compareRelationVerdict(st store.Store, a, b core.Observation, identityMatch bool) string {
+	if rel, ok := st.RelationBetween(a.Identity.ID, b.Identity.ID); ok && rel == string(core.RelationSupersedes) && a.AuthorityStatus == core.StatusSuperseded {
+		return "supersedes"
+	}
+	if identityMatch {
+		return "related"
+	}
+	return "not_conflict"
+}
+
+// ──────────────────────────────────────────────
+// review / promote — adjacent-forward status transitions
+// ──────────────────────────────────────────────
+
+// transitionOutput is the JSON shape of review and promote.
+type transitionOutput struct {
+	ID       string               `json:"id"`
+	From     core.AuthorityStatus `json:"from"`
+	To       core.AuthorityStatus `json:"to"`
+	Revision int                  `json:"revision"`
+}
+
+func cmdReview(args []string) int {
+	return cmdStatusTransition("review", core.StatusReviewed, args)
+}
+
+func cmdPromote(args []string) int {
+	return cmdStatusTransition("promote", core.StatusPromoted, args)
+}
+
+// cmdStatusTransition implements review/promote: a single adjacent-forward
+// status transition. The observation is read first so the output can report the
+// pre-transition status; the transition itself is atomic and fails closed on
+// illegal moves (internal/core/lifecycle.go), leaving the observation unchanged.
+func cmdStatusTransition(name string, to core.AuthorityStatus, args []string) int {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	actor := fs.String("actor", "cli", "actor name recorded in the audit trail (default cli)")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "usage: drenyra-engram %s <id> [--actor <name>] [--db <path>]\n", name)
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--actor": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	before, ok := st.FindByID(rest[0])
+	if !ok {
+		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
+	}
+	updated, err := core.ApplyTransition(st, rest[0], to, core.TransitionMeta{
+		Actor:     *actor,
+		Timestamp: nowISO(),
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(transitionOutput{
+		ID:       updated.Identity.ID,
+		From:     before.AuthorityStatus,
+		To:       updated.AuthorityStatus,
+		Revision: updated.Revision,
+	})
+}
+
+// ──────────────────────────────────────────────
+// supersede — promoted → superseded with a REQUIRED target
+// ──────────────────────────────────────────────
+
+// supersedeOutput is the JSON shape of the supersede command.
+type supersedeOutput struct {
+	ID       string               `json:"id"`
+	From     core.AuthorityStatus `json:"from"`
+	To       core.AuthorityStatus `json:"to"`
+	TargetID string               `json:"targetId"`
+}
+
+func cmdSupersede(args []string) int {
+	fs := flag.NewFlagSet("supersede", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	actor := fs.String("actor", "cli", "actor name recorded in the audit trail (default cli)")
+	target := fs.String("target", "", "REQUIRED replacing observation id this one routes readers to")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--actor": true, "--target": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || *target == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	before, ok := st.FindByID(rest[0])
+	if !ok {
+		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
+	}
+	updated, err := core.Supersede(core.SupersedeInput{
+		Store:         st,
+		ObservationID: rest[0],
+		TargetID:      *target,
+		Actor:         *actor,
+		Timestamp:     nowISO(),
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(supersedeOutput{
+		ID:       updated.Identity.ID,
+		From:     before.AuthorityStatus,
+		To:       updated.AuthorityStatus,
+		TargetID: *target,
+	})
+}
+
+// nowISO is the CLI's event timestamp: current UTC time in RFC3339, which the
+// core timestamp grammar accepts (contracts/provenance.md rule 3: every state
+// traces to actor+time).
+func nowISO() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
+
 // reorderFlags moves flag tokens to the front of args so flag.FlagSet can parse
 // them, preserving positional arguments in order. Go's flag package stops at
 // the first positional, but the CLI signatures put positionals before flags
@@ -301,12 +564,23 @@ Usage:
   drenyra-engram search <query> --company <ruc> [--period <YYYYMM>] [--any] [--db <path>]
   drenyra-engram context <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram doctor [--db <path>]
+  drenyra-engram compare <idA> <idB> [--db <path>]
+  drenyra-engram review <id> [--actor <name>] [--db <path>]
+  drenyra-engram promote <id> [--actor <name>] [--db <path>]
+  drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
   --period <YYYYMM> fiscal period; omitted scopes only match period-less observations
   --any            match ANY query token (default: match ALL)
+  --actor <name>   actor recorded in the audit trail (default cli)
+  --target <id>    replacing observation for supersede (REQUIRED)
+
+Lifecycle: review/promote/supersede move an observation along the only legal
+chain draft → reviewed → promoted → superseded; supersede records a
+supersedes relation to --target. compare reports identity/scope/content
+deltas and a relation verdict for two stored observations.
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
 authorize/approve/allow command. Memory guides; it never authorizes.

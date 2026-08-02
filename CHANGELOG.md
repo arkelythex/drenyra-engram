@@ -9,6 +9,15 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
 ## 0.0.1-prealpha.1 — 2026-08-01
 
+### Added — CLI complete (ADR-001 v0.2)
+
+- `compare` (identity/scope/content deltas + relation verdict: supersedes /
+  related / not_conflict — supersedes checks the SOURCE status, the successor
+  stays draft/promoted), `review` (draft→reviewed), `promote` (reviewed→promoted),
+  `supersede` (promoted→superseded with required target + relation). 45 Go tests
+  green; non-authorization boundary kept (authorize/approve/allow rejected).
+
+
 ### Added — v0.2 standalone Go engine foundation (ADR-001)
 
 - Go module + core types/validators, lifecycle machine, SQLite store (pure Go,

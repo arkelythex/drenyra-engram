@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/store"
 )
@@ -277,6 +278,347 @@ func TestCLIUsageErrors(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "drenyra-engram") {
 			t.Fatalf("help output missing binary name: %q", stdout)
+		}
+	})
+}
+
+// ──────────────────────────────────────────────
+// Lifecycle CLI tests (review / promote / supersede / compare)
+// ──────────────────────────────────────────────
+
+// saveViaCLI saves the JSON file at path through the built CLI and returns the
+// stored observation id.
+func saveViaCLI(t *testing.T, db, path string) string {
+	t.Helper()
+	stdout, stderr, code := runCLI(t, "save", path, "--db", db)
+	if code != 0 {
+		t.Fatalf("save %s failed (exit %d): %s", path, code, stderr)
+	}
+	var result struct {
+		Observation struct {
+			Identity struct {
+				ID string `json:"id"`
+			} `json:"identity"`
+		} `json:"observation"`
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("save output not JSON: %v\n%s", err, stdout)
+	}
+	if result.Outcome != "created" && result.Outcome != "updated" {
+		t.Fatalf("save outcome = %s, want created/updated", result.Outcome)
+	}
+	if result.Observation.Identity.ID == "" {
+		t.Fatal("save returned an empty id")
+	}
+	return result.Observation.Identity.ID
+}
+
+// cliSaveInput builds a save payload for the CLI's fixed company scope shape.
+func cliSaveInput(topicKey, ruc, period, what, session string) core.SaveInput {
+	return core.SaveInput{
+		TopicKey: topicKey,
+		Title:    "base rate",
+		Type:     "policy",
+		Scope: core.Scope{
+			Kind:           core.ScopeKindCompany,
+			OrganizationID: cliOrganizationID,
+			CompanyID:      ruc,
+			RUC:            ruc,
+			Period:         period,
+		},
+		Content: core.Content{
+			What:    what,
+			Why:     "standard for goods",
+			Where:   "Peru",
+			Learned: "applies to all",
+		},
+		AuthorityStatus: core.StatusDraft,
+		Provenance: core.Provenance{
+			Actor:     "cli-user",
+			Timestamp: "2026-01-15T12:00:00.000Z",
+			Source:    "cli",
+			Session:   session,
+		},
+	}
+}
+
+// writeSaveInput marshals a save payload to a JSON file in dir and returns its
+// path, so the built CLI can ingest it.
+func writeSaveInput(t *testing.T, dir, name string, input core.SaveInput) string {
+	t.Helper()
+	data, err := json.MarshalIndent(input, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal save input: %v", err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+// runTransition runs a review/promote/supersede CLI command against id and
+// returns the parsed JSON output.
+func runTransition(t *testing.T, db string, args ...string) (string, string, int) {
+	t.Helper()
+	stdout, stderr, code := runCLI(t, append(args, "--db", db)...)
+	if code != 0 {
+		t.Fatalf("%v failed (exit %d): %s", args, code, stderr)
+	}
+	return stdout, stderr, code
+}
+
+// TestCLILifecycleRoundTrip drives the full lifecycle through the built binary:
+// save → review → promote → supersede (with target), asserting each command's
+// JSON shape and exit code against a fresh temp database.
+func TestCLILifecycleRoundTrip(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+
+	idA := saveViaCLI(t, db, fixturePath(t, "a.json"))
+
+	stdout, _, code := runTransition(t, db, "review", idA, "--actor", "test-actor")
+	var reviewed transitionOutput
+	if err := json.Unmarshal([]byte(stdout), &reviewed); err != nil {
+		t.Fatalf("review output not JSON: %v\n%s", err, stdout)
+	}
+	if reviewed.ID != idA || reviewed.From != core.StatusDraft || reviewed.To != core.StatusReviewed || reviewed.Revision != 1 {
+		t.Fatalf("review output = %+v, want id %s, draft → reviewed, revision 1", reviewed, idA)
+	}
+
+	stdout, _, code = runTransition(t, db, "promote", idA, "--actor", "test-actor")
+	var promoted transitionOutput
+	if err := json.Unmarshal([]byte(stdout), &promoted); err != nil {
+		t.Fatalf("promote output not JSON: %v\n%s", err, stdout)
+	}
+	if promoted.ID != idA || promoted.From != core.StatusReviewed || promoted.To != core.StatusPromoted {
+		t.Fatalf("promote output = %+v, want id %s, reviewed → promoted", promoted, idA)
+	}
+
+	idB := saveViaCLI(t, db, fixturePath(t, "b.json"))
+	stdout, _, code = runTransition(t, db, "supersede", idA, "--target", idB, "--actor", "test-actor")
+	var superseded supersedeOutput
+	if err := json.Unmarshal([]byte(stdout), &superseded); err != nil {
+		t.Fatalf("supersede output not JSON: %v\n%s", err, stdout)
+	}
+	if superseded.ID != idA || superseded.From != core.StatusPromoted || superseded.To != core.StatusSuperseded || superseded.TargetID != idB {
+		t.Fatalf("supersede output = %+v, want id %s, promoted → superseded, target %s", superseded, idA, idB)
+	}
+
+	// The supersedes relation is recorded; with idB still draft the verdict
+	// falls back to the shared topicKey → related, not supersedes.
+	stdout, stderr, code := runCLI(t, "compare", idA, idB, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare failed (exit %d): %s", code, stderr)
+	}
+	var cmp compareOutput
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare output not JSON: %v\n%s", err, stdout)
+	}
+	// idA was superseded by idB in this round trip → the verdict is
+	// "supersedes" (source check: A is superseded, B is the successor).
+	if cmp.RelationVerdict != "supersedes" || !cmp.IdentityMatch || cmp.ScopeMatch != "none" {
+		t.Fatalf("compare(idA, idB) = %+v, want supersedes + identityMatch + scopeMatch none", cmp)
+	}
+}
+
+// TestCLICompareScenarios covers the compare verdict matrix: not_conflict,
+// related (shared topicKey), partial/exact scope matching and the supersedes
+// verdict for a completed supersede pair.
+func TestCLICompareScenarios(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	dir := t.TempDir()
+
+	idA := saveViaCLI(t, db, fixturePath(t, "a.json"))
+	idC := saveViaCLI(t, db, writeSaveInput(t, dir, "c.json", cliSaveInput("memory.relations.probe.c", cliRucA, "202401", "a different finding", "smoke-003")))
+	idA2 := saveViaCLI(t, db, fixturePath(t, "a.json")) // revision 2 of A's chain
+	idB := saveViaCLI(t, db, fixturePath(t, "b.json"))
+
+	// Different topicKey, no relation, identical scope → not_conflict + exact.
+	stdout, stderr, code := runCLI(t, "compare", idA, idC, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare A/C failed (exit %d): %s", code, stderr)
+	}
+	var cmp compareOutput
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare A/C output not JSON: %v\n%s", err, stdout)
+	}
+	if cmp.IdentityMatch || cmp.RelationVerdict != "not_conflict" || cmp.ScopeMatch != "exact" {
+		t.Fatalf("compare(A, C) = %+v, want identityMatch=false, not_conflict, scopeMatch=exact", cmp)
+	}
+	if !cmp.ContentDeltas.What {
+		t.Fatalf("compare(A, C) contentDeltas = %+v, want differing content flagged", cmp.ContentDeltas)
+	}
+
+	// Same chain re-save → related, identical content → no deltas.
+	stdout, _, code = runCLI(t, "compare", idA, idA2, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare A/A2 failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare A/A2 output not JSON: %v\n%s", err, stdout)
+	}
+	if !cmp.IdentityMatch || cmp.RelationVerdict != "related" || cmp.ScopeMatch != "exact" {
+		t.Fatalf("compare(A, A2) = %+v, want related + identityMatch + scopeMatch exact", cmp)
+	}
+	if cmp.ContentDeltas.What || cmp.ContentDeltas.Why || cmp.ContentDeltas.Where || cmp.ContentDeltas.Learned {
+		t.Fatalf("compare(A, A2) contentDeltas = %+v, want all false for identical content", cmp.ContentDeltas)
+	}
+
+	// Same topicKey across different companies → related, scopeMatch none.
+	stdout, _, code = runCLI(t, "compare", idA, idB, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare A/B failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare A/B output not JSON: %v\n%s", err, stdout)
+	}
+	if !cmp.IdentityMatch || cmp.RelationVerdict != "related" || cmp.ScopeMatch != "none" {
+		t.Fatalf("compare(A, B) = %+v, want related + identityMatch + scopeMatch none", cmp)
+	}
+
+	// Same company/RUC, different period → partial scope.
+	idP := saveViaCLI(t, db, writeSaveInput(t, dir, "p.json", cliSaveInput("memory.relations.probe.p", cliRucA, "202402", "a different finding", "smoke-004")))
+	stdout, _, code = runCLI(t, "compare", idA, idP, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare A/P failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare A/P output not JSON: %v\n%s", err, stdout)
+	}
+	if cmp.ScopeMatch != "partial" {
+		t.Fatalf("compare(A, P) scopeMatch = %q, want partial", cmp.ScopeMatch)
+	}
+
+	// Promote all three, then supersede C → A2 and A → C: the relations table
+	// records A→C as supersedes with C superseded → verdict supersedes.
+	for _, id := range []string{idA, idC, idA2} {
+		if _, _, code := runCLI(t, "review", id, "--actor", "test-actor", "--db", db); code != 0 {
+			t.Fatalf("review %s failed (exit %d)", id, code)
+		}
+		if _, _, code := runCLI(t, "promote", id, "--actor", "test-actor", "--db", db); code != 0 {
+			t.Fatalf("promote %s failed (exit %d)", id, code)
+		}
+	}
+	if _, _, code := runCLI(t, "supersede", idC, "--target", idA2, "--db", db); code != 0 {
+		t.Fatalf("supersede C→A2 failed (exit %d)", code)
+	}
+	if _, _, code := runCLI(t, "supersede", idA, "--target", idC, "--db", db); code != 0 {
+		t.Fatalf("supersede A→C failed (exit %d)", code)
+	}
+
+	stdout, _, code = runCLI(t, "compare", idA, idC, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare superseded pair failed (exit %d)", code)
+	}
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare superseded output not JSON: %v\n%s", err, stdout)
+	}
+	if cmp.RelationVerdict != "supersedes" {
+		t.Fatalf("compare(A, C) after supersede = %+v, want verdict supersedes", cmp)
+	}
+	if cmp.StatusA != core.StatusSuperseded || cmp.StatusB != core.StatusSuperseded {
+		t.Fatalf("compare(A, C) statuses = %s/%s, want superseded/superseded", cmp.StatusA, cmp.StatusB)
+	}
+}
+
+// TestCLIIllegalPromoteFromDraftFailsClosed asserts the fail-closed lifecycle
+// boundary: a non-adjacent transition exits 1, writes nothing to stdout and
+// leaves the observation unchanged.
+func TestCLIIllegalPromoteFromDraftFailsClosed(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	id := saveViaCLI(t, db, fixturePath(t, "a.json"))
+
+	stdout, stderr, code := runCLI(t, "promote", id, "--db", db)
+	if code != 1 {
+		t.Fatalf("promote draft exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("illegal promote must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, core.ErrInvalidTransition) {
+		t.Fatalf("stderr must name INVALID_TRANSITION: %q", stderr)
+	}
+
+	// The observation is still draft.
+	stdout, _, code = runCLI(t, "compare", id, id, "--db", db)
+	if code != 0 {
+		t.Fatalf("compare after illegal promote failed (exit %d): %s", code, stderr)
+	}
+	var cmp compareOutput
+	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
+		t.Fatalf("compare output not JSON: %v\n%s", err, stdout)
+	}
+	if cmp.StatusA != core.StatusDraft {
+		t.Fatalf("observation changed after illegal promote: status = %s, want draft", cmp.StatusA)
+	}
+}
+
+// TestCLIUsageErrorsForNewCommands pins exit codes for the lifecycle surface:
+// 2 for malformed usage, 1 for runtime errors (missing observations).
+func TestCLIUsageErrorsForNewCommands(t *testing.T) {
+	t.Run("supersede without target", func(t *testing.T) {
+		db := filepath.Join(t.TempDir(), "engram.db")
+		id := saveViaCLI(t, db, fixturePath(t, "a.json"))
+		stdout, _, code := runCLI(t, "supersede", id, "--db", db)
+		if code != 2 {
+			t.Fatalf("supersede without --target exit = %d, want 2; stdout=%q", code, stdout)
+		}
+	})
+
+	t.Run("supersede without id", func(t *testing.T) {
+		db := filepath.Join(t.TempDir(), "engram.db")
+		_, _, code := runCLI(t, "supersede", "--target", "x", "--db", db)
+		if code != 2 {
+			t.Fatalf("supersede without id exit = %d, want 2", code)
+		}
+	})
+
+	t.Run("compare with one id", func(t *testing.T) {
+		_, _, code := runCLI(t, "compare", "some-id", "--db", filepath.Join(t.TempDir(), "engram.db"))
+		if code != 2 {
+			t.Fatalf("compare with one id exit = %d, want 2", code)
+		}
+	})
+
+	t.Run("review without id", func(t *testing.T) {
+		_, _, code := runCLI(t, "review", "--db", filepath.Join(t.TempDir(), "engram.db"))
+		if code != 2 {
+			t.Fatalf("review without id exit = %d, want 2", code)
+		}
+	})
+
+	t.Run("compare with missing observations", func(t *testing.T) {
+		db := filepath.Join(t.TempDir(), "engram.db")
+		_, stderr, code := runCLI(t, "compare", "missing-a", "missing-b", "--db", db)
+		if code != 1 {
+			t.Fatalf("compare missing ids exit = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "OBSERVATION_NOT_FOUND") {
+			t.Fatalf("stderr must name OBSERVATION_NOT_FOUND: %q", stderr)
+		}
+	})
+
+	t.Run("review with missing observation", func(t *testing.T) {
+		db := filepath.Join(t.TempDir(), "engram.db")
+		_, stderr, code := runCLI(t, "review", "missing-id", "--db", db)
+		if code != 1 {
+			t.Fatalf("review missing id exit = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "OBSERVATION_NOT_FOUND") {
+			t.Fatalf("stderr must name OBSERVATION_NOT_FOUND: %q", stderr)
+		}
+	})
+
+	t.Run("help lists lifecycle commands", func(t *testing.T) {
+		stdout, _, code := runCLI(t, "help")
+		if code != 0 {
+			t.Fatalf("help exit = %d, want 0", code)
+		}
+		for _, cmd := range []string{"compare", "review", "promote", "supersede"} {
+			if !strings.Contains(stdout, cmd) {
+				t.Fatalf("help output missing %q: %s", cmd, stdout)
+			}
 		}
 	})
 }
