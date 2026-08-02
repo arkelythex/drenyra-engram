@@ -9,6 +9,14 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
 ## 0.0.1-prealpha.1 — 2026-08-01
 
+### Added — v0.2 standalone Go engine foundation (ADR-001)
+
+- Go module + core types/validators, lifecycle machine, SQLite store (pure Go,
+  immutable history, schema guards), scope-first search with cross-tenant
+  isolation, and the `drenyra-engram` CLI (save/search/context/doctor). 40 Go
+  tests green; the non-authorization boundary is enforced (no authorize commands).
+
+
 ### Added
 
 - Repository identity scaffolding: README, LICENSE, SECURITY, CONTRIBUTING, CODEOWNERS, architecture and roadmap docs.

@@ -27,6 +27,13 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 - [ ] Slice 4: MCP server + CLI
 - [ ] Drenyra and Drenyra Pi consume the first released version instead of internal implementations
 
+## Phase 2 — Standalone Go engine (ADR-001) — IN PROGRESS
+
+- [x] **v0.2 foundation:** Go module (`github.com/arkelythex/drenyra-engram`), core types + validators (RUC 11 digits, period YYYYMM), lifecycle machine, SQLite store (modernc.org/sqlite, pure Go — immutable history + schema guards), scope-first search with the MANDATORY cross-tenant isolation property, and the CLI (`save | search | context | doctor`). 40 Go tests green; non-authorization boundary enforced (no authorize/approve/allow commands).
+- [ ] CLI polish: `compare`, `review`, `promote`, `supersede` commands
+- [ ] MCP + HTTP surfaces
+- [ ] Local/cloud sync
+
 ## Phase 3 — Ecosystem maturity (alpha → beta)
 
 - [ ] Local/cloud sync with clear semantics

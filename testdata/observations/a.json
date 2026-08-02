@@ -1,0 +1,28 @@
+{
+  "topicKey": "tax.igv.rate",
+  "title": "IGV base rate",
+  "type": "policy",
+  "scope": {
+    "kind": "company",
+    "organizationId": "cli",
+    "companyId": "20100039201",
+    "ruc": "20100039201",
+    "period": "202401"
+  },
+  "content": {
+    "what": "IGV base rate is 18 percent",
+    "why": "standard rate for goods",
+    "where": "Peru",
+    "learned": "applies to all invoices"
+  },
+  "authorityStatus": "draft",
+  "validity": {
+    "effectiveAt": "2024-01-01T00:00:00.000Z"
+  },
+  "provenance": {
+    "actor": "cli-user",
+    "timestamp": "2026-01-15T12:00:00.000Z",
+    "source": "cli",
+    "session": "smoke-001"
+  }
+}
