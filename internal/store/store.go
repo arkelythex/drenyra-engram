@@ -59,6 +59,9 @@ type Store interface {
 	// FindByTopicKey returns the latest revision of the (topicKey, exact scope)
 	// chain, if any.
 	FindByTopicKey(topicKey string, scope core.Scope) (core.Observation, bool)
+	// FindChain returns the FULL revision history of the (topicKey, exact scope)
+	// chain, ordered by revision ascending.
+	FindChain(topicKey string, scope core.Scope) ([]core.Observation, error)
 	// FindByScope returns every stored observation whose scope equals the query
 	// scope (full revision history).
 	FindByScope(scope core.Scope) ([]core.Observation, error)
@@ -633,6 +636,15 @@ func (s *SQLiteStore) queryObservations(suffix string, args ...any) ([]core.Obse
 		return nil, err
 	}
 	return observations, nil
+}
+
+// FindChain returns the FULL revision history of a (topicKey, exact scope)
+// chain, ordered by revision ascending — the counterpart of FindByTopicKey
+// (which returns only the latest). The sync path and the HTTP chain surface
+// (GET /v1/chain) use it to serve every revision of a topic key.
+func (s *SQLiteStore) FindChain(topicKey string, scope core.Scope) ([]core.Observation, error) {
+	where, args := chainWhere(topicKey, scope)
+	return s.queryObservations(`WHERE `+where+` ORDER BY revision ASC`, args...)
 }
 
 // chainWhere builds the exact-chain predicate for (topicKey, exact scope).

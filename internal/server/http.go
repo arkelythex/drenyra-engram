@@ -99,6 +99,7 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/observations", h.requireToken(h.handleSave))
 	mux.HandleFunc("GET /v1/observations/{id}", h.requireToken(h.handleGet))
 	mux.HandleFunc("GET /v1/topic/{topicKey}", h.requireToken(h.handleGetByTopic))
+	mux.HandleFunc("GET /v1/chain", h.requireToken(h.handleChain))
 	mux.HandleFunc("GET /v1/search", h.requireToken(h.handleSearch))
 	mux.HandleFunc("GET /v1/context", h.requireToken(h.handleContext))
 	mux.HandleFunc("POST /v1/compare", h.requireToken(h.handleCompare))
@@ -190,6 +191,27 @@ func (h *HTTPServer) handleGetByTopic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, observation)
+}
+
+// handleChain serves the full revision history of a (topicKey, exact scope)
+// chain — every revision, ordered ascending (the counterpart of handleGetByTopic).
+func (h *HTTPServer) handleChain(w http.ResponseWriter, r *http.Request) {
+	topicKey := r.URL.Query().Get("topicKey")
+	if strings.TrimSpace(topicKey) == "" {
+		h.writeError(w, errors.New("INVALID_TOPIC_KEY: query parameter topicKey is required"))
+		return
+	}
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	chain, err := h.api.Chain(topicKey, scope)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, chain)
 }
 
 func (h *HTTPServer) handleSearch(w http.ResponseWriter, r *http.Request) {

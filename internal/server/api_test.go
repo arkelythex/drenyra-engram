@@ -337,3 +337,45 @@ func TestDoctorFailsClosedOnMissingTable(t *testing.T) {
 		t.Fatalf("schemaVersion = %d, want 1", report.SchemaVersion)
 	}
 }
+
+func TestChainReturnsFullHistory(t *testing.T) {
+	api := newTestAPI(t)
+	scope := testScope(testRucA)
+
+	first := saveOne(t, api, validInput("topic/history", "H", "v1", scope))
+	second := saveOne(t, api, validInput("topic/history", "H", "v2", scope))
+	_ = second
+
+	chain, err := api.Chain("topic/history", scope)
+	if err != nil {
+		t.Fatalf("chain: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("chain has %d revisions, want 2", len(chain))
+	}
+	if chain[0].Identity.ID != first.Identity.ID || chain[0].Revision != 1 {
+		t.Fatalf("chain[0] = %s rev %d, want first rev 1", chain[0].Identity.ID, chain[0].Revision)
+	}
+	if chain[1].Revision != 2 {
+		t.Fatalf("chain[1] revision = %d, want 2 (ascending order)", chain[1].Revision)
+	}
+
+	// Scope isolation: the same topicKey under another RUC is an empty chain.
+	other, err := api.Chain("topic/history", testScope(testRucB))
+	if err != nil {
+		t.Fatalf("chain other scope: %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("other-scope chain has %d revisions, want 0 (structural isolation)", len(other))
+	}
+}
+
+func TestChainRequiresScopeAndTopicKey(t *testing.T) {
+	api := newTestAPI(t)
+	if _, err := api.Chain("", testScope(testRucA)); err == nil {
+		t.Fatal("empty topicKey must fail closed")
+	}
+	if _, err := api.Chain("topic/x", core.Scope{}); err == nil {
+		t.Fatal("invalid scope must fail closed")
+	}
+}

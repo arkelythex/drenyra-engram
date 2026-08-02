@@ -180,8 +180,8 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 12 {
-		t.Fatalf("tool count = %d, want 12", len(result.Tools))
+	if len(result.Tools) != 13 {
+		t.Fatalf("tool count = %d, want 13", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)
@@ -396,5 +396,26 @@ func TestMCPBatchRejected(t *testing.T) {
 	}
 	if response.Error == nil || response.Error.Code != codeInvalidRequest {
 		t.Fatalf("want -32600 for batch, got %+v", response.Error)
+	}
+}
+
+func TestMCPChainTool(t *testing.T) {
+	m, api := newTestMCP(t)
+	scope := testScope(testRucA)
+	saveOne(t, api, validInput("topic/m", "M", "v1", scope))
+	saveOne(t, api, validInput("topic/m", "M", "v2", scope))
+
+	response := call(t, m, 1, "tools/call", map[string]any{
+		"name": "engram_chain", "arguments": map[string]any{"topicKey": "topic/m", "scope": scope},
+	})
+	if response.Error != nil {
+		t.Fatalf("chain error: %+v", response.Error)
+	}
+	var chain []core.Observation
+	if err := json.Unmarshal([]byte(toolResultText(t, response)), &chain); err != nil {
+		t.Fatalf("decode chain: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("chain has %d revisions, want 2", len(chain))
 	}
 }

@@ -82,6 +82,26 @@ func (a *API) GetByTopic(topicKey string, scope core.Scope) (core.Observation, e
 	return observation, nil
 }
 
+// Chain returns the FULL revision history of a (topicKey, exact scope) chain,
+// ordered by revision ascending (every revision, not just the current one —
+// the counterpart of GetByTopic).
+func (a *API) Chain(topicKey string, scope core.Scope) ([]core.Observation, error) {
+	if err := core.AssertValidScope(scope); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(topicKey) == "" {
+		return nil, errors.New("INVALID_TOPIC_KEY: topicKey must be a non-empty string")
+	}
+	chain, err := a.Store.FindChain(topicKey, scope)
+	if err != nil {
+		return nil, err
+	}
+	if chain == nil {
+		chain = []core.Observation{}
+	}
+	return chain, nil
+}
+
 // Search runs the scope-first search (scope is a structural filter, never a
 // post-filter — contracts/scope.md rule 1).
 func (a *API) Search(input search.Input) ([]search.Result, error) {
