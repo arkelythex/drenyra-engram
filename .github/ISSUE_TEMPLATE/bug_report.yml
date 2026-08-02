@@ -1,0 +1,73 @@
+# Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; version/sequence numbers are JSON integers, never floats.
+name: Bug report
+description: Report a defect in Drenyra Engram. For fiscal behavior, always include scope and period.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Fiscal bugs are investigated with evidence, not guesses — fill in as much as you can.
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Impact level of the defect.
+      options:
+        - blocker (blocks fiscal work / data integrity)
+        - high (wrong result under normal use)
+        - medium (wrong result in an edge case)
+        - low (cosmetic / developer experience)
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Which surface does the defect affect?
+      options:
+        - core (observation model)
+        - store
+        - search
+        - relations
+        - lifecycle / vigencia
+        - provenance
+        - sync
+        - surfaces (MCP / CLI / HTTP / TUI)
+        - contracts
+        - other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "drenyra-engram version (package.json or `drenyra-engram --version`)."
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps to reproduce, or a pointer to a failing conformance vector.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happens?
+    validations:
+      required: true
+  - type: input
+    id: scope
+    attributes:
+      label: Fiscal scope (if fiscal)
+      description: Company/RUC and fiscal period affected, if the defect is fiscal.

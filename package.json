@@ -1,0 +1,25 @@
+{
+  "name": "drenyra-engram",
+  "version": "0.0.1-prealpha.1",
+  "description": "Scope-first institutional accounting memory core — observations, immutable revision history, lifecycle transitions, and the non-authorization boundary. Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; sequence/revision counters are JSON integers, never floats.",
+  "type": "module",
+  "files": [
+    "core",
+    "store",
+    "search",
+    "lifecycle",
+    "authority",
+    "contracts",
+    "index.ts"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

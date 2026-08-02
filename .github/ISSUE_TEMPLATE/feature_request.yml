@@ -1,0 +1,51 @@
+# Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; version/sequence numbers are JSON integers, never floats.
+name: Feature request
+description: Propose a new capability or improvement for Drenyra Engram.
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing. A good feature request names the problem, the user, and the acceptance criteria.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this solve, and for whom (user/situation)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should it work? Keep it concrete enough to evaluate.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else did you consider, and why is this approach better?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What would prove this feature works?
+    validations:
+      required: true
+  - type: input
+    id: scope
+    attributes:
+      label: Fiscal scope (if fiscal)
+      description: Company/RUC and fiscal period affected, if the feature is fiscal.
+  - type: checkboxes
+    id: ecosystem
+    attributes:
+      label: Ecosystem check
+      description: This repo is the memory engine. Authorization/receipt capabilities belong in drenyra-ai, product features in Drenyra, and the Pi harness in drenyra-pi.
+      options:
+        - label: I confirm this feature belongs in drenyra-engram, not Drenyra / drenyra-ai / drenyra-pi.
+          required: true
+        - label: I confirm this feature does not grant or imply authorization (memory never authorizes).
+          required: true
