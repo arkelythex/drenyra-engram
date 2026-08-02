@@ -622,3 +622,129 @@ func TestCLIUsageErrorsForNewCommands(t *testing.T) {
 		}
 	})
 }
+
+// ──────────────────────────────────────────────
+// mcp / serve surfaces
+// ──────────────────────────────────────────────
+
+// TestCLIMCPStdioRoundTrip is the agent-transport smoke: the real binary serves
+// newline-delimited JSON-RPC over stdin/stdout (initialize → tools/call) and
+// answers with protocol responses.
+func TestCLIMCPStdioRoundTrip(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	// Seed one observation through the CLI so the MCP doctor call sees it.
+	_, stderr, code := runCLI(t, "save", fixturePath(t, "a.json"), "--db", db)
+	if code != 0 {
+		t.Fatalf("seed save failed (exit %d): %s", code, stderr)
+	}
+
+	cmd := exec.Command(binPath, "mcp", "--db", db)
+	cmd.Stdin = strings.NewReader(strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"test","version":"1"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"engram_doctor","arguments":{}}}`,
+	}, "\n") + "\n")
+	var out, errOut strings.Builder
+	cmd.Stdout = &out
+	cmd.Stderr = &errOut
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("mcp run: %v; stderr=%s", err, errOut.String())
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("mcp produced %d response lines, want 2: %s", len(lines), out.String())
+	}
+
+	var initResponse struct {
+		Result struct {
+			ServerInfo struct {
+				Name string `json:"name"`
+			} `json:"serverInfo"`
+		} `json:"result"`
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &initResponse); err != nil {
+		t.Fatalf("decode initialize response: %v", err)
+	}
+	if initResponse.Error != nil || initResponse.Result.ServerInfo.Name != "drenyra-engram" {
+		t.Fatalf("initialize response wrong: %+v", initResponse)
+	}
+
+	var doctorResponse struct {
+		Result struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"result"`
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &doctorResponse); err != nil {
+		t.Fatalf("decode doctor response: %v", err)
+	}
+	if doctorResponse.Error != nil {
+		t.Fatalf("doctor error: %+v", doctorResponse.Error)
+	}
+	if len(doctorResponse.Result.Content) == 0 {
+		t.Fatal("doctor tool result has no content")
+	}
+	var report struct {
+		Observations int `json:"observations"`
+	}
+	if err := json.Unmarshal([]byte(doctorResponse.Result.Content[0].Text), &report); err != nil {
+		t.Fatalf("decode doctor report: %v", err)
+	}
+	if report.Observations != 1 {
+		t.Fatalf("doctor observations = %d, want 1 (seeded via CLI)", report.Observations)
+	}
+}
+
+// TestCLIMCPSurfacesHelp asserts the new commands appear in help and their usage
+// guards reject stray arguments (exit 2).
+func TestCLIMCPSurfacesHelp(t *testing.T) {
+	t.Run("help lists mcp and serve", func(t *testing.T) {
+		stdout, _, code := runCLI(t, "help")
+		if code != 0 {
+			t.Fatalf("help exit = %d, want 0", code)
+		}
+		for _, cmd := range []string{"mcp", "serve"} {
+			if !strings.Contains(stdout, cmd) {
+				t.Fatalf("help output missing %q", cmd)
+			}
+		}
+	})
+
+	t.Run("serve --help exits 0", func(t *testing.T) {
+		_, _, code := runCLI(t, "serve", "--help")
+		if code != 0 {
+			t.Fatalf("serve --help exit = %d, want 0", code)
+		}
+	})
+
+	t.Run("mcp rejects extra arguments", func(t *testing.T) {
+		_, _, code := runCLI(t, "mcp", "stray")
+		if code != 2 {
+			t.Fatalf("mcp stray exit = %d, want 2 (usage error)", code)
+		}
+	})
+
+	t.Run("non-authorization: no authorize/approve/allow command line", func(t *testing.T) {
+		stdout, _, code := runCLI(t, "help")
+		if code != 0 {
+			t.Fatalf("help exit = %d, want 0", code)
+		}
+		// The help MAY document the boundary ("there is no authorize command");
+		// it must never list an authorization command as invocable.
+		for _, line := range strings.Split(stdout, "\n") {
+			trimmed := strings.TrimSpace(line)
+			for _, forbidden := range []string{"authorize", "approve", "allow"} {
+				if strings.HasPrefix(trimmed, "drenyra-engram "+forbidden) {
+					t.Fatalf("help lists forbidden command line %q", trimmed)
+				}
+			}
+		}
+	})
+}

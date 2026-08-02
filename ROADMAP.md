@@ -1,6 +1,6 @@
 # Drenyra Engram — Roadmap
 
-> **Last updated:** 2026-08-01. Status: pre-alpha.
+> **Last updated:** 2026-08-02. Status: pre-alpha.
 
 ## Phase 0 — Identity (current)
 
@@ -31,7 +31,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 
 - [x] **v0.2 foundation:** Go module (`github.com/arkelythex/drenyra-engram`), core types + validators (RUC 11 digits, period YYYYMM), lifecycle machine, SQLite store (modernc.org/sqlite, pure Go — immutable history + schema guards), scope-first search with the MANDATORY cross-tenant isolation property, and the CLI (`save | search | context | doctor`). 40 Go tests green; non-authorization boundary enforced (no authorize/approve/allow commands).
 - [x] CLI polish: `compare`, `review`, `promote`, `supersede` commands (45 Go tests green; compare verdict matrix incl. supersedes-with-source-check)
-- [ ] MCP + HTTP surfaces
+- [x] MCP + HTTP surfaces (shared domain services `internal/server/api.go`; `mcp` stdio + POST /mcp; `serve` REST /v1 + token; 85 Go tests green)
 - [ ] Local/cloud sync
 
 ## Phase 3 — Ecosystem maturity (alpha → beta)
