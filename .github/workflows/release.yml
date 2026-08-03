@@ -1,0 +1,49 @@
+name: Release
+
+# Automates the Go engine release (RELEASING.md): on every v* tag,
+# builds cross-platform static binaries, attaches SPDX SBOMs and SHA-256
+# checksums, and records SLSA attestations (provenance) for supply-chain
+# review. Runs in the private repo; all artifacts stay private.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install syft (SBOM generator)
+        run: |
+          go install github.com/anchore/syft/cmd/syft@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Release
+        uses: goreleaser/goreleaser-action@57e184bc5a82be8284323f1ac99a6b188d673f7f # v7.2.3
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attest build provenance (linux/amd64)
+        uses: actions/attest-build-provenance@e3fe62ef559997059fe8380e7d2b4c909e2d65f4 # v4.1.1
+        with:
+          subject-path: dist/drenyra-engram_linux_amd64_v1/drenyra-engram
