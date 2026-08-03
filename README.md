@@ -63,10 +63,25 @@ core/ store/        TypeScript reference implementation (pre-Go, retired by pari
 
 - **CLI** — `drenyra-engram <command>`; JSON output, exit codes 0/1/2.
 - **MCP** — `drenyra-engram mcp` serves the Model Context Protocol over stdio
-  (12 `engram_*` tools: save/get/get_by_topic/search/context/compare/doctor/
-  review/promote/supersede/relations/transitions); also available as
-  `POST /mcp` on the HTTP port. The tool catalog has no authorize/approve/allow
-  tool — memory never authorizes.
+  (13 `engram_*` tools), also available as `POST /mcp` on the HTTP port:
+
+  | Tool | Operation |
+  |---|---|
+  | `engram_save` | upsert an observation (new immutable revision) |
+  | `engram_get` | one observation by id |
+  | `engram_get_by_topic` | latest revision of a (topicKey, scope) chain |
+  | `engram_chain` | FULL revision history of a chain (ascending) |
+  | `engram_search` | scope-first token-overlap search |
+  | `engram_context` | current memory for a scope (latest per chain) |
+  | `engram_compare` | identity/scope/content deltas + relation verdict |
+  | `engram_doctor` | store health (schema guards, counts) |
+  | `engram_review` / `engram_promote` / `engram_supersede` | lifecycle transitions (adjacent-forward) |
+  | `engram_relations` | every recorded relation |
+  | `engram_transitions` | the lifecycle audit trail |
+
+  The tool catalog has no authorize/approve/allow tool — memory never
+  authorizes. Domain failures return in-band tool results (isError=true)
+  with the engine's stable error codes; shape errors are JSON-RPC -32602.
 - **HTTP** — `drenyra-engram serve --addr 127.0.0.1:8787 [--token <secret>]`
   exposes REST `/v1/*` (observations, topic, search, context, compare,
   lifecycle, relations, transitions, doctor) bound to localhost by default;
