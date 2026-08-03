@@ -74,6 +74,13 @@ contracts/          Frozen-for-0.1 contract set (memory, scope, lifecycle, prove
 core/ store/        TypeScript reference implementation (pre-Go, retired by parity)
 ```
 
+## Consuming
+
+See [docs/consuming.md](docs/consuming.md) — how to connect an MCP agent
+(Claude Desktop, pi, any stdio client), the HTTP API with curl examples, and
+the CLI. The Drenyra adapter is the reference consumer (observability read +
+mission write + fiscal memory), live-tested against the released binary.
+
 ## Surfaces
 
 - **CLI** — `drenyra-engram <command>`; JSON output, exit codes 0/1/2.
