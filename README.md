@@ -1,10 +1,25 @@
-# Drenyra Engram
+<div align="center">
 
-> **Institutional Accounting Memory** — scope-first memory for companies, fiscal periods, policies, and institutional knowledge.
+<h1>Drenyra Engram</h1>
 
-> **Status: pre-alpha.** The memory engine is being extracted from `arkelythex/Drenyra` (`packages/memory`, `packages/agent-memory`) through vertical slices. Nothing here is production-ready yet.
+<p><strong>Institutional Accounting Memory</strong> — scope-first memory for companies, fiscal periods, policies, and institutional knowledge.</p>
 
-Drenyra Engram is the direct counterpart of Engram, adapted to accounting: persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), local and cloud, over MCP, HTTP, CLI, and TUI.
+<p>
+<a href="https://github.com/arkelythex/drenyra-engram/releases"><img src="https://img.shields.io/github/v/release/arkelythex/drenyra-engram" alt="Release"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+<img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26">
+<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
+<img src="https://img.shields.io/badge/tests-106%20Go%20%2B%2031%20TS-green" alt="Tests">
+</p>
+
+</div>
+
+---
+
+> [!IMPORTANT]
+> **v0.2.0 released** (2026-08-03) — Go engine Phase 2 complete: CLI (11 commands) + MCP (13 tools) + HTTP REST + local sync + chain history. Static binaries for macOS/Linux/Windows; the Go module is go-gettable at `github.com/arkelythex/drenyra-engram@v0.2.0`. See the [release notes](https://github.com/arkelythex/drenyra-engram/releases/tag/v0.2.0) and the [ROADMAP](ROADMAP.md).
+
+Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
 
 ## Critical rule
 

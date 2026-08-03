@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "Go dependencies",
+      "labels": ["dependencies", "go"]
+    },
+    {
+      "matchManagers": ["npm", "bun"],
+      "groupName": "npm dependencies",
+      "labels": ["dependencies", "npm"]
+    },
+    {
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["minor"],
+      "matchManagers": ["npm", "bun"],
+      "automerge": true
+    }
+  ]
+}
