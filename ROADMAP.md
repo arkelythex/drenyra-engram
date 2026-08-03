@@ -27,7 +27,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 - [ ] Slice 4: MCP server + CLI
 - [ ] Drenyra and Drenyra Pi consume the first released version instead of internal implementations
 
-## Phase 2 — Standalone Go engine (ADR-001) — IN PROGRESS
+## Phase 2 — Standalone Go engine (ADR-001) — COMPLETE (v0.2.0 released 2026-08-03)
 
 - [x] **v0.2 foundation:** Go module (`github.com/arkelythex/drenyra-engram`), core types + validators (RUC 11 digits, period YYYYMM), lifecycle machine, SQLite store (modernc.org/sqlite, pure Go — immutable history + schema guards), scope-first search with the MANDATORY cross-tenant isolation property, and the CLI (`save | search | context | doctor`). 40 Go tests green; non-authorization boundary enforced (no authorize/approve/allow commands).
 - [x] CLI polish: `compare`, `review`, `promote`, `supersede` commands (45 Go tests green; compare verdict matrix incl. supersedes-with-source-check)
@@ -37,6 +37,13 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
   relations + audit trail; lifecycle via transition replay; divergent chains
   surfaced with `conflicts_with` relations, never silently resolved; cloud
   deferred per non-goals) — 104 Go tests green
+- [x] Chain history surface (`GET /v1/chain` + `engram_chain` tool) — full
+  revision history per (topicKey, scope); powers the Drenyra fiscal-memory
+  adapter. 106 Go tests green; `go test -race ./...` clean.
+- [x] **Released as v0.2.0** (GitHub release, static binaries for
+  linux/darwin/windows x amd64/arm64, Go module go-gettable). First
+  consumer: Drenyra adapter (observability read + mission write + fiscal
+  memory) live-tested 12/12 against the released binary.
 
 ## Phase 3 — Ecosystem maturity (alpha → beta)
 

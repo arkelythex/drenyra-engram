@@ -7,6 +7,19 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## v0.2.0 — 2026-08-03 (GitHub release)
+
+### Released — Go engine Phase 2 complete (ADR-001)
+
+- **v0.2.0 tag + GitHub release** with static binaries (linux/darwin/windows x
+  amd64/arm64, CGO=0, pure Go) and release notes. The Go module is
+  go-gettable at `github.com/arkelythex/drenyra-engram@v0.2.0`.
+- 106 Go tests green; `go test -race ./...` clean; non-authorization boundary
+  intact; Drenyra adapter live-tested 12/12 against the released binary.
+- Note: the `0.0.1-prealpha.x` npm policy applies to the TypeScript REFERENCE
+  package (unchanged since prealpha.1, destined to be retired per ADR-001).
+  The Go engine ships via the GitHub release, not npm.
+
 ## 0.0.1-prealpha.4 — 2026-08-02
 
 ### Added — Full chain revision history (GET /v1/chain, engram_chain)
