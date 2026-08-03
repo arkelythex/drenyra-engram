@@ -59,6 +59,9 @@ type Store interface {
 	// FindByTopicKey returns the latest revision of the (topicKey, exact scope)
 	// chain, if any.
 	FindByTopicKey(topicKey string, scope core.Scope) (core.Observation, bool)
+	// FindChain returns the FULL revision history of the (topicKey, exact scope)
+	// chain, ordered by revision ascending.
+	FindChain(topicKey string, scope core.Scope) ([]core.Observation, error)
 	// FindByScope returns every stored observation whose scope equals the query
 	// scope (full revision history).
 	FindByScope(scope core.Scope) ([]core.Observation, error)
@@ -475,6 +478,13 @@ func (s *SQLiteStore) ImportTransition(record core.StatusTransitionRecord) (bool
 	if !validAuthorityStatus(record.From) || !validAuthorityStatus(record.To) {
 		return false, errors.New("INVALID_IMPORT: from and to statuses must be known lifecycle states")
 	}
+	// Fail closed on non-adjacent audit records: the source's own log is
+	// adjacent-only (written by ApplyStatusTransition), so a record like
+	// draft -> superseded can only come from a corrupt/crafted source. It is
+	// rejected here so sync never jumps states or fabricates provenance.
+	if !core.IsLegalTransition(record.From, record.To) {
+		return false, fmt.Errorf("INVALID_TRANSITION: %s → %s is not an adjacent legal transition — reject crafted audit record", record.From, record.To)
+	}
 
 	var existing int
 	err := s.db.QueryRow(`
@@ -633,6 +643,15 @@ func (s *SQLiteStore) queryObservations(suffix string, args ...any) ([]core.Obse
 		return nil, err
 	}
 	return observations, nil
+}
+
+// FindChain returns the FULL revision history of a (topicKey, exact scope)
+// chain, ordered by revision ascending — the counterpart of FindByTopicKey
+// (which returns only the latest). The sync path and the HTTP chain surface
+// (GET /v1/chain) use it to serve every revision of a topic key.
+func (s *SQLiteStore) FindChain(topicKey string, scope core.Scope) ([]core.Observation, error) {
+	where, args := chainWhere(topicKey, scope)
+	return s.queryObservations(`WHERE `+where+` ORDER BY revision ASC`, args...)
 }
 
 // chainWhere builds the exact-chain predicate for (topicKey, exact scope).
@@ -847,9 +866,11 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 			return DoctorReport{}, fmt.Errorf("corrupt store: expected table %q is missing: %w", table, err)
 		}
 	}
-	var triggerName string
-	if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'observations_no_delete'`).Scan(&triggerName); err != nil {
-		return DoctorReport{}, fmt.Errorf("corrupt store: immutability trigger missing: %w", err)
+	for _, trigger := range []string{"observations_no_delete", "observations_immutable_content"} {
+		var triggerName string
+		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&triggerName); err != nil {
+			return DoctorReport{}, fmt.Errorf("corrupt store: immutability trigger %q missing: %w", trigger, err)
+		}
 	}
 
 	version, err := readSchemaVersion(s.db)

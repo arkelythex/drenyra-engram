@@ -320,6 +320,14 @@ func ToolCatalog() []map[string]any {
 			}, "topicKey", "scope"),
 		},
 		{
+			"name":        "engram_chain",
+			"description": "Get the FULL revision history of a (topicKey, exact scope) chain, ordered by revision ascending — every revision, not just the current one.",
+			"inputSchema": objectSchema(map[string]any{
+				"topicKey": stringSchema("topic key"),
+				"scope":    scopeSchema(),
+			}, "topicKey", "scope"),
+		},
+		{
 			"name":        "engram_search",
 			"description": "Scope-first search: the scope filter runs BEFORE ranking, so out-of-scope knowledge is never scored. Returns latest revision per chain, ranked by token overlap, with a stale flag for expired observations.",
 			"inputSchema": objectSchema(map[string]any{
@@ -475,6 +483,23 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(observation)), nil
+
+	case "engram_chain":
+		var args struct {
+			TopicKey string     `json:"topicKey"`
+			Scope    core.Scope `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topicKey", args.TopicKey); err != nil {
+			return nil, err
+		}
+		chain, err := m.api.Chain(args.TopicKey, args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(chain)), nil
 
 	case "engram_search":
 		var args struct {

@@ -286,3 +286,36 @@ func TestHTTPBodyTooLarge(t *testing.T) {
 		t.Fatalf("body %q must carry TOO_LARGE", raw)
 	}
 }
+
+// TestHTTPChainFullHistory: GET /v1/chain returns every revision of a
+// (topicKey, exact scope) chain, ascending — the surface the fiscal-memory
+// adapter uses for findById/findRevisions.
+func TestHTTPChainFullHistory(t *testing.T) {
+	ts, api := newTestHTTPServer(t, "")
+	scope := httpScope(testRucA)
+
+	saveOne(t, api, validInput("topic/chain", "C", "v1", scope))
+	saveOne(t, api, validInput("topic/chain", "C", "v2", scope))
+
+	status, raw := httpJSON(t, http.MethodGet,
+		ts.URL+"/v1/chain?topicKey=topic/chain&ruc="+testRucA+"&organizationId="+testOrgID+"&period="+testPeriod, "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", status, raw)
+	}
+	var chain []core.Observation
+	if err := json.Unmarshal([]byte(raw), &chain); err != nil {
+		t.Fatalf("decode chain: %v", err)
+	}
+	if len(chain) != 2 {
+		t.Fatalf("chain has %d revisions, want 2", len(chain))
+	}
+	if chain[0].Content.What != "v1" || chain[1].Content.What != "v2" {
+		t.Fatalf("chain order wrong: %q then %q", chain[0].Content.What, chain[1].Content.What)
+	}
+
+	// Missing topicKey fails closed.
+	status, _ = httpJSON(t, http.MethodGet, ts.URL+"/v1/chain?ruc="+testRucA, "", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing topicKey status = %d, want 400", status)
+	}
+}

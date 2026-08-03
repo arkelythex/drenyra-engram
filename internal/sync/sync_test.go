@@ -549,3 +549,45 @@ func TestSyncSurfacesImmutableConflict(t *testing.T) {
 		t.Fatalf("want one immutable_conflict, got %+v", report.Conflicts)
 	}
 }
+
+// craftedSource is a Source stub whose audit log contains a crafted
+// non-adjacent record — what a corrupt/crafted store file would expose. The
+// public store API can no longer produce it (ImportTransition rejects it).
+type craftedSource struct {
+	observations []core.Observation
+	transitions  []core.StatusTransitionRecord
+}
+
+func (s *craftedSource) List() ([]core.Observation, error) {
+	return s.observations, nil
+}
+
+func (s *craftedSource) Relations() ([]core.RelationRecord, error) {
+	return nil, nil
+}
+
+func (s *craftedSource) TransitionLog() ([]core.StatusTransitionRecord, error) {
+	return s.transitions, nil
+}
+
+// TestSyncFailsClosedOnNonAdjacentRecord: a source audit log with a crafted
+// non-adjacent record (draft -> superseded) aborts the sync fail-closed —
+// the store's ImportTransition rejects it and sync never half-applies.
+func TestSyncFailsClosedOnNonAdjacentRecord(t *testing.T) {
+	to := newTestStore(t)
+
+	source := &craftedSource{
+		observations: []core.Observation{},
+		transitions: []core.StatusTransitionRecord{{
+			ObservationID: "obs-crafted",
+			From:          core.StatusDraft,
+			To:            core.StatusSuperseded,
+			Actor:         "crafted",
+			Timestamp:     "2026-01-15T12:00:00Z",
+		}},
+	}
+
+	if _, err := Sync(source, to, Options{Actor: "test"}); err == nil {
+		t.Fatal("sync must fail closed on a crafted non-adjacent audit record")
+	}
+}
