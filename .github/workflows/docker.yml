@@ -28,7 +28,7 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_latest_tag}}
+            type=raw,value=latest
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@5b9cf3909b54a280b6df6eee035755eb1f2fd611 # v4.2.0
