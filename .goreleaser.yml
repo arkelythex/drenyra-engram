@@ -49,7 +49,7 @@ sboms:
   - id: spdx
     artifacts: binary
     documents:
-      - "${artifact}.spdx.json"
+      - "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.spdx.json"
     cmd: syft
     args:
       - "$artifact"
