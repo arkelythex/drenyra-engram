@@ -2,8 +2,11 @@ name: Release
 
 # Automates the Go engine release (RELEASING.md): on every v* tag,
 # builds cross-platform static binaries, attaches SPDX SBOMs and SHA-256
-# checksums, and records SLSA attestations (provenance) for supply-chain
-# review. Runs in the private repo; all artifacts stay private.
+# checksums. Runs in the private repo; all artifacts stay private.
+# SLSA attestations (actions/attest-build-provenance) are intentionally
+# omitted: GitHub requires a paid plan for that feature on private repos.
+# SBOMs + checksums are the audit evidence; revisit attestations if/when
+# the org moves to a paid plan.
 
 on:
   push:
@@ -11,8 +14,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  attestations: write
 
 jobs:
   release:
@@ -43,7 +44,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Attest build provenance (linux/amd64)
-        uses: actions/attest-build-provenance@e3fe62ef559997059fe8380e7d2b4c909e2d65f4 # v4.1.1
-        with:
-          subject-path: dist/drenyra-engram_linux_amd64_v1/drenyra-engram
