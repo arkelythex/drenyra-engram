@@ -1,8 +1,9 @@
 # Releasing — Drenyra Engram
 
-> **Last updated:** 2026-08-01.
+> **Last updated:** 2026-08-03.
 
 > Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; version/sequence numbers are JSON integers, never floats.
+> **Private product policy:** Drenyra and its ecosystem are **private, commercial**. Repos stay private, images publish to private GHCR, and releases never ship public artifacts. See `docs/architecture/private-product-policy.md` (Drenyra) for the full policy.
 
 ## Version policy
 
@@ -16,12 +17,24 @@
 
 ## Release process (Go engine)
 
+Releases are **automated** (`.github/workflows/release.yml`, goreleaser). On every `v*` tag push:
+
 1. Merge the feature PRs to `main` (CI must be green: Go build/vet/test/race + TS typecheck/test/package).
 2. `git tag -a v0.X.Y -m "<notes>" origin/main && git push origin v0.X.Y`.
-3. Cross-compile static binaries (`CGO_ENABLED=0`): linux/darwin/windows x amd64/arm64.
-4. `gh release create v0.X.Y --title "..." --notes-file <notes> <binaries...>`.
+3. The **Release** workflow builds cross-platform static binaries (`CGO_ENABLED=0`), attaches **SPDX SBOMs** per binary, a **checksums.txt** (SHA-256), and records **SLSA build provenance** attestations.
+4. `gh release create` is handled by goreleaser (draft=false for tagged releases).
 5. Update `ROADMAP.md` and `CHANGELOG.md` with the release entry.
 
+### Audit-trail surface (supply-chain review)
+
+Every release ships, for procurement/audit review:
+
+- **Binaries** — linux/darwin/windows × amd64/arm64, static, `-trimpath`.
+- **checksums.txt** — SHA-256 of every artifact; verify with `sha256sum -c`.
+- **SBOMs** — `*.spdx.json` per binary (syft); the bill of materials answers "what is in this engine?" for compliance review.
+- **SLSA provenance** — build provenance attestations recorded via `actions/attest-build-provenance` (repo: `arkelythex/drenyra-engram`).
+
+These artifacts stay **private** (private repo + private release). They are evidence for clients under NDA, never public downloads.
 
 ## Release checklist
 
