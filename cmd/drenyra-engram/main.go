@@ -40,6 +40,7 @@ import (
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/server"
 	"github.com/arkelythex/drenyra-engram/internal/store"
+	"github.com/arkelythex/drenyra-engram/internal/sync"
 )
 
 // cliOrganizationID is the fixed organization identity of the CLI surface in
@@ -76,6 +77,8 @@ func run(args []string) int {
 		return cmdMCP(args[1:])
 	case "serve":
 		return cmdServe(args[1:])
+	case "sync":
+		return cmdSync(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -470,6 +473,58 @@ func tokenSuffix(token string) string {
 	return " (bearer token required)"
 }
 
+// ──────────────────────────────────────────────
+// sync — additive, conflict-visible store reconciliation
+// ──────────────────────────────────────────────
+
+// cmdSync reconciles one store into another (docs/architecture.md sync
+// semantics: additive, provenance-preserving, conflict-visible). It imports the
+// source's full revision history, relations and lifecycle audit trail into the
+// sink, replays transitions through the lifecycle machine, and SURFACES
+// divergence (conflicts_with relations + report entries) — it never deletes,
+// overwrites, or silently resolves anything. Re-running the same pair is a
+// no-op. Cloud is out of scope (ROADMAP non-goals); this operates on local
+// store files.
+func cmdSync(args []string) int {
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	fromPath := fs.String("from", "", "REQUIRED source SQLite database path")
+	toPath := fs.String("to", "", "REQUIRED target SQLite database path")
+	actor := fs.String("actor", "cli", "actor recorded on conflict relations (default cli)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram sync --from <src-db> --to <dst-db> [--actor <name>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--from": true, "--to": true, "--actor": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || *fromPath == "" || *toPath == "" {
+		fs.Usage()
+		return 2
+	}
+
+	from, err := store.Open(*fromPath)
+	if err != nil {
+		return fail("open source store: %v", err)
+	}
+	defer func() { _ = from.Close() }()
+	to, err := store.Open(*toPath)
+	if err != nil {
+		return fail("open target store: %v", err)
+	}
+	defer func() { _ = to.Close() }()
+
+	report, err := sync.Sync(from, to, sync.Options{
+		Actor:     *actor,
+		Timestamp: nowISO(),
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(report)
+}
+
 // nowISO is the CLI's event timestamp: current UTC time in RFC3339, which the
 // core timestamp grammar accepts (contracts/provenance.md rule 3: every state
 // traces to actor+time).
@@ -558,6 +613,7 @@ Usage:
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
   drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
   drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
+  drenyra-engram sync --from <src-db> --to <dst-db> [--actor <name>]
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)

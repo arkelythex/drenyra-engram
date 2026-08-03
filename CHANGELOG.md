@@ -7,6 +7,40 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## 0.0.1-prealpha.3 — 2026-08-02
+
+### Added — Local/cloud sync (ADR-001 v0.2, Phase 2 complete)
+
+- **`drenyra-engram sync --from <src-db> --to <dst-db>`** — additive,
+  provenance-preserving, conflict-visible reconciliation
+  (docs/architecture.md sync semantics). Imports the source's FULL revision
+  history, relations and lifecycle audit trail into the sink with original
+  ids, revisions and provenance (store `ImportObservation`/`TransitionExists`
+  — verbatim, validated, idempotent; never a re-save that would fabricate
+  ids). Lifecycle propagates via TRANSITION REPLAY through the lifecycle
+  machine (the imported audit record is the row — nothing is duplicated).
+- **Conflict-visible, never silently resolved**: divergent (topicKey, scope)
+  chain heads are preserved in BOTH stores and linked with a `conflicts_with`
+  relation plus a report entry; an id existing with different immutable bytes
+  is skipped (IMPORT_CONFLICT surfaced); an illegal transition replay is
+  reported. Re-running the same pair is a no-op.
+- Cloud is out of scope (ROADMAP non-goals — deferred to drenyra-cloud); this
+  closes Phase 2 of the standalone Go engine.
+- Corrected during review (fresh-eyes verification found two real bugs,
+  fixed with regression tests): (1) a first full sync into an empty sink
+  imported observations at their final status, making earlier audit records
+  look "backward" — phantom transition conflicts on every run and an empty
+  sink audit trail; sync now imports records verbatim and converges status
+  FORWARD-ONLY (log-less, because the imported record IS the audit row), so
+  the trail is complete with no duplication. (2) a LAGGING sink (source
+  advanced the chain after a prior sync) was misreported as a divergent
+  conflict with a permanent conflicts_with relation; divergence is now only
+  detected when the sink's head is NOT an ancestor in the source's chain.
+- 13 new Go tests (sync engine 12, CLI smoke 1) — total 100 Go tests green;
+  build + vet + gofmt clean; live smoke: A→B round trip, idempotent re-run,
+  full-lifecycle one-shot sync (0 phantom conflicts), fast-forward (0 false
+  conflicts), divergent-chain conflict surfaced with conflicts_with relation.
+
 ## 0.0.1-prealpha.2 — 2026-08-02
 
 ### Added — MCP + HTTP surfaces (ADR-001 v0.2, Phase 2)

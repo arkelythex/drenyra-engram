@@ -74,6 +74,14 @@ core/ store/        TypeScript reference implementation (pre-Go, retired by pari
   `Authorization: Bearer <token>`. Error envelope:
   `{"error": {"code", "message"}}` with statuses 400/404/409/500.
 
+- **Sync** — `drenyra-engram sync --from <src-db> --to <dst-db>` reconciles two
+  local stores additively: full revision history, relations and the lifecycle
+  audit trail cross with original ids/provenance; status propagates via
+  transition replay. Divergence is **surfaced, never silently resolved**:
+  divergent chain heads are preserved in both stores and linked with a
+  `conflicts_with` relation plus a report entry. Re-running the same pair is a
+  no-op. Cloud sync is deferred (ROADMAP non-goals).
+
 ### Scope across surfaces
 
 The CLI and HTTP identify a company by RUC and **derive** `companyId` from it

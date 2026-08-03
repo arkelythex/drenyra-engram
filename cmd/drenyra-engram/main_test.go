@@ -748,3 +748,75 @@ func TestCLIMCPSurfacesHelp(t *testing.T) {
 		}
 	})
 }
+
+// ──────────────────────────────────────────────
+// sync surface
+// ──────────────────────────────────────────────
+
+// TestCLISyncRoundTrip: save into dbA, sync A→B, and the target store serves
+// the observation (context via the CLI) with its original identity. A second
+// sync is a no-op.
+func TestCLISyncRoundTrip(t *testing.T) {
+	dbA := filepath.Join(t.TempDir(), "a.db")
+	dbB := filepath.Join(t.TempDir(), "b.db")
+
+	// Seed A through the CLI.
+	stdout, stderr, code := runCLI(t, "save", fixturePath(t, "a.json"), "--db", dbA)
+	if code != 0 {
+		t.Fatalf("save A failed (exit %d): %s", code, stderr)
+	}
+	var saved struct {
+		Observation struct {
+			Identity struct {
+				ID string `json:"id"`
+			} `json:"identity"`
+		} `json:"observation"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &saved); err != nil {
+		t.Fatalf("save output not JSON: %v", err)
+	}
+
+	// Sync A → B.
+	stdout, stderr, code = runCLI(t, "sync", "--from", dbA, "--to", dbB)
+	if code != 0 {
+		t.Fatalf("sync failed (exit %d): %s", code, stderr)
+	}
+	var report struct {
+		ObservationsImported int                     `json:"observationsImported"`
+		ObservationsSkipped  int                     `json:"observationsSkipped"`
+		Conflicts            []struct{ Kind string } `json:"conflicts"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("sync output not JSON: %v\n%s", err, stdout)
+	}
+	if report.ObservationsImported != 1 || len(report.Conflicts) != 0 {
+		t.Fatalf("report = %+v, want 1 imported, 0 conflicts", report)
+	}
+
+	// B serves the synced observation with its ORIGINAL id.
+	stdout, stderr, code = runCLI(t, "context", cliRucA, "--period", "202401", "--db", dbB)
+	if code != 0 {
+		t.Fatalf("context B failed (exit %d): %s", code, stderr)
+	}
+	if !strings.Contains(stdout, saved.Observation.Identity.ID) {
+		t.Fatalf("context B must serve the original id %s: %s", saved.Observation.Identity.ID, stdout)
+	}
+
+	// Second sync: idempotent no-op.
+	stdout, stderr, code = runCLI(t, "sync", "--from", dbA, "--to", dbB)
+	if code != 0 {
+		t.Fatalf("second sync failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("second sync output not JSON: %v", err)
+	}
+	if report.ObservationsImported != 0 || report.ObservationsSkipped != 1 {
+		t.Fatalf("second report = %+v, want 0 imported, 1 skipped (idempotent)", report)
+	}
+
+	// Missing required flags → usage error.
+	_, _, code = runCLI(t, "sync", "--from", dbA)
+	if code != 2 {
+		t.Fatalf("sync missing --to exit = %d, want 2", code)
+	}
+}
