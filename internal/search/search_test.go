@@ -209,8 +209,8 @@ func TestSearchUsesOnlyLatestRevisionPerChain(t *testing.T) {
 	})
 	save(t, s, core.SaveInput{
 		TopicKey: "tax.igv.rate", Title: "IGV base rate (updated)", Type: "policy",
-		Scope: companyScope(testRucA),
-		Content: core.Content{What: "IGV base rate is 18 percent since 2011", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
+		Scope:      companyScope(testRucA),
+		Content:    core.Content{What: "IGV base rate is 18 percent since 2011", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
 		Provenance: testProvenance,
 	})
 

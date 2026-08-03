@@ -185,11 +185,11 @@ type RelationMeta struct {
 
 // RelationRecord is a recorded relation between two observations.
 type RelationRecord struct {
-	FromID    string `json:"fromId"`
-	ToID      string `json:"toId"`
+	FromID    string   `json:"fromId"`
+	ToID      string   `json:"toId"`
 	Relation  Relation `json:"relation"`
-	Actor     string  `json:"actor,omitempty"`
-	Timestamp string  `json:"timestamp,omitempty"`
+	Actor     string   `json:"actor,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
 }
 
 // StatusTransitionRecord is one entry of the lifecycle audit trail
