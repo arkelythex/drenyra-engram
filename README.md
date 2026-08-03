@@ -43,25 +43,47 @@ drenyra-engram review
 drenyra-engram promote
 drenyra-engram supersede
 drenyra-engram doctor
+drenyra-engram mcp     # MCP server over stdio (agents)
+drenyra-engram serve   # HTTP REST /v1 + MCP /mcp (127.0.0.1)
 ```
 
-## Layout
+## Layout (Go engine)
 
 ```text
-cmd/drenyra-engram  CLI entrypoint
-core/               Core memory model (observations, topics, relations)
-store/              Persistence (local, cloud)
-search/             Scope-first search
-relations/          Relation graph
-lifecycle/          Lifecycle states (draft → reviewed → promoted → superseded)
-authority/          Provenance and audit metadata
-sync/               Local/cloud sync semantics
-cloud/              Cloud backend
-mcp/                MCP server
-http/               HTTP API
-tui/                Terminal UI
-clients/            Language clients
+cmd/drenyra-engram  CLI entrypoint (save/search/context/doctor/compare/review/promote/supersede/mcp/serve)
+internal/core       Core memory model, lifecycle machine, validators
+internal/store      SQLite store (pure Go, immutable history)
+internal/search     Scope-first search
+internal/server     Shared domain services + MCP (JSON-RPC) + HTTP REST adapters
+contracts/          Frozen-for-0.1 contract set (memory, scope, lifecycle, provenance)
+core/ store/        TypeScript reference implementation (pre-Go, retired by parity)
 ```
+
+## Surfaces
+
+- **CLI** — `drenyra-engram <command>`; JSON output, exit codes 0/1/2.
+- **MCP** — `drenyra-engram mcp` serves the Model Context Protocol over stdio
+  (12 `engram_*` tools: save/get/get_by_topic/search/context/compare/doctor/
+  review/promote/supersede/relations/transitions); also available as
+  `POST /mcp` on the HTTP port. The tool catalog has no authorize/approve/allow
+  tool — memory never authorizes.
+- **HTTP** — `drenyra-engram serve --addr 127.0.0.1:8787 [--token <secret>]`
+  exposes REST `/v1/*` (observations, topic, search, context, compare,
+  lifecycle, relations, transitions, doctor) bound to localhost by default;
+  when a token is configured every request must present
+  `Authorization: Bearer <token>`. Error envelope:
+  `{"error": {"code", "message"}}` with statuses 400/404/409/500.
+
+### Scope across surfaces
+
+The CLI and HTTP identify a company by RUC and **derive** `companyId` from it
+(`companyId = ruc`) — `search`/`context` on those surfaces only see
+observations saved with that derived scope. MCP accepts the **full scope** in
+arguments (`organizationId`, `companyId`, `ruc`, `period`), so an MCP client
+saving with a custom `companyId` creates memory that CLI/HTTP derived-scope
+queries will not surface (exact-scope semantics, fail-closed direction). Save
+company memory through the surface you intend to query it from, or keep
+`companyId = ruc` for cross-surface visibility.
 
 ## Ecosystem
 

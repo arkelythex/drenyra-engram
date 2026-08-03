@@ -31,12 +31,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
+	"github.com/arkelythex/drenyra-engram/internal/server"
 	"github.com/arkelythex/drenyra-engram/internal/store"
 )
 
@@ -70,6 +72,10 @@ func run(args []string) int {
 		return cmdPromote(args[1:])
 	case "supersede":
 		return cmdSupersede(args[1:])
+	case "mcp":
+		return cmdMCP(args[1:])
+	case "serve":
+		return cmdServe(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -245,26 +251,10 @@ func cmdDoctor(args []string) int {
 // compare — identity / scope / content deltas + relation verdict
 // ──────────────────────────────────────────────
 
-// compareOutput is the JSON shape of the compare command.
-type compareOutput struct {
-	IDA             string               `json:"idA"`
-	IDB             string               `json:"idB"`
-	IdentityMatch   bool                 `json:"identityMatch"`
-	ScopeMatch      string               `json:"scopeMatch"`
-	StatusA         core.AuthorityStatus `json:"statusA"`
-	StatusB         core.AuthorityStatus `json:"statusB"`
-	ContentDeltas   contentDeltas        `json:"contentDeltas"`
-	RelationVerdict string               `json:"relationVerdict"`
-}
-
-// contentDeltas flags which of the four structured fields differ between the
-// two observations (contracts/memory.md rule 1: What/Why/Where/Learned).
-type contentDeltas struct {
-	What    bool `json:"what"`
-	Why     bool `json:"why"`
-	Where   bool `json:"where"`
-	Learned bool `json:"learned"`
-}
+// compareOutput mirrors server.CompareOutput on the CLI surface (same JSON
+// shape, same verdict semantics — the CLI delegates to the shared domain
+// services so MCP/HTTP/CLI verdicts stay byte-identical).
+type compareOutput = server.CompareOutput
 
 func cmdCompare(args []string) int {
 	fs := flag.NewFlagSet("compare", flag.ContinueOnError)
@@ -288,83 +278,20 @@ func cmdCompare(args []string) int {
 	}
 	defer func() { _ = st.Close() }()
 
-	a, ok := st.FindByID(rest[0])
-	if !ok {
-		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
+	api := server.New(st, "cli")
+	output, err := api.Compare(rest[0], rest[1])
+	if err != nil {
+		return fail("%v", err)
 	}
-	b, ok := st.FindByID(rest[1])
-	if !ok {
-		return fail("OBSERVATION_NOT_FOUND: %s", rest[1])
-	}
-
-	identityMatch := a.Identity.ID == b.Identity.ID || a.Identity.TopicKey == b.Identity.TopicKey
-
-	return emit(compareOutput{
-		IDA:             a.Identity.ID,
-		IDB:             b.Identity.ID,
-		IdentityMatch:   identityMatch,
-		ScopeMatch:      compareScopeMatch(a.Scope, b.Scope),
-		StatusA:         a.AuthorityStatus,
-		StatusB:         b.AuthorityStatus,
-		ContentDeltas:   compareContentDeltas(a.Content, b.Content),
-		RelationVerdict: compareRelationVerdict(st, a, b, identityMatch),
-	})
-}
-
-// compareScopeMatch reports how two scopes relate: "exact" (equal scope per
-// core.ScopeEquals — period participates in equality), "partial" (same
-// company/RUC with a different organization or period) or "none" otherwise.
-func compareScopeMatch(a, b core.Scope) string {
-	if core.ScopeEquals(a, b) {
-		return "exact"
-	}
-	if a.Kind == core.ScopeKindCompany && b.Kind == core.ScopeKindCompany &&
-		a.CompanyID == b.CompanyID && a.RUC == b.RUC &&
-		(a.OrganizationID != b.OrganizationID || a.Period != b.Period) {
-		return "partial"
-	}
-	return "none"
-}
-
-func compareContentDeltas(a, b core.Content) contentDeltas {
-	return contentDeltas{
-		What:    a.What != b.What,
-		Why:     a.Why != b.Why,
-		Where:   a.Where != b.Where,
-		Learned: a.Learned != b.Learned,
-	}
-}
-
-// compareRelationVerdict decides how the two observations relate:
-//   - "supersedes" — the relations table records A→B as `supersedes` AND A (the
-//     superseded source) is stored as superseded — a completed supersede pair.
-//     The successor B is typically draft/promoted, never superseded itself.
-//   - "related" — the observations share a topicKey;
-//   - "not_conflict" — otherwise.
-//
-// The supersedes check runs first so a completed supersede pair wins over the
-// weaker shared-topicKey signal.
-func compareRelationVerdict(st store.Store, a, b core.Observation, identityMatch bool) string {
-	if rel, ok := st.RelationBetween(a.Identity.ID, b.Identity.ID); ok && rel == string(core.RelationSupersedes) && a.AuthorityStatus == core.StatusSuperseded {
-		return "supersedes"
-	}
-	if identityMatch {
-		return "related"
-	}
-	return "not_conflict"
+	return emit(output)
 }
 
 // ──────────────────────────────────────────────
 // review / promote — adjacent-forward status transitions
 // ──────────────────────────────────────────────
 
-// transitionOutput is the JSON shape of review and promote.
-type transitionOutput struct {
-	ID       string               `json:"id"`
-	From     core.AuthorityStatus `json:"from"`
-	To       core.AuthorityStatus `json:"to"`
-	Revision int                  `json:"revision"`
-}
+// transitionOutput mirrors server.TransitionOutput on the CLI surface.
+type transitionOutput = server.TransitionOutput
 
 func cmdReview(args []string) int {
 	return cmdStatusTransition("review", core.StatusReviewed, args)
@@ -375,9 +302,9 @@ func cmdPromote(args []string) int {
 }
 
 // cmdStatusTransition implements review/promote: a single adjacent-forward
-// status transition. The observation is read first so the output can report the
-// pre-transition status; the transition itself is atomic and fails closed on
-// illegal moves (internal/core/lifecycle.go), leaving the observation unchanged.
+// status transition via the shared domain services. The transition is atomic
+// and fails closed on illegal moves (internal/core/lifecycle.go), leaving the
+// observation unchanged.
 func cmdStatusTransition(name string, to core.AuthorityStatus, args []string) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
@@ -403,36 +330,25 @@ func cmdStatusTransition(name string, to core.AuthorityStatus, args []string) in
 	}
 	defer func() { _ = st.Close() }()
 
-	before, ok := st.FindByID(rest[0])
-	if !ok {
-		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
+	api := server.New(st, "cli")
+	var output transitionOutput
+	if to == core.StatusReviewed {
+		output, err = api.Review(rest[0], *actor)
+	} else {
+		output, err = api.Promote(rest[0], *actor)
 	}
-	updated, err := core.ApplyTransition(st, rest[0], to, core.TransitionMeta{
-		Actor:     *actor,
-		Timestamp: nowISO(),
-	})
 	if err != nil {
 		return fail("%v", err)
 	}
-	return emit(transitionOutput{
-		ID:       updated.Identity.ID,
-		From:     before.AuthorityStatus,
-		To:       updated.AuthorityStatus,
-		Revision: updated.Revision,
-	})
+	return emit(output)
 }
 
 // ──────────────────────────────────────────────
 // supersede — promoted → superseded with a REQUIRED target
 // ──────────────────────────────────────────────
 
-// supersedeOutput is the JSON shape of the supersede command.
-type supersedeOutput struct {
-	ID       string               `json:"id"`
-	From     core.AuthorityStatus `json:"from"`
-	To       core.AuthorityStatus `json:"to"`
-	TargetID string               `json:"targetId"`
-}
+// supersedeOutput mirrors server.SupersedeOutput on the CLI surface.
+type supersedeOutput = server.SupersedeOutput
 
 func cmdSupersede(args []string) int {
 	fs := flag.NewFlagSet("supersede", flag.ContinueOnError)
@@ -460,26 +376,98 @@ func cmdSupersede(args []string) int {
 	}
 	defer func() { _ = st.Close() }()
 
-	before, ok := st.FindByID(rest[0])
-	if !ok {
-		return fail("OBSERVATION_NOT_FOUND: %s", rest[0])
-	}
-	updated, err := core.Supersede(core.SupersedeInput{
-		Store:         st,
-		ObservationID: rest[0],
-		TargetID:      *target,
-		Actor:         *actor,
-		Timestamp:     nowISO(),
-	})
+	api := server.New(st, "cli")
+	output, err := api.Supersede(rest[0], *target, *actor)
 	if err != nil {
 		return fail("%v", err)
 	}
-	return emit(supersedeOutput{
-		ID:       updated.Identity.ID,
-		From:     before.AuthorityStatus,
-		To:       updated.AuthorityStatus,
-		TargetID: *target,
-	})
+	return emit(output)
+}
+
+// ──────────────────────────────────────────────
+// mcp — Model Context Protocol server over stdio (agents)
+// ──────────────────────────────────────────────
+
+// cmdMCP runs the MCP stdio server (newline-delimited JSON-RPC over stdin/
+// stdout) — the agent transport (Claude Desktop, pi, etc.). It serves until
+// stdin closes. The non-authorization boundary applies: the tool catalog has
+// no authorize/approve/allow tool.
+func cmdMCP(args []string) int {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram mcp [--db <path>]") }
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "mcp")
+	mcp := server.NewMCPServer(api)
+	if err := mcp.ServeStdio(os.Stdin, os.Stdout); err != nil {
+		return fail("mcp stdio: %v", err)
+	}
+	return 0
+}
+
+// ──────────────────────────────────────────────
+// serve — HTTP server (REST /v1 + MCP /mcp)
+// ──────────────────────────────────────────────
+
+// cmdServe runs the local HTTP server: the REST /v1 surface and the MCP
+// streamable-HTTP JSON endpoint (/mcp). It binds 127.0.0.1 by default (fail
+// closed — a memory engine for local agents, not a public service) and, when a
+// token is configured, requires Authorization: Bearer <token> on every request.
+func cmdServe(args []string) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	addr := fs.String("addr", "127.0.0.1:8787", "listen address (default 127.0.0.1:8787)")
+	token := fs.String("token", os.Getenv("DRENYRA_ENGRAM_TOKEN"), "bearer token required on every request (default $DRENYRA_ENGRAM_TOKEN, empty = no auth)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--addr": true, "--token": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "http")
+	httpServer := server.NewHTTPServer(api, *token)
+	fmt.Fprintf(os.Stderr, "drenyra-engram: serving on http://%s (db %s)%s\n", *addr, *dbPath, tokenSuffix(*token))
+	if err := http.ListenAndServe(*addr, httpServer.Handler()); err != nil {
+		return fail("serve: %v", err)
+	}
+	return 0
+}
+
+func tokenSuffix(token string) string {
+	if token == "" {
+		return " (no token — localhost only)"
+	}
+	return " (bearer token required)"
 }
 
 // nowISO is the CLI's event timestamp: current UTC time in RFC3339, which the
@@ -568,6 +556,8 @@ Usage:
   drenyra-engram review <id> [--actor <name>] [--db <path>]
   drenyra-engram promote <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
+  drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
+  drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
@@ -576,6 +566,14 @@ Flags:
   --any            match ANY query token (default: match ALL)
   --actor <name>   actor recorded in the audit trail (default cli)
   --target <id>    replacing observation for supersede (REQUIRED)
+  --addr <host:port> listen address for serve (default 127.0.0.1:8787)
+  --token <secret> bearer token for serve (default $DRENYRA_ENGRAM_TOKEN, empty = no auth)
+
+Surfaces: mcp runs the Model Context Protocol server over stdio (newline-
+delimited JSON-RPC) for agent clients; serve runs the local HTTP API (REST
+/v1/* plus the MCP endpoint POST /mcp), bound to 127.0.0.1 by default. Both
+speak the same domain services as the CLI — compare verdicts and lifecycle
+semantics are identical everywhere.
 
 Lifecycle: review/promote/supersede move an observation along the only legal
 chain draft → reviewed → promoted → superseded; supersede records a
