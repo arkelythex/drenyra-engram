@@ -17,6 +17,11 @@
 ---
 
 > [!IMPORTANT]
+> **Private commercial product.** This repository is **private**; releases
+> and container images stay private (GHCR, authenticated pulls). Distribution
+> is contractual, never public. See the Drenyra
+> [Private Product Policy](https://github.com/arkelythex/Drenyra/blob/main/docs/products/private-product-policy.md).
+>
 > **v0.2.0 released** (2026-08-03) — Go engine Phase 2 complete: CLI (11 commands) + MCP (13 tools) + HTTP REST + local sync + chain history. Static binaries for macOS/Linux/Windows; the Go module is go-gettable at `github.com/arkelythex/drenyra-engram@v0.2.0`. See the [release notes](https://github.com/arkelythex/drenyra-engram/releases/tag/v0.2.0) and the [ROADMAP](ROADMAP.md).
 
 Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
