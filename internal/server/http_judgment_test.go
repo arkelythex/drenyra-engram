@@ -391,13 +391,21 @@ func TestHTTPJudgmentWithdrawDifferentProposerDenied(t *testing.T) {
 	}
 }
 
-// TestHTTPJudgmentLegacyJudgeFailClosed: the deprecated caller-declared
-// accounting_judge tool (design §4) fails closed with AUTHENTICATION_REQUIRED
-// as an in-band tool result — the legacy path no longer writes.
-func TestHTTPJudgmentLegacyJudgeFailClosed(t *testing.T) {
+// TestHTTPJudgmentLegacyJudgeToolRemoved: the deprecated caller-declared
+// accounting_judge tool is GONE from the surface (design §4) — absent from the
+// catalog and unknown to the dispatcher (-32601). Caller-supplied authority has
+// no MCP tool; the legacy Go API.Judge path stays compiled but fail-closed
+// (AUTHENTICATION_REQUIRED, covered in api_v2_test.go).
+func TestHTTPJudgmentLegacyJudgeToolRemoved(t *testing.T) {
 	m, api := newTestMCP(t)
 	conflict := saveDemoFact(t, api, "exception/mismatch-002", "Diferencia de saldo",
 		"Diferencia S/ 1,284.30 entre mayor y SIRE", "2026-07-28T00:00:00Z")
+
+	for _, tool := range ToolCatalog() {
+		if name, _ := tool["name"].(string); name == "accounting_judge" {
+			t.Fatal("legacy accounting_judge must be removed from the catalog")
+		}
+	}
 
 	response := call(t, m, 1, "tools/call", map[string]any{
 		"name": "accounting_judge",
@@ -407,21 +415,11 @@ func TestHTTPJudgmentLegacyJudgeFailClosed(t *testing.T) {
 			"actorId":    "maria.torres",
 		},
 	})
-	if response.Error != nil {
-		t.Fatalf("fail-closed legacy judge must be a tool result, not a JSON-RPC error: %+v", response.Error)
-	}
-	var output toolCallOutput
-	if err := json.Unmarshal(response.Result, &output); err != nil {
-		t.Fatalf("decode tool result: %v", err)
-	}
-	if !output.IsError {
-		t.Fatal("isError = false, want true (legacy path fails closed)")
-	}
-	if len(output.Content) == 0 || !strings.Contains(output.Content[0]["text"], "AUTHENTICATION_REQUIRED") {
-		t.Fatalf("error text must carry AUTHENTICATION_REQUIRED: %v", output.Content)
+	if response.Error == nil || response.Error.Code != codeMethodNotFound {
+		t.Fatalf("accounting_judge must be unknown to the dispatcher (-32601), got %+v", response.Error)
 	}
 
-	// Fail-closed means NO write: no decision memory was created.
+	// Removal means NO write: no decision memory was created.
 	if _, err := api.GetByTopic("judgment/"+conflict.Identity.ID, conflict.Scope); err == nil {
 		t.Fatal("legacy Judge must not write a decision memory")
 	}

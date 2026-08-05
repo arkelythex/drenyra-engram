@@ -23,6 +23,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,11 +91,20 @@ func (e *jsonrpcError) Error() string {
 // MCPServer exposes the shared API through the Model Context Protocol.
 type MCPServer struct {
 	api *API
+	// judgmentStore is the atomic judgment surface the adjudication tools
+	// delegate to (one BEGIN IMMEDIATE store operation per transition, v0.4.0
+	// Step 2 design §2). The SQLiteStore satisfies it; a store without the
+	// judgment surface makes the adjudication tools fail closed.
+	judgmentStore JudgmentStore
 }
 
 // NewMCPServer returns an MCP server over the shared API.
 func NewMCPServer(api *API) *MCPServer {
-	return &MCPServer{api: api}
+	m := &MCPServer{api: api}
+	if judgments, ok := api.Store.(JudgmentStore); ok {
+		m.judgmentStore = judgments
+	}
+	return m
 }
 
 // ──────────────────────────────────────────────
@@ -446,14 +456,62 @@ func ToolCatalog() []map[string]any {
 				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
 			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
 		},
+		// ── accounting_judgment_* (v0.4.0 Step 2): the adjudication surface. The
+		// caller-declared accounting_judge tool is GONE (design §4): proposals and
+		// withdrawals carry a provenance-only source (agent|system — NEVER
+		// authority); confirm/reject require an authenticated session binding and
+		// tool arguments NEVER supply identity (design §7).
 		{
-			"name":        "accounting_judge",
-			"description": "Record a PROFESSIONAL adjudication of a conflict (REQUIRES a human actorId): creates an approved decision memory linked to the conflict with an explains relation.",
+			"name":        "accounting_judgment_propose",
+			"description": "Propose an adjudicable judgment over two observations (v0.4.0 Step 2). The proposer source is provenance ONLY (agent|system; a human source is rejected PROPOSAL_UNAUTHORIZED) — it never authorizes. Confirmation/rejection happen through the authenticated confirm/reject tools.",
 			"inputSchema": objectSchema(map[string]any{
-				"conflictId": stringSchema("id of the conflicting memory"),
-				"resolution": stringSchema("the documented professional resolution"),
-				"actorId":    stringSchema("human professional id (REQUIRED)"),
-			}, "conflictId", "resolution", "actorId"),
+				"from_id":        stringSchema("first observation id (required)"),
+				"to_id":          stringSchema("second observation id (required)"),
+				"relation":       enumSchema("the proposable adjudication relation (required)", "supports", "contradicts", "explains", "reconciles", "reverses", "supersedes"),
+				"reason":         stringSchema("the proposer's justification (required)"),
+				"request_id":     stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+				"predecessor_id": stringSchema("id of an existing judgment this proposal corrects (optional)"),
+				"source": objectSchema(map[string]any{
+					"system":     stringSchema("which system produced the proposal (required)"),
+					"actor_id":   stringSchema("actor id (provenance, never authority)"),
+					"actor_kind": enumSchema("agent|system only — a human source is rejected PROPOSAL_UNAUTHORIZED", "agent", "system"),
+					"session":    stringSchema("optional session id"),
+				}, "system", "actor_kind"),
+			}, "from_id", "to_id", "relation", "reason", "request_id", "source"),
+		},
+		{
+			"name":        "accounting_judgment_confirm",
+			"description": "Confirm a proposed judgment with the professional human resolution (v0.4.0 Step 2). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"judgment_id":            stringSchema("judgment id"),
+				"resolution":             stringSchema("the professional human resolution (required)"),
+				"expected_judgment_hash": stringSchema("the proposed judgment hash the adjudicator actually saw (required)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "judgment_id", "resolution", "expected_judgment_hash", "request_id"),
+		},
+		{
+			"name":        "accounting_judgment_reject",
+			"description": "Reject a proposed judgment with a human reason (v0.4.0 Step 2). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"judgment_id":            stringSchema("judgment id"),
+				"reason":                 stringSchema("the human rejection reason (required)"),
+				"expected_judgment_hash": stringSchema("the proposed judgment hash the adjudicator actually saw (required)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "judgment_id", "reason", "expected_judgment_hash", "request_id"),
+		},
+		{
+			"name":        "accounting_judgment_withdraw",
+			"description": "Withdraw the caller's OWN proposed judgment (v0.4.0 Step 2). The provenance source must match the original proposer exactly (PROPOSAL_UNAUTHORIZED otherwise) — provenance continuity, never professional authorization.",
+			"inputSchema": objectSchema(map[string]any{
+				"judgment_id": stringSchema("judgment id"),
+				"request_id":  stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+				"source": objectSchema(map[string]any{
+					"system":     stringSchema("which system produced the withdrawal (required)"),
+					"actor_id":   stringSchema("actor id (provenance, never authority)"),
+					"actor_kind": enumSchema("agent|system only", "agent", "system"),
+					"session":    stringSchema("optional session id"),
+				}, "system", "actor_kind"),
+			}, "judgment_id", "request_id", "source"),
 		},
 		{
 			"name":        "accounting_link_evidence",
@@ -908,26 +966,158 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
 			"accounting_approve requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
 
-	case "accounting_judge":
+	// ── adjudication tools (v0.4.0 Step 2, design §7): proposals and
+	// withdrawals carry a provenance-only source; confirm/reject have NO
+	// identity arguments at all and fail closed with AUTHENTICATION_REQUIRED on
+	// this session-less stdio server (exactly like accounting_approve).
+	case "accounting_judgment_propose":
 		var args struct {
-			ConflictID string `json:"conflictId"`
-			Resolution string `json:"resolution"`
-			ActorID    string `json:"actorId"`
+			FromID        string `json:"from_id"`
+			ToID          string `json:"to_id"`
+			Relation      string `json:"relation"`
+			Reason        string `json:"reason"`
+			RequestID     string `json:"request_id"`
+			PredecessorID string `json:"predecessor_id"`
+			Source        struct {
+				System    string `json:"system"`
+				ActorID   string `json:"actor_id"`
+				ActorKind string `json:"actor_kind"`
+				Session   string `json:"session"`
+			} `json:"source"`
 		}
-		if err := decodeArguments(call.Arguments, &args); err != nil {
+		// Strict shape: ANY unknown field — including any caller-supplied
+		// authority (subjectId/roles/assurance) at top level or inside source —
+		// is a malformed argument shape (JSON-RPC -32602), never ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
 			return nil, err
 		}
-		if err := requireParams("conflictId", args.ConflictID); err != nil {
+		if err := requireParams("from_id", args.FromID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("to_id", args.ToID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("relation", args.Relation); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		caller, err := judgmentMCPSource(args.Source.System, args.Source.ActorID, args.Source.ActorKind, args.Source.Session)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		if m.judgmentStore == nil {
+			return errTextContent(auth.New(auth.CodeJudgmentNotFound, "judgment store is not available")), nil
+		}
+		result, err := ProposeJudgment(context.Background(), m.judgmentStore, core.ProposeJudgmentCommand{
+			FromID:        args.FromID,
+			ToID:          args.ToID,
+			Relation:      core.Relation(args.Relation),
+			Reason:        args.Reason,
+			RequestID:     args.RequestID,
+			PredecessorID: args.PredecessorID,
+		}, caller)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
+	case "accounting_judgment_confirm":
+		var args struct {
+			JudgmentID           string `json:"judgment_id"`
+			Resolution           string `json:"resolution"`
+			ExpectedJudgmentHash string `json:"expected_judgment_hash"`
+			RequestID            string `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority (actorId/actorKind/subjectId/roles) — is a malformed
+		// argument shape (JSON-RPC -32602), never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("judgment_id", args.JudgmentID); err != nil {
 			return nil, err
 		}
 		if err := requireParams("resolution", args.Resolution); err != nil {
 			return nil, err
 		}
-		memory, err := m.api.Judge(args.ConflictID, args.Resolution, core.Source{System: "mcp", ActorID: args.ActorID, ActorKind: core.ActorKindHuman})
+		if err := requireParams("expected_judgment_hash", args.ExpectedJudgmentHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may confirm only when the HTTP middleware supplies a bound
+		// principal to the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_judgment_confirm requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_judgment_reject":
+		var args struct {
+			JudgmentID           string `json:"judgment_id"`
+			Reason               string `json:"reason"`
+			ExpectedJudgmentHash string `json:"expected_judgment_hash"`
+			RequestID            string `json:"request_id"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("judgment_id", args.JudgmentID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_judgment_hash", args.ExpectedJudgmentHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_judgment_reject requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_judgment_withdraw":
+		var args struct {
+			JudgmentID string `json:"judgment_id"`
+			RequestID  string `json:"request_id"`
+			Source     struct {
+				System    string `json:"system"`
+				ActorID   string `json:"actor_id"`
+				ActorKind string `json:"actor_kind"`
+				Session   string `json:"session"`
+			} `json:"source"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("judgment_id", args.JudgmentID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		caller, err := judgmentMCPSource(args.Source.System, args.Source.ActorID, args.Source.ActorKind, args.Source.Session)
 		if err != nil {
 			return errTextContent(err), nil
 		}
-		return textContent(mustJSON(memory)), nil
+		if m.judgmentStore == nil {
+			return errTextContent(auth.New(auth.CodeJudgmentNotFound, "judgment store is not available")), nil
+		}
+		result, err := WithdrawJudgment(context.Background(), m.judgmentStore, core.WithdrawJudgmentCommand{
+			JudgmentID: args.JudgmentID,
+			RequestID:  args.RequestID,
+		}, caller)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
 
 	case "accounting_link_evidence":
 		var args struct {
@@ -1049,6 +1239,24 @@ func decodeScope(raw string) (core.Scope, error) {
 		return core.Scope{}, fmt.Errorf("INVALID_SCOPE: %v", err)
 	}
 	return scope, nil
+}
+
+// judgmentMCPSource validates the provenance-only source object of a proposal or
+// withdrawal tool call: a system is required and, when present, the actor kind
+// must be a KNOWN kind. The agent|system-only gate is deliberately NOT enforced
+// here: the service rejects a human (or unknown) proposer with the frozen
+// PROPOSAL_UNAUTHORIZED — the same fail-closed domain decision the HTTP surface
+// produces. The source is provenance continuity, NEVER professional authority
+// (design §3/§7).
+func judgmentMCPSource(system, actorID, actorKind, session string) (core.Source, error) {
+	if strings.TrimSpace(system) == "" {
+		return core.Source{}, errors.New("INVALID_SOURCE: judgment source requires a system")
+	}
+	kind := core.ActorKind(actorKind)
+	if kind != "" && !core.IsValidActorKind(kind) {
+		return core.Source{}, errors.New("INVALID_SOURCE: judgment source actor_kind must be human|agent|system")
+	}
+	return core.Source{System: system, ActorID: actorID, ActorKind: kind, Session: session}, nil
 }
 
 // decodeSource parses a JSON source string; empty falls back to a system actor.
