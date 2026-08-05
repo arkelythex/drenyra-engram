@@ -148,6 +148,64 @@ type WithdrawJudgmentCommand struct {
 }
 
 // ──────────────────────────────────────────────
+// Results — store-boundary outcomes
+// ──────────────────────────────────────────────
+
+// ProposeJudgmentResult is the outcome of an atomic proposal: the created
+// judgment (proposed, decided_at empty) and the idempotency marker. The
+// proposal writes NO judgment event (the frozen events CHECK allows only
+// confirm|reject|withdraw|supersede), so the result carries the entity alone;
+// a same-request retry replays the same judgment with IdempotentReplay=true.
+type ProposeJudgmentResult struct {
+	JudgmentID string            `json:"judgmentId"`
+	Judgment   AccountingJudgment `json:"judgment"`
+	// IdempotentReplay is true when the result was re-derived from the completed
+	// idempotency reservation instead of a fresh proposal.
+	IdempotentReplay bool `json:"idempotentReplay"`
+}
+
+// ConfirmJudgmentResult is the outcome of an atomic confirmation: the confirmed
+// judgment, the immutable confirm event id and the idempotency marker.
+type ConfirmJudgmentResult struct {
+	JudgmentID string `json:"judgmentId"`
+	Judgment   AccountingJudgment `json:"judgment"`
+	// JudgmentEventID is the immutable 'confirm' event written for this decision.
+	JudgmentEventID string `json:"judgmentEventId"`
+	// IdempotentReplay is true when the result was replayed from the completed
+	// idempotency reservation instead of a fresh confirmation.
+	IdempotentReplay bool `json:"idempotentReplay"`
+}
+
+// RejectJudgmentResult is the outcome of an atomic rejection: the rejected
+// judgment (terminal), the immutable 'reject' event id and the idempotency
+// marker. Rejection stores the human reason as the resolution and writes NO
+// observation relation projection.
+type RejectJudgmentResult struct {
+	JudgmentID string `json:"judgmentId"`
+	Judgment   AccountingJudgment `json:"judgment"`
+	// JudgmentEventID is the immutable 'reject' event written for this decision.
+	JudgmentEventID string `json:"judgmentEventId"`
+	// IdempotentReplay is true when the result was replayed from the completed
+	// idempotency reservation instead of a fresh rejection.
+	IdempotentReplay bool `json:"idempotentReplay"`
+}
+
+// WithdrawJudgmentResult is the outcome of an atomic withdrawal: the withdrawn
+// judgment (terminal), the immutable 'withdraw' event id and the idempotency
+// marker. Withdrawal is the proposer's provenance continuity act — it never
+// carries an adjudicator.
+type WithdrawJudgmentResult struct {
+	JudgmentID string `json:"judgmentId"`
+	Judgment   AccountingJudgment `json:"judgment"`
+	// JudgmentEventID is the immutable 'withdraw' event written for this
+	// withdrawal.
+	JudgmentEventID string `json:"judgmentEventId"`
+	// IdempotentReplay is true when the result was replayed from the completed
+	// idempotency reservation instead of a fresh withdrawal.
+	IdempotentReplay bool `json:"idempotentReplay"`
+}
+
+// ──────────────────────────────────────────────
 // Proposable relations
 // ──────────────────────────────────────────────
 

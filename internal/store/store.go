@@ -1936,6 +1936,963 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	return result, nil
 }
 
+// ──────────────────────────────────────────────
+// Atomic judgment adjudication (v0.4.0 Step 2)
+// ──────────────────────────────────────────────
+
+// judgmentColumns is the column list of the v4 judgments table (design §4),
+// mirrored field-for-field by scanJudgment.
+const judgmentColumns = `id, tenant_id, company_id, fiscal_period_id, from_id, to_id, relation, status,
+	proposer_system, proposer_actor_id, proposer_actor_kind, proposer_session, proposal_reason,
+	resolution, policy_version, adjudicator_subject_id, adjudicator_membership_id, adjudicator_roles_json,
+	authentication_method, assurance_level, principal_authenticated_at, predecessor_id, supersedes_id,
+	proposed_at, updated_at, decided_at`
+
+// scanJudgment decodes a judgments row into the core entity. The proposer is
+// reconstructed from the four stored provenance columns ONLY (system, actorId,
+// actorKind, session) — the canonical identity the design compares — so the
+// decoded entity is byte-identical to the entity the store returns from its own
+// constructed results.
+func scanJudgment(rs rowScanner) (core.AccountingJudgment, error) {
+	var (
+		id, tenantID, companyID, fromID, toID, relation, status             string
+		proposerSystem, proposerActorID, proposerActorKind, proposerSession string
+		proposalReason, proposedAt, updatedAt                               string
+	)
+	var (
+		fiscalPeriodID, resolution, policyVersion                  sql.NullString
+		adjSubject, adjMembership, adjRoles, authMethod, assurance sql.NullString
+		authAt, predecessorID, supersedesID, decidedAt             sql.NullString
+	)
+	if err := rs.Scan(
+		&id, &tenantID, &companyID, &fiscalPeriodID, &fromID, &toID, &relation, &status,
+		&proposerSystem, &proposerActorID, &proposerActorKind, &proposerSession, &proposalReason,
+		&resolution, &policyVersion, &adjSubject, &adjMembership, &adjRoles, &authMethod, &assurance, &authAt,
+		&predecessorID, &supersedesID, &proposedAt, &updatedAt, &decidedAt,
+	); err != nil {
+		return core.AccountingJudgment{}, err
+	}
+	j := core.AccountingJudgment{
+		ID:             id,
+		TenantID:       tenantID,
+		CompanyID:      companyID,
+		FiscalPeriodID: fiscalPeriodID.String,
+		FromID:         fromID,
+		ToID:           toID,
+		Relation:       core.Relation(relation),
+		Status:         core.JudgmentStatus(status),
+		Proposer: core.Source{
+			System:    proposerSystem,
+			ActorID:   proposerActorID,
+			ActorKind: core.ActorKind(proposerActorKind),
+			Session:   proposerSession,
+		},
+		ProposalReason: proposalReason,
+		Resolution:     resolution.String,
+		PolicyVersion:  policyVersion.String,
+		PredecessorID:  predecessorID.String,
+		SupersedesID:   supersedesID.String,
+		ProposedAt:     proposedAt,
+		UpdatedAt:      updatedAt,
+		DecidedAt:      decidedAt.String,
+	}
+	if adjSubject.Valid && adjSubject.String != "" {
+		roles := make([]auth.AccountingRole, 0)
+		_ = json.Unmarshal([]byte(adjRoles.String), &roles)
+		j.Adjudicator = &auth.PrincipalSnapshot{
+			SubjectID:            adjSubject.String,
+			MembershipID:         adjMembership.String,
+			Roles:                roles,
+			AuthenticationMethod: auth.AuthenticationMethod(authMethod.String),
+			AssuranceLevel:       auth.AssuranceLevel(assurance.String),
+			AuthenticatedAt:      authAt.String,
+		}
+	}
+	return j, nil
+}
+
+// readJudgment reads one judgment row THROUGH the given connection, so every
+// race-sensitive read of an adjudication stays inside its own transaction.
+func (s *SQLiteStore) readJudgment(ctx context.Context, q connQueryer, id string) (core.AccountingJudgment, bool) {
+	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments WHERE id = ?`, id)
+	j, err := scanJudgment(row)
+	if err != nil {
+		return core.AccountingJudgment{}, false
+	}
+	return j, true
+}
+
+// storedJudgmentResult is the store-private JSON shape stored in
+// judgment_idempotency_keys.result_json for a completed decision (confirm /
+// reject / withdraw): the resulting judgment plus the immutable event id. The
+// IdempotentReplay marker is set at DECODE time, never persisted, so the
+// stored bytes stay the exact original outcome.
+type storedJudgmentResult struct {
+	JudgmentID      string                  `json:"judgmentId"`
+	Judgment        core.AccountingJudgment `json:"judgment"`
+	JudgmentEventID string                  `json:"judgmentEventId"`
+}
+
+// proposerBinding is the canonical identity string of a provenance Source
+// (system NUL actorId NUL actorKind NUL session) — the EXACT identity the
+// design requires for same-proposer supersession and withdrawal (design §3.7):
+// Source is provenance continuity, never professional authority.
+func proposerBinding(caller core.Source) string {
+	return strings.Join([]string{caller.System, caller.ActorID, string(caller.ActorKind), caller.Session}, "\x00")
+}
+
+// proposeJudgmentCommandHash is the canonical idempotency command hash of a
+// proposal: SHA-256 hex of fromId NUL toId NUL relation NUL reason NUL
+// predecessorId. RequestID is the KEY, not part of the payload.
+func proposeJudgmentCommandHash(cmd core.ProposeJudgmentCommand) string {
+	canonical := cmd.FromID + "\x00" + cmd.ToID + "\x00" + string(cmd.Relation) + "\x00" + cmd.Reason + "\x00" + cmd.PredecessorID
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+// decideJudgmentCommandHash is the canonical idempotency command hash of a
+// confirm/reject decision: judgmentId NUL lowercase(expectedHash) NUL
+// resolution — mirroring approveCommandHash.
+func decideJudgmentCommandHash(judgmentID, expectedHash, resolution string) string {
+	canonical := judgmentID + "\x00" + strings.ToLower(expectedHash) + "\x00" + resolution
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+// withdrawJudgmentCommandHash is the canonical idempotency command hash of a
+// withdrawal: SHA-256 hex of the judgment id (a withdrawal has no payload).
+func withdrawJudgmentCommandHash(judgmentID string) string {
+	sum := sha256.Sum256([]byte(judgmentID))
+	return hex.EncodeToString(sum[:])
+}
+
+// ProposeJudgment atomically creates an OPEN proposal over two observations —
+// the proposal half of the adjudication machine (design §3). The caller Source
+// is provenance ONLY (agent|system); it never authorizes. Tenant/company are
+// DERIVED from the observations' scopes, never from caller claims; the
+// (tenant, requestId) reservation makes a same-request retry replay the
+// original proposal while a different payload returns IDEMPOTENCY_CONFLICT and
+// a second open proposal for the tuple returns JUDGMENT_CONFLICT (the partial
+// unique index is the arbiter). A proposal writes NO judgment event: the frozen
+// events CHECK admits only confirm|reject|withdraw|supersede, so the
+// reservation completes with result/event NULL and a replay re-derives the
+// proposal from the (tenant, company, from, to, relation) tuple.
+func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgmentCommand, caller core.Source) (core.ProposeJudgmentResult, error) {
+	// Syntax guards (defense in depth — the service validates first): an
+	// incomplete command, a non-proposable relation or a non-agent/system
+	// proposer fails closed before any lock.
+	if strings.TrimSpace(cmd.FromID) == "" || strings.TrimSpace(cmd.ToID) == "" ||
+		strings.TrimSpace(cmd.Reason) == "" || strings.TrimSpace(cmd.RequestID) == "" {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeMemoryNotFound, "proposal command is incomplete (fromId, toId, reason and requestId are required)")
+	}
+	if !core.IsProposableRelation(cmd.Relation) {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeRelationNotProposable, fmt.Sprintf("relation %q is not proposable (supports|contradicts|explains|reconciles|reverses|supersedes only)", cmd.Relation))
+	}
+	if !core.CanPropose(caller) {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeProposalUnauthorized, "only agents and systems may propose judgments (provenance, never authority)")
+	}
+	if cmd.FromID == cmd.ToID {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeMemoryNotFound, "a judgment requires two DISTINCT observations (fromId and toId must differ)")
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// BEGIN IMMEDIATE is the write intent: the reserved writer lock is taken
+	// before any race-sensitive read (design §3 — one open proposal per tuple).
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := nowISO()
+	commandHash := proposeJudgmentCommandHash(cmd)
+	binding := proposerBinding(caller)
+
+	// 1. Both observations must exist; tenant/company/period are derived from
+	// their scopes (the pair must be coherent: same tenant, same company;
+	// cross-period pairs are allowed and keep fiscal_period_id NULL).
+	from, okFrom := s.readMemoryWithLinks(ctx, conn, cmd.FromID)
+	to, okTo := s.readMemoryWithLinks(ctx, conn, cmd.ToID)
+	if !okFrom || !okTo {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeMemoryNotFound, "a judgment requires two existing observations")
+	}
+	if from.Scope.Kind != core.ScopeKindCompany || to.Scope.Kind != core.ScopeKindCompany {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeCompanyScopeDenied, "institutional observations have no company to adjudicate")
+	}
+	if from.Scope.OrganizationID != to.Scope.OrganizationID {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeTenantScopeMismatch, "judgment observations must belong to the same tenant")
+	}
+	if from.Scope.CompanyID != to.Scope.CompanyID {
+		return core.ProposeJudgmentResult{}, auth.New(auth.CodeCompanyScopeDenied, "judgment observations must belong to the same company")
+	}
+	tenantID, companyID := from.Scope.OrganizationID, from.Scope.CompanyID
+	fiscalPeriod := ""
+	if from.Scope.Period != "" && from.Scope.Period == to.Scope.Period {
+		fiscalPeriod = from.Scope.Period
+	}
+
+	// 2. Idempotency by (tenant, requestId), bound to the exact proposer
+	// identity. A completed reservation replays the original proposal; an
+	// incomplete one (an interrupted attempt) is reused and the open-tuple
+	// index decides below.
+	var storedHash, storedBinding string
+	var storedResultJSON, completedAt sql.NullString
+	err = conn.QueryRowContext(ctx, `
+		SELECT command_hash, actor_binding, result_json, completed_at
+		FROM judgment_idempotency_keys WHERE tenant_id = ? AND request_id = ?`,
+		tenantID, cmd.RequestID,
+	).Scan(&storedHash, &storedBinding, &storedResultJSON, &completedAt)
+	switch {
+	case err == nil:
+		if storedHash != commandHash || storedBinding != binding {
+			return core.ProposeJudgmentResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different proposal or proposer")
+		}
+		if completedAt.Valid {
+			// Replay: re-derive the proposal. The partial unique index
+			// guarantees at most one OPEN proposal for the tuple; if the
+			// original proposal was already decided before the retry, fall back
+			// to the most recent judgment of the tuple (never fabricated data).
+			j, ok := s.readOpenProposal(ctx, conn, tenantID, companyID, cmd.FromID, cmd.ToID, cmd.Relation)
+			if !ok {
+				j, ok = s.readLatestTupleJudgment(ctx, conn, tenantID, companyID, cmd.FromID, cmd.ToID, cmd.Relation)
+			}
+			if !ok {
+				return core.ProposeJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "proposal reservation completed but no judgment row found for the tuple")
+			}
+			return core.ProposeJudgmentResult{JudgmentID: j.ID, Judgment: j, IdempotentReplay: true}, nil
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO judgment_idempotency_keys (tenant_id, request_id, command_hash, actor_binding, result_json, judgment_event_id, created_at, completed_at)
+			VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+			tenantID, cmd.RequestID, commandHash, binding, now,
+		); err != nil {
+			return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: reserve judgment idempotency key: %w", err)
+		}
+	default:
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
+	}
+
+	// 3. The new judgment id is generated BEFORE the predecessor handling so a
+	// same-proposer supersession can route the predecessor to it.
+	id, err := newUUID()
+	if err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: generate judgment id: %w", err)
+	}
+
+	// 4. Predecessor (design §3.7): a predecessor must concern the same pair
+	// and relation; a CONFIRMED predecessor stays current until the correction
+	// confirms (supersession is atomic with confirmation — design §5 step 7); a
+	// PROPOSED predecessor may be superseded IMMEDIATELY but only by the same
+	// proposer identity (which frees the open tuple for the correction);
+	// terminal predecessors never re-open.
+	supersededPred := ""
+	if cmd.PredecessorID != "" {
+		pred, ok := s.readJudgment(ctx, conn, cmd.PredecessorID)
+		if !ok {
+			return core.ProposeJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "predecessor judgment not found: "+cmd.PredecessorID)
+		}
+		if pred.FromID != cmd.FromID || pred.ToID != cmd.ToID || pred.Relation != cmd.Relation {
+			return core.ProposeJudgmentResult{}, auth.New(auth.CodeJudgmentConflict, "a predecessor must concern the same pair and relation")
+		}
+		switch pred.Status {
+		case core.JudgmentConfirmed:
+			// Deferred to confirm time (design §5 step 7).
+		case core.JudgmentProposed:
+			if proposerBinding(pred.Proposer) != binding {
+				return core.ProposeJudgmentResult{}, auth.New(auth.CodeProposalUnauthorized, "a proposed judgment may only be corrected by its own proposer")
+			}
+			// The supersede UPDATE sets predecessor.supersedes_id to the new
+			// judgment, whose row does not exist YET — while the open-tuple
+			// index forbids inserting it before the predecessor closes. SQLite's
+			// defer_foreign_keys postpones ALL FK enforcement of this
+			// transaction to COMMIT, by which time both rows exist. This is
+			// scoped to the one branch that needs the cross-row ordering; every
+			// other FK stays immediate.
+			if _, err := conn.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
+				return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: defer foreign keys: %w", err)
+			}
+			if _, err := s.supersedeProposedPredecessor(ctx, conn, pred, id, cmd.RequestID, now); err != nil {
+				return core.ProposeJudgmentResult{}, err
+			}
+			supersededPred = pred.ID
+		default:
+			return core.ProposeJudgmentResult{}, auth.New(auth.CodeInvalidJudgmentTransition, fmt.Sprintf("a %q predecessor cannot be corrected", pred.Status))
+		}
+	}
+
+	// 5. Insert the proposed row. The partial unique index on
+	// (tenant, company, from, to, relation) WHERE status='proposed' rejects a
+	// second open proposal for the tuple → JUDGMENT_CONFLICT (design §3 rule 6:
+	// another request never silently deduplicates authorship).
+	var predecessorCol any
+	if cmd.PredecessorID != "" {
+		predecessorCol = cmd.PredecessorID
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO judgments (
+			id, tenant_id, company_id, fiscal_period_id, from_id, to_id, relation, status,
+			proposer_system, proposer_actor_id, proposer_actor_kind, proposer_session, proposal_reason,
+			resolution, policy_version, adjudicator_subject_id, adjudicator_membership_id, adjudicator_roles_json,
+			authentication_method, assurance_level, principal_authenticated_at,
+			predecessor_id, supersedes_id, proposed_at, updated_at, decided_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, NULL)`,
+		id, tenantID, companyID, nullableOrNil(fiscalPeriod), cmd.FromID, cmd.ToID, string(cmd.Relation),
+		caller.System, caller.ActorID, string(caller.ActorKind), caller.Session, cmd.Reason,
+		predecessorCol, now, now,
+	); err != nil {
+		if strings.Contains(err.Error(), "uq_judgment_open_tuple") {
+			return core.ProposeJudgmentResult{}, auth.New(auth.CodeJudgmentConflict, "an open proposal already exists for this observation pair and relation")
+		}
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: insert judgment: %w", err)
+	}
+
+	// 6. The supersedes routing row is inserted only now that BOTH judgment
+	// rows exist (FK order): predecessor → successor with relation frozen to
+	// 'supersedes' (design §4 — judgment ids never enter the observation
+	// relations table).
+	if supersededPred != "" {
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO judgment_relations (from_judgment_id, to_judgment_id, relation, actor, timestamp)
+			VALUES (?, ?, 'supersedes', ?, ?)`,
+			supersededPred, id, binding, now,
+		); err != nil {
+			return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: insert supersedes relation: %w", err)
+		}
+	}
+
+	// 7. Complete the reservation. A proposal has NO event (the events CHECK
+	// freezes actions to confirm|reject|withdraw|supersede), so the CHECK
+	// (judgment_event_id IS NULL) = (result_json IS NULL) keeps both NULL and
+	// the completion time is the only change; the replay re-derives the
+	// judgment from the tuple.
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE judgment_idempotency_keys SET completed_at = ? WHERE tenant_id = ? AND request_id = ?`,
+		now, tenantID, cmd.RequestID,
+	); err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: complete judgment idempotency key: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: commit proposal: %w", err)
+	}
+	committed = true
+
+	judgment := core.AccountingJudgment{
+		ID:             id,
+		TenantID:       tenantID,
+		CompanyID:      companyID,
+		FiscalPeriodID: fiscalPeriod,
+		FromID:         cmd.FromID,
+		ToID:           cmd.ToID,
+		Relation:       cmd.Relation,
+		Status:         core.JudgmentProposed,
+		Proposer: core.Source{
+			System:    caller.System,
+			ActorID:   caller.ActorID,
+			ActorKind: caller.ActorKind,
+			Session:   caller.Session,
+		},
+		ProposalReason: cmd.Reason,
+		PredecessorID:  cmd.PredecessorID,
+		ProposedAt:     now,
+		UpdatedAt:      now,
+	}
+	return core.ProposeJudgmentResult{JudgmentID: id, Judgment: judgment, IdempotentReplay: false}, nil
+}
+
+// supersedeProposedPredecessor performs design §3.7's immediate same-proposer
+// supersession: the OLD OPEN proposal (by the same identity) is closed as
+// superseded and routed to the correction, so the open-tuple index accepts it.
+// The immutable 'supersede' event records the closed state; the caller inserts
+// the judgment_relations routing row AFTER the successor judgment exists (FK
+// order). The pure core.SupersedeJudgment helper only covers confirmed→
+// superseded, so the proposed predecessor's routing fields are set directly
+// here (proposed rows are the machine's work area — the trigger allows it).
+func (s *SQLiteStore) supersedeProposedPredecessor(ctx context.Context, q connQueryer, pred core.AccountingJudgment, successorID, requestID, now string) (string, error) {
+	superseded := pred
+	superseded.Status = core.JudgmentSuperseded
+	superseded.SupersedesID = successorID
+	superseded.UpdatedAt = now
+	superseded.DecidedAt = now // schema CHECK: every non-proposed row carries decided_at
+	res, err := q.ExecContext(ctx, `
+		UPDATE judgments SET status = 'superseded', supersedes_id = ?, decided_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'proposed'`,
+		successorID, now, now, pred.ID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("persistence error: supersede proposed predecessor: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("persistence error: supersede proposed predecessor rows affected: %w", err)
+	}
+	if affected != 1 {
+		return "", auth.New(auth.CodeInvalidJudgmentTransition, "guarded predecessor supersession did not match exactly one proposed row")
+	}
+	eventID, err := newUUID()
+	if err != nil {
+		return "", fmt.Errorf("persistence error: generate predecessor event id: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
+		INSERT INTO judgment_events (
+			id, judgment_id, request_id, action, from_status, to_status, judgment_hash,
+			principal_snapshot_json, policy_version, reason, created_at
+		) VALUES (?, ?, ?, 'supersede', 'proposed', 'superseded', ?, NULL, NULL, '', ?)`,
+		eventID, pred.ID, requestID, core.ComputeJudgmentHash(superseded), now,
+	); err != nil {
+		return "", fmt.Errorf("persistence error: insert predecessor supersede event: %w", err)
+	}
+	return eventID, nil
+}
+
+// readOpenProposal returns the OPEN proposal for the tuple — the partial unique
+// index guarantees at most one (design §3 rule 6).
+func (s *SQLiteStore) readOpenProposal(ctx context.Context, q connQueryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
+	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments
+		WHERE tenant_id = ? AND company_id = ? AND from_id = ? AND to_id = ? AND relation = ? AND status = 'proposed'`,
+		tenantID, companyID, fromID, toID, string(relation))
+	j, err := scanJudgment(row)
+	if err != nil {
+		return core.AccountingJudgment{}, false
+	}
+	return j, true
+}
+
+// readLatestTupleJudgment returns the most recent judgment row of the tuple
+// (any status) — the replay fallback when the replayed proposal was already
+// decided before the retry arrived.
+func (s *SQLiteStore) readLatestTupleJudgment(ctx context.Context, q connQueryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
+	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments
+		WHERE tenant_id = ? AND company_id = ? AND from_id = ? AND to_id = ? AND relation = ?
+		ORDER BY rowid DESC LIMIT 1`,
+		tenantID, companyID, fromID, toID, string(relation))
+	j, err := scanJudgment(row)
+	if err != nil {
+		return core.AccountingJudgment{}, false
+	}
+	return j, true
+}
+
+// judgmentDecisionParams carries the shared confirm/reject decision inputs.
+// confirm: Resolution is the professional resolution and both RelationProjection
+// and SupersedePredecessor are true. reject: Resolution is the human reason and
+// both flags stay false (terminal — no relation projection, no supersession).
+type judgmentDecisionParams struct {
+	JudgmentID           string
+	Resolution           string
+	ExpectedJudgmentHash string
+	RequestID            string
+	Action               string // 'confirm' | 'reject' (frozen events CHECK)
+	ToStatus             core.JudgmentStatus
+	RelationProjection   bool // confirm only: compatibility observation relation
+	SupersedePredecessor bool // confirm only: atomic supersession of a confirmed predecessor
+}
+
+// adjudicateJudgment is THE authenticated decision transaction (design §5) —
+// shared by confirm and reject. One BEGIN IMMEDIATE on a dedicated connection:
+// idempotency resolution → locked re-read of the judgment + observations →
+// status gate → fresh hash vs expected → pure frozen policy → guarded status
+// flip → immutable decision event (+ relation projection / predecessor
+// supersession for confirm) → completed reservation → commit. Two concurrent
+// confirms serialize at BEGIN IMMEDIATE: exactly one flips the row; the loser
+// reads the committed status and returns INVALID_JUDGMENT_TRANSITION (or a
+// replay when it carries the winner's identical request id).
+func (s *SQLiteStore) adjudicateJudgment(ctx context.Context, p judgmentDecisionParams, principal auth.VerifiedApprovalPrincipal, policy authz.JudgmentAuthorizationPolicy) (core.AccountingJudgment, string, bool, error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := nowISO()
+	commandHash := decideJudgmentCommandHash(p.JudgmentID, p.ExpectedJudgmentHash, p.Resolution)
+	binding := principal.SubjectID()
+
+	// 1. Idempotency by (principal tenant, requestId), bound to the exact
+	// adjudicator subject: a different command or principal returns
+	// IDEMPOTENCY_CONFLICT; a completed match replays the stored result.
+	var storedHash, storedBinding string
+	var storedResultJSON, completedAt sql.NullString
+	err = conn.QueryRowContext(ctx, `
+		SELECT command_hash, actor_binding, result_json, completed_at
+		FROM judgment_idempotency_keys WHERE tenant_id = ? AND request_id = ?`,
+		principal.TenantID(), p.RequestID,
+	).Scan(&storedHash, &storedBinding, &storedResultJSON, &completedAt)
+	switch {
+	case err == nil:
+		if storedHash != commandHash || storedBinding != binding {
+			return core.AccountingJudgment{}, "", false, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different decision or adjudicator")
+		}
+		if completedAt.Valid {
+			var replay storedJudgmentResult
+			if err := json.Unmarshal([]byte(storedResultJSON.String), &replay); err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: decode replayed judgment result: %w", err)
+			}
+			return replay.Judgment, replay.JudgmentEventID, true, nil
+		}
+		// Incomplete reservation (an interrupted attempt that never committed):
+		// reuse it — the status gate below decides the outcome.
+	case errors.Is(err, sql.ErrNoRows):
+		// 2. Reserve.
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO judgment_idempotency_keys (tenant_id, request_id, command_hash, actor_binding, result_json, judgment_event_id, created_at, completed_at)
+			VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+			principal.TenantID(), p.RequestID, commandHash, binding, now,
+		); err != nil {
+			return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: reserve judgment idempotency key: %w", err)
+		}
+	default:
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
+	}
+
+	// 3. Read the judgment plus both observations on the SAME connection.
+	judgment, ok := s.readJudgment(ctx, conn, p.JudgmentID)
+	if !ok {
+		return core.AccountingJudgment{}, "", false, auth.New(auth.CodeJudgmentNotFound, "judgment not found: "+p.JudgmentID)
+	}
+	for _, obsID := range []string{judgment.FromID, judgment.ToID} {
+		if _, ok := s.readMemoryWithLinks(ctx, conn, obsID); !ok {
+			return core.AccountingJudgment{}, "", false, auth.New(auth.CodeMemoryNotFound, "judgment observation not found: "+obsID)
+		}
+	}
+
+	// 4. Status gate: only a proposed judgment may be decided. A concurrent
+	// loser lands here after the winner commits and sees the new status.
+	if judgment.Status != core.JudgmentProposed {
+		return core.AccountingJudgment{}, "", false, auth.New(auth.CodeInvalidJudgmentTransition, fmt.Sprintf("%s is not legal from status %q", p.Action, judgment.Status))
+	}
+
+	// 5. The reviewed hash is recomputed FRESH from the locked row and compared
+	// against what the adjudicator actually reviewed; a mismatch returns
+	// JUDGMENT_HASH_MISMATCH carrying ONLY expected/actual (design §6).
+	actual := core.ComputeJudgmentHash(judgment)
+	if !strings.EqualFold(strings.TrimSpace(p.ExpectedJudgmentHash), actual) {
+		return core.AccountingJudgment{}, "", false, auth.NewJudgmentHashMismatch(p.ExpectedJudgmentHash, actual, "judgment changed after review; expected hash does not match the current proposed state")
+	}
+
+	// 6. Pure policy in-transaction (tenant → company → membership → role →
+	// assurance); any denial returns its frozen reason code.
+	decision := policy.Authorize(principal, judgment)
+	if !decision.Allowed {
+		return core.AccountingJudgment{}, "", false, auth.New(decision.ReasonCode, "judgment authorization policy denied the "+p.Action+" decision")
+	}
+
+	// 7. Apply the pure machine transition on the snapshot with ONE captured
+	// timestamp; the canonical snapshot carries sorted/deduplicated roles.
+	snapshot := principal.PrincipalSnapshot()
+	resulting := judgment
+	if p.Action == "confirm" {
+		if err := core.ConfirmJudgment(&resulting, p.Resolution, &snapshot, decision.PolicyVersion, now); err != nil {
+			return core.AccountingJudgment{}, "", false, err
+		}
+	} else {
+		if err := core.RejectJudgment(&resulting, p.Resolution, &snapshot, decision.PolicyVersion, now); err != nil {
+			return core.AccountingJudgment{}, "", false, err
+		}
+	}
+
+	rolesJSON, err := json.Marshal(snapshot.Roles)
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: encode adjudicator roles: %w", err)
+	}
+
+	// 8. Guarded UPDATE: exactly one proposed row flips to the target status.
+	res, err := conn.ExecContext(ctx, `
+		UPDATE judgments SET status = ?, resolution = ?, policy_version = ?,
+			adjudicator_subject_id = ?, adjudicator_membership_id = ?, adjudicator_roles_json = ?,
+			authentication_method = ?, assurance_level = ?, principal_authenticated_at = ?,
+			decided_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'proposed'`,
+		string(p.ToStatus), p.Resolution, resulting.PolicyVersion,
+		snapshot.SubjectID, snapshot.MembershipID, string(rolesJSON),
+		string(snapshot.AuthenticationMethod), string(snapshot.AssuranceLevel), snapshot.AuthenticatedAt,
+		now, now, p.JudgmentID,
+	)
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: "+p.Action+" update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: "+p.Action+" rows affected: %w", err)
+	}
+	if affected != 1 {
+		return core.AccountingJudgment{}, "", false, auth.New(auth.CodeInvalidJudgmentTransition, "guarded status update did not match exactly one proposed row")
+	}
+
+	// 9. The immutable decision event; confirm/reject events carry the principal
+	// snapshot and the frozen policy version (events CHECK). The judgment_hash
+	// records the resulting state (the exact hash the confirmed/rejected row
+	// now hashes to).
+	eventID, err := newUUID()
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: generate judgment event id: %w", err)
+	}
+	snapshotJSON, err := json.Marshal(snapshot)
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: encode principal snapshot: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO judgment_events (
+			id, judgment_id, request_id, action, from_status, to_status, judgment_hash,
+			principal_snapshot_json, policy_version, reason, created_at
+		) VALUES (?, ?, ?, ?, 'proposed', ?, ?, ?, ?, ?, ?)`,
+		eventID, p.JudgmentID, p.RequestID, p.Action, string(p.ToStatus),
+		core.ComputeJudgmentHash(resulting), string(snapshotJSON), resulting.PolicyVersion, p.Resolution, now,
+	); err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: insert "+p.Action+" event: %w", err)
+	}
+
+	// 10. Confirm-only: the compatibility observation relation projection
+	// (INSERT ... SELECT ... WHERE NOT EXISTS — observations.relations is a
+	// projection; judgments remain authoritative). Its actor is the verified
+	// subject.
+	if p.RelationProjection {
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO relations (from_id, to_id, relation, actor, timestamp)
+			SELECT ?, ?, ?, ?, ?
+			WHERE NOT EXISTS (SELECT 1 FROM relations WHERE from_id = ? AND to_id = ? AND relation = ?)`,
+			judgment.FromID, judgment.ToID, string(judgment.Relation), snapshot.SubjectID, now,
+			judgment.FromID, judgment.ToID, string(judgment.Relation),
+		); err != nil {
+			return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: insert observation relation projection: %w", err)
+		}
+	}
+
+	// 11. Confirm-only, correction: the predecessor must be confirmed for the
+	// supersession to be atomic with this confirmation (design §5 step 7), or
+	// already superseded by THIS very proposal at propose time (design §3.7);
+	// anything else is an invalid transition.
+	if p.SupersedePredecessor && judgment.PredecessorID != "" {
+		pred, ok := s.readJudgment(ctx, conn, judgment.PredecessorID)
+		if !ok {
+			return core.AccountingJudgment{}, "", false, auth.New(auth.CodeJudgmentNotFound, "predecessor judgment not found: "+judgment.PredecessorID)
+		}
+		switch pred.Status {
+		case core.JudgmentConfirmed:
+			// The superseded predecessor keeps its original decided_at (the
+			// immutability trigger allows ONLY routing-field changes).
+			res, err := conn.ExecContext(ctx, `
+				UPDATE judgments SET status = 'superseded', supersedes_id = ?, updated_at = ?
+				WHERE id = ? AND status = 'confirmed'`,
+				judgment.ID, now, pred.ID,
+			)
+			if err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: supersede predecessor: %w", err)
+			}
+			affected, err := res.RowsAffected()
+			if err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: supersede predecessor rows affected: %w", err)
+			}
+			if affected != 1 {
+				return core.AccountingJudgment{}, "", false, auth.New(auth.CodeInvalidJudgmentTransition, "guarded predecessor supersession did not match exactly one confirmed row")
+			}
+			superseded := pred
+			if err := core.SupersedeJudgment(&superseded, judgment.ID, now); err != nil {
+				return core.AccountingJudgment{}, "", false, err
+			}
+			predEventID, err := newUUID()
+			if err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: generate predecessor event id: %w", err)
+			}
+			if _, err := conn.ExecContext(ctx, `
+				INSERT INTO judgment_events (
+					id, judgment_id, request_id, action, from_status, to_status, judgment_hash,
+					principal_snapshot_json, policy_version, reason, created_at
+				) VALUES (?, ?, ?, 'supersede', 'confirmed', 'superseded', ?, NULL, NULL, ?, ?)`,
+				predEventID, pred.ID, p.RequestID, core.ComputeJudgmentHash(superseded), p.Resolution, now,
+			); err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: insert predecessor supersede event: %w", err)
+			}
+			if _, err := conn.ExecContext(ctx, `
+				INSERT INTO judgment_relations (from_judgment_id, to_judgment_id, relation, actor, timestamp)
+				VALUES (?, ?, 'supersedes', ?, ?)`,
+				pred.ID, judgment.ID, snapshot.SubjectID, now,
+			); err != nil {
+				return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: insert supersedes relation: %w", err)
+			}
+		case core.JudgmentSuperseded:
+			if pred.SupersedesID != judgment.ID {
+				return core.AccountingJudgment{}, "", false, auth.New(auth.CodeInvalidJudgmentTransition, "predecessor is already superseded by a different judgment")
+			}
+			// Already superseded by this very correction at propose time.
+		default:
+			return core.AccountingJudgment{}, "", false, auth.New(auth.CodeInvalidJudgmentTransition, fmt.Sprintf("predecessor status %q cannot be superseded by a correction", pred.Status))
+		}
+	}
+
+	// 12. Complete the reservation (result + event link + completion time — the
+	// CHECK requires result_json and judgment_event_id to be set together) and
+	// commit; the whole decision is one atomic unit.
+	result := storedJudgmentResult{JudgmentID: judgment.ID, Judgment: resulting, JudgmentEventID: eventID}
+	serializedResult, err := json.Marshal(result)
+	if err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: encode "+p.Action+" result: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE judgment_idempotency_keys SET result_json = ?, judgment_event_id = ?, completed_at = ?
+		WHERE tenant_id = ? AND request_id = ?`,
+		string(serializedResult), eventID, now, principal.TenantID(), p.RequestID,
+	); err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: complete judgment idempotency key: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: commit "+p.Action+": %w", err)
+	}
+	committed = true
+	return resulting, eventID, false, nil
+}
+
+// ConfirmJudgment atomically confirms a proposed judgment — the authenticated
+// adjudication act (design §5). It mirrors Step 1's ApproveMemory: dedicated
+// connection, literal BEGIN IMMEDIATE, idempotency reservation, fresh-hash
+// comparison, pure policy, guarded UPDATE, immutable event, and — for a
+// correction — the atomic supersession of the confirmed predecessor. Agents can
+// never reach this method: the signature REQUIRES a verified principal (an
+// agent Source is provenance only and carries no authority).
+func (s *SQLiteStore) ConfirmJudgment(ctx context.Context, cmd core.ConfirmJudgmentCommand, principal auth.VerifiedApprovalPrincipal, policy authz.JudgmentAuthorizationPolicy) (core.ConfirmJudgmentResult, error) {
+	if strings.TrimSpace(cmd.Resolution) == "" {
+		return core.ConfirmJudgmentResult{}, auth.New(auth.CodeResolutionRequired, "confirmation requires a non-empty professional resolution")
+	}
+	if strings.TrimSpace(cmd.JudgmentID) == "" || strings.TrimSpace(cmd.ExpectedJudgmentHash) == "" || strings.TrimSpace(cmd.RequestID) == "" {
+		return core.ConfirmJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "confirm command is incomplete (judgmentId, expectedJudgmentHash and requestId are required)")
+	}
+	j, eventID, replay, err := s.adjudicateJudgment(ctx, judgmentDecisionParams{
+		JudgmentID:           cmd.JudgmentID,
+		Resolution:           cmd.Resolution,
+		ExpectedJudgmentHash: cmd.ExpectedJudgmentHash,
+		RequestID:            cmd.RequestID,
+		Action:               "confirm",
+		ToStatus:             core.JudgmentConfirmed,
+		RelationProjection:   true,
+		SupersedePredecessor: true,
+	}, principal, policy)
+	if err != nil {
+		return core.ConfirmJudgmentResult{}, err
+	}
+	return core.ConfirmJudgmentResult{JudgmentID: j.ID, Judgment: j, JudgmentEventID: eventID, IdempotentReplay: replay}, nil
+}
+
+// RejectJudgment atomically rejects a proposed judgment: the same
+// lock/hash/policy/idempotency path as confirmation, storing the HUMAN reason
+// as the resolution and becoming terminal. It writes NO observation relation
+// projection and performs no supersession (a rejected correction leaves its
+// predecessor current).
+func (s *SQLiteStore) RejectJudgment(ctx context.Context, cmd core.RejectJudgmentCommand, principal auth.VerifiedApprovalPrincipal, policy authz.JudgmentAuthorizationPolicy) (core.RejectJudgmentResult, error) {
+	if strings.TrimSpace(cmd.Reason) == "" {
+		return core.RejectJudgmentResult{}, auth.New(auth.CodeResolutionRequired, "rejection requires a non-empty human reason")
+	}
+	if strings.TrimSpace(cmd.JudgmentID) == "" || strings.TrimSpace(cmd.ExpectedJudgmentHash) == "" || strings.TrimSpace(cmd.RequestID) == "" {
+		return core.RejectJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "reject command is incomplete (judgmentId, expectedJudgmentHash and requestId are required)")
+	}
+	j, eventID, replay, err := s.adjudicateJudgment(ctx, judgmentDecisionParams{
+		JudgmentID:           cmd.JudgmentID,
+		Resolution:           cmd.Reason,
+		ExpectedJudgmentHash: cmd.ExpectedJudgmentHash,
+		RequestID:            cmd.RequestID,
+		Action:               "reject",
+		ToStatus:             core.JudgmentRejected,
+	}, principal, policy)
+	if err != nil {
+		return core.RejectJudgmentResult{}, err
+	}
+	return core.RejectJudgmentResult{JudgmentID: j.ID, Judgment: j, JudgmentEventID: eventID, IdempotentReplay: replay}, nil
+}
+
+// WithdrawJudgment withdraws the caller's OWN proposed judgment (terminal). The
+// SAME exact proposer identity (system+actorId+actorKind+session) is required —
+// mismatch is PROPOSAL_UNAUTHORIZED (provenance continuity, never professional
+// authorization — design §3.7). Idempotency is keyed by (tenant from the
+// judgment, requestId); the schema CHECK requires decided_at on every
+// non-proposed row, so the withdrawal stamps it.
+func (s *SQLiteStore) WithdrawJudgment(ctx context.Context, cmd core.WithdrawJudgmentCommand, caller core.Source) (core.WithdrawJudgmentResult, error) {
+	if strings.TrimSpace(cmd.JudgmentID) == "" || strings.TrimSpace(cmd.RequestID) == "" {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "withdraw command is incomplete (judgmentId and requestId are required)")
+	}
+	if !core.CanPropose(caller) {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeProposalUnauthorized, "only the proposing agent/system may withdraw")
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := nowISO()
+	commandHash := withdrawJudgmentCommandHash(cmd.JudgmentID)
+	binding := proposerBinding(caller)
+
+	// 1. Read the judgment on the locked connection: the tenant for the
+	// idempotency key comes from the judgment, never from caller claims.
+	judgment, ok := s.readJudgment(ctx, conn, cmd.JudgmentID)
+	if !ok {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeJudgmentNotFound, "judgment not found: "+cmd.JudgmentID)
+	}
+
+	// 2. Idempotency by (judgment tenant, requestId), bound to the exact
+	// proposer identity. The resolution runs BEFORE the status/identity gates so
+	// a completed reservation REPLAYS even though the row is already withdrawn
+	// (mirroring ApproveMemory: idempotency first, status gate second).
+	var storedHash, storedBinding string
+	var storedResultJSON, completedAt sql.NullString
+	err = conn.QueryRowContext(ctx, `
+		SELECT command_hash, actor_binding, result_json, completed_at
+		FROM judgment_idempotency_keys WHERE tenant_id = ? AND request_id = ?`,
+		judgment.TenantID, cmd.RequestID,
+	).Scan(&storedHash, &storedBinding, &storedResultJSON, &completedAt)
+	switch {
+	case err == nil:
+		if storedHash != commandHash || storedBinding != binding {
+			return core.WithdrawJudgmentResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or proposer")
+		}
+		if completedAt.Valid {
+			var replay storedJudgmentResult
+			if err := json.Unmarshal([]byte(storedResultJSON.String), &replay); err != nil {
+				return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: decode replayed judgment result: %w", err)
+			}
+			return core.WithdrawJudgmentResult{JudgmentID: replay.JudgmentID, Judgment: replay.Judgment, JudgmentEventID: replay.JudgmentEventID, IdempotentReplay: true}, nil
+		}
+		// Incomplete reservation (an interrupted attempt that never committed):
+		// reuse it — the status gate below decides the outcome.
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO judgment_idempotency_keys (tenant_id, request_id, command_hash, actor_binding, result_json, judgment_event_id, created_at, completed_at)
+			VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+			judgment.TenantID, cmd.RequestID, commandHash, binding, now,
+		); err != nil {
+			return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: reserve judgment idempotency key: %w", err)
+		}
+	default:
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
+	}
+
+	// 3. Only an open proposal may be withdrawn, and only by its OWN proposer
+	// (provenance continuity — never professional authorization, design §3.7).
+	if judgment.Status != core.JudgmentProposed {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeInvalidJudgmentTransition, fmt.Sprintf("withdrawal is not legal from status %q", judgment.Status))
+	}
+	if proposerBinding(judgment.Proposer) != binding {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeProposalUnauthorized, "a judgment may only be withdrawn by its own proposer")
+	}
+
+	// 4. Guarded UPDATE: exactly one proposed row closes as withdrawn; the
+	// schema CHECK requires decided_at here.
+	res, err := conn.ExecContext(ctx, `
+		UPDATE judgments SET status = 'withdrawn', decided_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'proposed'`,
+		now, now, cmd.JudgmentID,
+	)
+	if err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: withdraw update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: withdraw rows affected: %w", err)
+	}
+	if affected != 1 {
+		return core.WithdrawJudgmentResult{}, auth.New(auth.CodeInvalidJudgmentTransition, "guarded status update did not match exactly one proposed row")
+	}
+
+	// 5. The immutable 'withdraw' event (no snapshot, no policy version).
+	withdrawn := judgment
+	if err := core.WithdrawJudgment(&withdrawn, now); err != nil {
+		return core.WithdrawJudgmentResult{}, err
+	}
+	withdrawn.DecidedAt = now // the row stores decided_at; the entity mirrors it
+	eventID, err := newUUID()
+	if err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: generate judgment event id: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO judgment_events (
+			id, judgment_id, request_id, action, from_status, to_status, judgment_hash,
+			principal_snapshot_json, policy_version, reason, created_at
+		) VALUES (?, ?, ?, 'withdraw', 'proposed', 'withdrawn', ?, NULL, NULL, '', ?)`,
+		eventID, cmd.JudgmentID, cmd.RequestID, core.ComputeJudgmentHash(withdrawn), now,
+	); err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: insert withdraw event: %w", err)
+	}
+
+	// 6. Complete the reservation (event exists → result_json is set with it)
+	// and commit.
+	result := storedJudgmentResult{JudgmentID: judgment.ID, Judgment: withdrawn, JudgmentEventID: eventID}
+	serializedResult, err := json.Marshal(result)
+	if err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: encode withdraw result: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE judgment_idempotency_keys SET result_json = ?, judgment_event_id = ?, completed_at = ?
+		WHERE tenant_id = ? AND request_id = ?`,
+		string(serializedResult), eventID, now, judgment.TenantID, cmd.RequestID,
+	); err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: complete judgment idempotency key: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return core.WithdrawJudgmentResult{}, fmt.Errorf("persistence error: commit withdraw: %w", err)
+	}
+	committed = true
+
+	return core.WithdrawJudgmentResult{JudgmentID: judgment.ID, Judgment: withdrawn, JudgmentEventID: eventID, IdempotentReplay: false}, nil
+}
+
+// JudgmentSuccessorOf routes readers from a superseded judgment to its
+// correction: it reads judgment_relations (frozen to 'supersedes' — design §4;
+// judgment ids never enter the observation relations table) and returns the
+// successor judgment.
+func (s *SQLiteStore) JudgmentSuccessorOf(ctx context.Context, judgmentID string) (core.AccountingJudgment, bool) {
+	var toID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT to_judgment_id FROM judgment_relations
+		WHERE from_judgment_id = ? AND relation = 'supersedes' ORDER BY rowid LIMIT 1`, judgmentID).Scan(&toID)
+	if err != nil {
+		return core.AccountingJudgment{}, false
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments WHERE id = ?`, toID)
+	j, err := scanJudgment(row)
+	if err != nil {
+		return core.AccountingJudgment{}, false
+	}
+	return j, true
+}
+
+// nullableOrNil maps an empty string to NULL and any other value to the string
+// itself — the v4 style for optional TEXT columns.
+func nullableOrNil(v string) any {
+	if v == "" {
+		return nil
+	}
+	return v
+}
+
 // FindByID returns the memory with the given id, if any (evidence/rule links
 // merged into the read view).
 func (s *SQLiteStore) FindByID(id string) (core.AccountingMemory, bool) {

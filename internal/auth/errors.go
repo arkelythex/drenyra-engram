@@ -42,20 +42,29 @@ const (
 	CodeJudgmentHashMismatch      = "JUDGMENT_HASH_MISMATCH"
 )
 
-// Error is the typed approval error: a frozen code plus a human message.
-// Only ENVELOPE_MISMATCH carries ExpectedEnvelopeHash/ActualEnvelopeHash; all
-// other codes leave them empty.
+// Error is the typed approval/judgment error: a frozen code plus a human
+// message. Only ENVELOPE_MISMATCH carries ExpectedEnvelopeHash/
+// ActualEnvelopeHash and only JUDGMENT_HASH_MISMATCH carries
+// ExpectedJudgmentHash/ActualJudgmentHash; all other codes leave both pairs
+// empty (design §6 — the judgment hash contract is versioned separately and
+// NEVER compared against envelope hashes).
 type Error struct {
 	Code                 string
 	Message              string
 	ExpectedEnvelopeHash string
 	ActualEnvelopeHash   string
+	ExpectedJudgmentHash string
+	ActualJudgmentHash   string
 }
 
 func (e *Error) Error() string {
 	if e.Code == CodeEnvelopeMismatch && e.ExpectedEnvelopeHash != "" && e.ActualEnvelopeHash != "" {
 		return fmt.Sprintf("%s: %s (expected envelope %s, actual envelope %s)",
 			e.Code, e.Message, e.ExpectedEnvelopeHash, e.ActualEnvelopeHash)
+	}
+	if e.Code == CodeJudgmentHashMismatch && e.ExpectedJudgmentHash != "" && e.ActualJudgmentHash != "" {
+		return fmt.Sprintf("%s: %s (expected judgment hash %s, actual judgment hash %s)",
+			e.Code, e.Message, e.ExpectedJudgmentHash, e.ActualJudgmentHash)
 	}
 	return e.Code + ": " + e.Message
 }
@@ -83,6 +92,18 @@ func NewEnvelopeMismatch(expectedHash, actualHash, message string) error {
 		Message:              message,
 		ExpectedEnvelopeHash: expectedHash,
 		ActualEnvelopeHash:   actualHash,
+	}
+}
+
+// NewJudgmentHashMismatch returns a JUDGMENT_HASH_MISMATCH error carrying ONLY
+// the expected and actual judgment hashes (never judgment content) — the
+// judgment-hash analogue of NewEnvelopeMismatch (design §6).
+func NewJudgmentHashMismatch(expectedHash, actualHash, message string) error {
+	return &Error{
+		Code:                 CodeJudgmentHashMismatch,
+		Message:              message,
+		ExpectedJudgmentHash: expectedHash,
+		ActualJudgmentHash:   actualHash,
 	}
 }
 
