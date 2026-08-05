@@ -6,6 +6,9 @@
 package main
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,7 +16,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/store"
@@ -60,7 +65,16 @@ func TestMain(m *testing.M) {
 
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
+	return runCLIEnv(t, nil, args...)
+}
+
+// runCLIEnv runs the built CLI with extra environment variables (the tests use
+// $DRENYRA_ENGRAM_SESSION and $DRENYRA_ENV overrides so they never touch the real
+// user config dir or environment state).
+func runCLIEnv(t *testing.T, env []string, args ...string) (string, string, int) {
+	t.Helper()
 	cmd := exec.Command(binPath, args...)
+	cmd.Env = append(os.Environ(), env...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -377,19 +391,27 @@ func TestCLILifecycleRoundTrip(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
 
 	// A gated fixture (fiscalEffect adjustment) lands pending_review.
-	gated := `{"topicKey":"adjust/aj-001","title":"Ajuste AJ-001","kind":"decision","scope":{"kind":"company","organizationId":"cli","companyId":"20100039201","ruc":"20100039201","period":"202401"},"content":{"what":"ajuste de periodo","why":"comprobante tardio","where":"cli","learned":"n/a"},"fiscalEffect":"adjustment","effectiveAt":"2024-01-31T00:00:00.000Z","source":{"system":"cli","actorId":"cli-user","actorKind":"agent"}}`
-	gatedPath := filepath.Join(t.TempDir(), "gated.json")
-	if err := os.WriteFile(gatedPath, []byte(gated), 0o600); err != nil {
-		t.Fatalf("write gated fixture: %v", err)
-	}
-	idA := saveViaCLI(t, db, gatedPath)
+	idA := saveViaCLI(t, db, writeGatedFixture(t))
 
-	stdout, _, code := runTransition(t, db, "approve", idA, "--actor", "maria.torres")
-	var approved transitionOutput
+	// Approve through the AUTHENTICATED path: the store is seeded with an
+	// identity + session, the session file is written (what auth login does), and
+	// the command approves against the CURRENT envelope hash — caller-supplied
+	// authority (--actor) is gone from the approve command (ADR-003).
+	token := seedCLIIdentity(t, db)
+	env := writeSessionFile(t, t.TempDir(), token)
+	h1 := memoryEnvelope(t, db, idA)
+	stdout, stderr, code := runCLIEnv(t, env, "approve", idA, "--expected-envelope", h1, "--reason", "revisado y conforme", "--db", db)
+	if code != 0 {
+		t.Fatalf("approve failed (exit %d): %s", code, stderr)
+	}
+	var approved struct {
+		MemoryID      string `json:"memoryId"`
+		CurrentStatus string `json:"currentStatus"`
+	}
 	if err := json.Unmarshal([]byte(stdout), &approved); err != nil {
 		t.Fatalf("approve output not JSON: %v\n%s", err, stdout)
 	}
-	if approved.ID != idA || approved.To != core.StatusApproved {
+	if approved.MemoryID != idA || approved.CurrentStatus != "approved" {
 		t.Fatalf("approve output = %+v, want id %s approved", approved, idA)
 	}
 
@@ -405,7 +427,7 @@ func TestCLILifecycleRoundTrip(t *testing.T) {
 
 	// The supersedes relation is recorded; with idB still draft the verdict
 	// falls back to the shared topicKey → related, not supersedes.
-	stdout, stderr, code := runCLI(t, "compare", idA, idB, "--db", db)
+	stdout, stderr, code = runCLI(t, "compare", idA, idB, "--db", db)
 	if code != 0 {
 		t.Fatalf("compare failed (exit %d): %s", code, stderr)
 	}
@@ -518,9 +540,14 @@ func TestCLICompareScenarios(t *testing.T) {
 // writes nothing to stdout and leaves the memory unchanged.
 func TestCLIIllegalApproveOfActiveFailsClosed(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
+	// A valid authenticated session is required to reach the transition check; an
+	// ACTIVE (informative, never-gated) memory is still INVALID_TRANSITION.
+	token := seedCLIIdentity(t, db)
+	env := writeSessionFile(t, t.TempDir(), token)
 	id := saveViaCLI(t, db, fixturePath(t, "a.json"))
+	h1 := memoryEnvelope(t, db, id)
 
-	stdout, stderr, code := runCLI(t, "approve", id, "--actor", "maria.torres", "--db", db)
+	stdout, stderr, code := runCLIEnv(t, env, "approve", id, "--expected-envelope", h1, "--reason", "x", "--db", db)
 	if code != 1 {
 		t.Fatalf("approve active exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -592,7 +619,11 @@ func TestCLIUsageErrorsForNewCommands(t *testing.T) {
 
 	t.Run("approve with missing observation", func(t *testing.T) {
 		db := filepath.Join(t.TempDir(), "engram.db")
-		_, stderr, code := runCLI(t, "approve", "missing-id", "--db", db)
+		// The authenticated session must resolve first; only then does the
+		// runtime path reach the store and report MEMORY_NOT_FOUND.
+		token := seedCLIIdentity(t, db)
+		env := writeSessionFile(t, t.TempDir(), token)
+		_, stderr, code := runCLIEnv(t, env, "approve", "missing-id", "--expected-envelope", "x", "--reason", "x", "--db", db)
 		if code != 1 {
 			t.Fatalf("approve missing id exit = %d, want 1; stderr=%q", code, stderr)
 		}
@@ -809,5 +840,311 @@ func TestCLISyncRoundTrip(t *testing.T) {
 	_, _, code = runCLI(t, "sync", "--from", dbA)
 	if code != 2 {
 		t.Fatalf("sync missing --to exit = %d, want 2", code)
+	}
+}
+
+// ──────────────────────────────────────────────
+// Authenticated approval CLI tests (v0.4.0 Step 1, ADR-003)
+// ──────────────────────────────────────────────
+
+// sha256HexCLI is the token-hash fixture helper (the CLI hashes the raw token
+// the same way before any lookup).
+func sha256HexCLI(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// writeGatedFixture writes a fiscalEffect=adjustment fixture (lands
+// pending_review behind the v2 human gate) and returns its path.
+func writeGatedFixture(t *testing.T) string {
+	t.Helper()
+	gated := `{"topicKey":"adjust/aj-001","title":"Ajuste AJ-001","kind":"decision","scope":{"kind":"company","organizationId":"cli","companyId":"20100039201","ruc":"20100039201","period":"202401"},"content":{"what":"ajuste de periodo","why":"comprobante tardio","where":"cli","learned":"n/a"},"fiscalEffect":"adjustment","effectiveAt":"2024-01-31T00:00:00.000Z","source":{"system":"cli","actorId":"cli-user","actorKind":"agent"}}`
+	path := filepath.Join(t.TempDir(), "gated.json")
+	if err := os.WriteFile(path, []byte(gated), 0o600); err != nil {
+		t.Fatalf("write gated fixture: %v", err)
+	}
+	return path
+}
+
+// savePendingCLIMemory saves the gated fixture through the built CLI and returns
+// the pending_review memory id.
+func savePendingCLIMemory(t *testing.T, db string) string {
+	t.Helper()
+	return saveViaCLI(t, db, writeGatedFixture(t))
+}
+
+// seedCLIIdentity seeds one identity + expiring session directly on db (design
+// section 8: test helpers call store.SeedIdentity directly; they never depend on
+// environment state) and returns the raw token (ONLY its SHA-256 hash is stored).
+// The tenant is the CLI's fixed organization id so the principal can approve
+// memories saved through the CLI surface.
+func seedCLIIdentity(t *testing.T, db string) string {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	membershipID := "membership-cli"
+	if err := st.SeedIdentity(store.IdentitySeed{
+		TenantID:     cliOrganizationID,
+		CompanyID:    cliRucA,
+		CompanyRUC:   cliRucA,
+		CompanyName:  "CLI Demo SAC",
+		MembershipID: membershipID,
+		SubjectID:    "maria.torres",
+		Roles:        []auth.AccountingRole{auth.RoleController},
+	}); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	token := "cli-fixture-token"
+	if err := st.SeedSession(store.SessionSeed{
+		ID:                   "session-cli",
+		TokenHash:            sha256HexCLI(token),
+		MembershipID:         membershipID,
+		AuthenticationMethod: auth.AuthMethodSession,
+		AssuranceLevel:       auth.AssuranceStandard,
+		AuthenticatedAt:      time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:            time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return token
+}
+
+// sessionFileEnv returns the CLI env that points the session file at
+// dir/session.json (the $DRENYRA_ENGRAM_SESSION test override — the tests never
+// touch the real user config dir).
+func sessionFileEnv(dir string) []string {
+	return []string{"DRENYRA_ENGRAM_SESSION=" + filepath.Join(dir, "session.json")}
+}
+
+// writeSessionFile writes the raw token to dir/session.json (the CLI test
+// override path) and returns the env to pass to the built CLI.
+func writeSessionFile(t *testing.T, dir, token string) []string {
+	t.Helper()
+	path := filepath.Join(dir, "session.json")
+	if err := os.WriteFile(path, []byte(fmt.Sprintf(`{"token":%q}`, token)), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+	return sessionFileEnv(dir)
+}
+
+// memoryEnvelope computes the CURRENT envelope hash of a stored memory — the
+// hash a reviewer would have seen at approve time.
+func memoryEnvelope(t *testing.T, db, id string) string {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	mem, ok := st.FindByID(id)
+	if !ok {
+		t.Fatalf("memory %s not found", id)
+	}
+	return core.ComputeEnvelopeHash(mem)
+}
+
+// TestCLIAuthLoginWithoutToken: auth login requires --token (usage error 2).
+func TestCLIAuthLoginWithoutToken(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	stdout, stderr, code := runCLIEnv(t, sessionFileEnv(t.TempDir()), "auth", "login", "--db", db)
+	if code != 2 {
+		t.Fatalf("auth login without --token exit = %d, want 2; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("usage error must not write stdout: %q", stdout)
+	}
+}
+
+// TestCLIAuthLoginInvalidToken: an unknown token maps to PRINCIPAL_INVALID and
+// never creates a session file.
+func TestCLIAuthLoginInvalidToken(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	dir := t.TempDir()
+	stdout, stderr, code := runCLIEnv(t, sessionFileEnv(dir), "auth", "login", "--token", "not-a-real-token", "--db", db)
+	if code != 1 {
+		t.Fatalf("auth login invalid token exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "PRINCIPAL_INVALID") {
+		t.Fatalf("stderr must carry PRINCIPAL_INVALID: %q", stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("failed login must not write stdout: %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "session.json")); !os.IsNotExist(err) {
+		t.Fatalf("invalid login must not create a session file (stat err=%v)", err)
+	}
+}
+
+// TestCLIApproveWithoutSession: approve with no authenticated CLI session fails
+// closed with AUTHENTICATION_REQUIRED and points at auth login.
+func TestCLIApproveWithoutSession(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	id := savePendingCLIMemory(t, db)
+	h1 := memoryEnvelope(t, db, id)
+
+	stdout, stderr, code := runCLIEnv(t, sessionFileEnv(t.TempDir()),
+		"approve", id, "--expected-envelope", h1, "--reason", "reviewed", "--db", db)
+	if code != 1 {
+		t.Fatalf("approve without session exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("approve without session must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "AUTHENTICATION_REQUIRED") || !strings.Contains(stderr, "auth login") {
+		t.Fatalf("stderr must carry AUTHENTICATION_REQUIRED and point at auth login: %q", stderr)
+	}
+}
+
+// TestCLIApproveWithSeededSession is the full authenticated round trip through
+// the real binary: auth login validates the token and writes the user-only (0600)
+// session file, then approve resolves the principal from it and prints the
+// core.ApprovalResult JSON.
+func TestCLIApproveWithSeededSession(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	token := seedCLIIdentity(t, db)
+	dir := t.TempDir()
+	env := sessionFileEnv(dir)
+
+	stdout, stderr, code := runCLIEnv(t, env, "auth", "login", "--token", token, "--db", db)
+	if code != 0 {
+		t.Fatalf("auth login failed (exit %d): %s", code, stderr)
+	}
+	var login struct {
+		Authenticated bool   `json:"authenticated"`
+		SubjectID     string `json:"subjectId"`
+		SessionFile   string `json:"sessionFile"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &login); err != nil {
+		t.Fatalf("login output not JSON: %v\n%s", err, stdout)
+	}
+	if !login.Authenticated || login.SubjectID != "maria.torres" {
+		t.Fatalf("login output = %+v, want authenticated maria.torres", login)
+	}
+	sessionPath := filepath.Join(dir, "session.json")
+	info, err := os.Stat(sessionPath)
+	if err != nil {
+		t.Fatalf("session file missing after login: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("session file mode = %o, want 0600", info.Mode().Perm())
+	}
+	sessionData, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("read session file: %v", err)
+	}
+	if !strings.Contains(string(sessionData), token) {
+		t.Fatalf("session file must hold the RAW token: %s", sessionData)
+	}
+
+	id := savePendingCLIMemory(t, db)
+	h1 := memoryEnvelope(t, db, id)
+	stdout, stderr, code = runCLIEnv(t, env,
+		"approve", id, "--expected-envelope", h1, "--reason", "revisado y conforme", "--db", db)
+	if code != 0 {
+		t.Fatalf("approve failed (exit %d): %s", code, stderr)
+	}
+	var result core.ApprovalResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("approve output not JSON: %v\n%s", err, stdout)
+	}
+	if result.MemoryID != id || result.CurrentStatus != "approved" || result.PreviousStatus != "pending_review" {
+		t.Fatalf("approve result = %+v, want %s pending_review → approved", result, id)
+	}
+	if result.ReviewedEnvelopeHash != h1 {
+		t.Fatalf("reviewedEnvelopeHash = %q, want %q", result.ReviewedEnvelopeHash, h1)
+	}
+	if result.IdempotentReplay {
+		t.Fatalf("fresh approval must not be an idempotent replay: %+v", result)
+	}
+}
+
+// TestCLIApproveRejectsActorFlag: caller-supplied authority is gone from the
+// approval command — --actor is an unknown flag (usage error 2).
+func TestCLIApproveRejectsActorFlag(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	stdout, stderr, code := runCLI(t, "approve", "some-id", "--actor", "maria.torres", "--db", db)
+	if code != 2 {
+		t.Fatalf("approve --actor exit = %d, want 2 (flag rejected); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("flag rejection must not write stdout: %q", stdout)
+	}
+}
+
+// TestCLISeedLocalDevRejectedInProduction: the seed command is explicit,
+// isolated and rejected outside DRENYRA_ENV=local_dev — nothing is seeded.
+func TestCLISeedLocalDevRejectedInProduction(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	stdout, stderr, code := runCLIEnv(t, []string{"DRENYRA_ENV=production"},
+		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", cliRucA,
+		"--ruc", cliRucA, "--subject", "maria.torres", "--roles", "controller")
+	if code != 1 {
+		t.Fatalf("seed-local-dev in production exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("rejected seed must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "DRENYRA_ENV") || !strings.Contains(stderr, "local_dev") {
+		t.Fatalf("stderr must explain the local_dev requirement: %q", stderr)
+	}
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store after rejected seed: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	if _, err := st.LookupByTokenHash(context.Background(), sha256HexCLI("whatever")); err == nil {
+		t.Fatal("production rejection must not seed any session")
+	}
+}
+
+// TestCLISeedLocalDevPrintsTokenOnce: in DRENYRA_ENV=local_dev the seed prints
+// the raw token exactly ONCE on stdout and the store keeps only its hash.
+func TestCLISeedLocalDevPrintsTokenOnce(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	dir := t.TempDir()
+	env := append([]string{"DRENYRA_ENV=local_dev"}, sessionFileEnv(dir)...)
+	stdout, stderr, code := runCLIEnv(t, env,
+		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", cliRucA,
+		"--ruc", cliRucA, "--subject", "maria.torres", "--roles", "controller,senior_accountant")
+	if code != 0 {
+		t.Fatalf("seed-local-dev failed (exit %d): %s", code, stderr)
+	}
+	var seeded struct {
+		Token     string `json:"token"`
+		SessionID string `json:"sessionId"`
+		ExpiresAt string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &seeded); err != nil {
+		t.Fatalf("seed output not JSON: %v\n%s", err, stdout)
+	}
+	if len(seeded.Token) < 32 {
+		t.Fatalf("seeded token looks weak: %q", seeded.Token)
+	}
+	if strings.Count(stdout, seeded.Token) != 1 {
+		t.Fatalf("raw token must be printed exactly once, got %d occurrences in %s", strings.Count(stdout, seeded.Token), stdout)
+	}
+
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	// The store holds ONLY the SHA-256 hash of the token.
+	session, err := st.LookupByTokenHash(context.Background(), sha256HexCLI(seeded.Token))
+	if err != nil {
+		t.Fatalf("seeded session must resolve by its hash: %v", err)
+	}
+	membership, err := st.LoadMembership(context.Background(), session.MembershipID)
+	if err != nil {
+		t.Fatalf("load membership: %v", err)
+	}
+	if membership.SubjectID != "maria.torres" || len(membership.Roles) != 2 {
+		t.Fatalf("seeded membership = %+v, want maria.torres with 2 roles", membership)
+	}
+	if session.AuthenticationMethod != auth.AuthMethodLocalDev || session.AssuranceLevel != auth.AssuranceStandard {
+		t.Fatalf("seeded session = %+v, want local_dev + standard assurance", session)
 	}
 }

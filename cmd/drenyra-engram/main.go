@@ -28,14 +28,22 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
+	"github.com/arkelythex/drenyra-engram/internal/authz"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/server"
@@ -69,6 +77,8 @@ func run(args []string) int {
 		return cmdCompare(args[1:])
 	case "approve":
 		return cmdApprove(args[1:])
+	case "auth":
+		return cmdAuth(args[1:])
 	case "reject":
 		return cmdReject(args[1:])
 	case "void":
@@ -315,13 +325,63 @@ func cliSource(actor string) core.Source {
 }
 
 func cmdApprove(args []string) int {
-	return cmdGatedTransition("approve", args, func(api *server.API, id string, src core.Source) (transitionOutput, error) {
-		m, err := api.Approve(id, src)
-		if err != nil {
-			return transitionOutput{}, err
+	// The authenticated approval command (v0.4.0 Step 1, ADR-003): the principal
+	// is DERIVED from the stored CLI session (auth login), never declared by the
+	// caller — there is deliberately NO --actor flag on this command (caller-
+	// supplied authority is gone). Each invocation generates a fresh requestId.
+	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	expectedEnvelope := fs.String("expected-envelope", "", "REQUIRED envelope hash the reviewer actually saw")
+	reason := fs.String("reason", "", "REQUIRED approval justification")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram approve <memory-id> --expected-envelope <hash> --reason <text> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--expected-envelope": true, "--reason": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
 		}
-		return transitionOutput{ID: m.Identity.ID, From: core.StatusPendingReview, To: m.Status, Revision: m.Revision}, nil
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*expectedEnvelope) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
 	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	requestID, err := newRequestID()
+	if err != nil {
+		return fail("generate request id: %v", err)
+	}
+	result, err := server.ApproveMemory(context.Background(), st, authz.NewApprovalPolicy(), core.ApproveMemoryCommand{
+		MemoryID:             rest[0],
+		ExpectedEnvelopeHash: *expectedEnvelope,
+		Reason:               *reason,
+		RequestID:            requestID,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
 }
 
 func cmdReject(args []string) int {
@@ -382,6 +442,274 @@ func cmdGatedTransition(name string, args []string, run func(*server.API, string
 		return fail("%v", err)
 	}
 	return emit(output)
+}
+
+// ──────────────────────────────────────────────
+// auth — authenticated CLI sessions (v0.4.0 Step 1, ADR-003)
+// ──────────────────────────────────────────────
+
+// cmdAuth dispatches the authenticated-session subcommands: login validates a
+// bearer token against the selected DB and stores it in a user-only config file;
+// seed-local-dev provisions a local_dev identity + expiring session
+// (DRENYRA_ENV=local_dev only, design section 8).
+func cmdAuth(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: drenyra-engram auth login --token <token> [--db <path>]")
+		fmt.Fprintln(os.Stderr, "       drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <list>")
+		return 2
+	}
+	switch args[0] {
+	case "login":
+		return cmdAuthLogin(args[1:])
+	case "seed-local-dev":
+		return cmdAuthSeedLocalDev(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown auth subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+// sessionConfigPath is the CLI session file location: $DRENYRA_ENGRAM_SESSION
+// when set (tests/CI), otherwise the platform config dir (os.UserConfigDir →
+// ~/.config on Linux) under drenyra-engram/session.json. The file holds the RAW
+// token with 0600 permissions; the store keeps only its SHA-256 hash (design
+// section 3 — the CLI owns the raw credential and never writes a second hash).
+func sessionConfigPath() string {
+	if path := os.Getenv("DRENYRA_ENGRAM_SESSION"); path != "" {
+		return path
+	}
+	if dir, err := os.UserConfigDir(); err == nil {
+		return filepath.Join(dir, "drenyra-engram", "session.json")
+	}
+	return filepath.Join(".", ".drenyra-engram", "session.json")
+}
+
+// loadSessionToken reads the raw bearer token from the user-only session file.
+func loadSessionToken() (string, error) {
+	data, err := os.ReadFile(sessionConfigPath())
+	if err != nil {
+		return "", err
+	}
+	var file struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return "", fmt.Errorf("parse session file: %w", err)
+	}
+	if strings.TrimSpace(file.Token) == "" {
+		return "", errors.New("session file carries no token")
+	}
+	return file.Token, nil
+}
+
+// writeSessionToken stores the RAW token in the user-only session file (0600);
+// the directory is created 0700 so the credential never lives in a world-readable
+// path.
+func writeSessionToken(token string) error {
+	path := sessionConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create session config dir: %w", err)
+	}
+	data, err := json.Marshal(map[string]string{"token": token})
+	if err != nil {
+		return fmt.Errorf("encode session file: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write session file: %w", err)
+	}
+	return nil
+}
+
+// cmdAuthLogin validates a bearer token against the store (SHA-256 →
+// LookupByTokenHash → active, not revoked/expired, active membership) and, only
+// on success, stores the RAW token in the user-only session file. Invalid tokens
+// map to PRINCIPAL_INVALID; store failures surface with a clear message. Never
+// stores a hash anywhere the CLI owns — the store already holds it.
+func cmdAuthLogin(args []string) int {
+	fs := flag.NewFlagSet("auth login", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	token := fs.String("token", "", "REQUIRED bearer token to validate")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram auth login --token <token> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--token": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*token) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("auth login: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: *token,
+	})
+	if err != nil {
+		switch auth.Code(err) {
+		case auth.CodePrincipalInvalid:
+			return fail("auth login: PRINCIPAL_INVALID: the token does not resolve to an active, unexpired session")
+		case auth.CodeMembershipInactive:
+			return fail("auth login: MEMBERSHIP_INACTIVE: the session's membership is not active")
+		default:
+			return fail("auth login: %v", err)
+		}
+	}
+	if err := writeSessionToken(*token); err != nil {
+		return fail("auth login: %v", err)
+	}
+	return emit(map[string]any{
+		"authenticated": true,
+		"subjectId":     principal.SubjectID(),
+		"sessionFile":   sessionConfigPath(),
+	})
+}
+
+// cmdAuthSeedLocalDev provisions one local_dev identity + session (design
+// section 8): it REQUIRES DRENYRA_ENV=local_dev (production mode rejects the
+// command), inserts company/membership/roles via SeedIdentity plus one expiring
+// local_dev session, prints the raw token ONCE on stdout and stores only its
+// SHA-256 hash.
+func cmdAuthSeedLocalDev(args []string) int {
+	fs := flag.NewFlagSet("auth seed-local-dev", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	tenant := fs.String("tenant", "", "REQUIRED tenant (organization) id")
+	company := fs.String("company", "", "REQUIRED company id")
+	ruc := fs.String("ruc", "", "REQUIRED company RUC (exactly 11 digits)")
+	subject := fs.String("subject", "", "REQUIRED subject (professional) id")
+	roles := fs.String("roles", "", "REQUIRED comma-separated accounting roles")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <comma-separated>")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--tenant": true, "--company": true, "--ruc": true, "--subject": true, "--roles": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || *tenant == "" || *company == "" || *subject == "" || *roles == "" {
+		fs.Usage()
+		return 2
+	}
+	if !core.IsValidRUC(*ruc) {
+		fmt.Fprintln(os.Stderr, "drenyra-engram: auth seed-local-dev: invalid RUC: expected exactly 11 digits")
+		return 2
+	}
+	var accountingRoles []auth.AccountingRole
+	for _, raw := range splitCSV(*roles) {
+		role := auth.AccountingRole(raw)
+		if !isAccountingRole(role) {
+			fmt.Fprintf(os.Stderr, "drenyra-engram: auth seed-local-dev: unknown role %q — expected accountant,senior_accountant,controller,tax_reviewer,authorized_tax_professional\n", raw)
+			return 2
+		}
+		accountingRoles = append(accountingRoles, role)
+	}
+
+	// Explicit, isolated, rejected in production (design section 8).
+	if os.Getenv("DRENYRA_ENV") != "local_dev" {
+		return fail("auth seed-local-dev is only available with DRENYRA_ENV=local_dev; production mode rejects the command")
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("auth seed-local-dev: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	membershipID, err := newRequestID()
+	if err != nil {
+		return fail("auth seed-local-dev: generate membership id: %v", err)
+	}
+	if err := st.SeedIdentity(store.IdentitySeed{
+		TenantID:     *tenant,
+		CompanyID:    *company,
+		CompanyRUC:   *ruc,
+		CompanyName:  "Local Dev",
+		MembershipID: membershipID,
+		SubjectID:    *subject,
+		Roles:        accountingRoles,
+	}); err != nil {
+		return fail("auth seed-local-dev: %v", err)
+	}
+
+	token, err := newSessionToken()
+	if err != nil {
+		return fail("auth seed-local-dev: generate token: %v", err)
+	}
+	sessionID, err := newRequestID()
+	if err != nil {
+		return fail("auth seed-local-dev: generate session id: %v", err)
+	}
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour)
+	if err := st.SeedSession(store.SessionSeed{
+		ID:                   sessionID,
+		TokenHash:            sha256Hex(token),
+		MembershipID:         membershipID,
+		AuthenticationMethod: auth.AuthMethodLocalDev,
+		AssuranceLevel:       auth.AssuranceStandard,
+		AuthenticatedAt:      now.Format(time.RFC3339),
+		ExpiresAt:            expiresAt.Format(time.RFC3339),
+	}); err != nil {
+		return fail("auth seed-local-dev: %v", err)
+	}
+	// The raw token is printed exactly ONCE; the store keeps only its hash.
+	return emit(map[string]any{
+		"token":     token,
+		"sessionId": sessionID,
+		"expiresAt": expiresAt.Format(time.RFC3339),
+	})
+}
+
+// newRequestID returns a random (v4) UUID — the fresh idempotency key the CLI
+// generates per approval invocation (mirrors the store's newUUID shape).
+func newRequestID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+// newSessionToken returns a fresh high-entropy bearer token (32 random bytes,
+// hex-encoded) for the seed-local-dev session.
+func newSessionToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// sha256Hex is the CLI's token-hash helper: raw credentials become SHA-256 hex
+// BEFORE any store lookup; the raw value never leaves the CLI (design section 3).
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
+
+// isAccountingRole reports whether the role is one of the five accounting roles
+// of the v0.4 policy ladder/track.
+func isAccountingRole(r auth.AccountingRole) bool {
+	switch r {
+	case auth.RoleAccountant, auth.RoleSeniorAccountant, auth.RoleController,
+		auth.RoleTaxReviewer, auth.RoleAuthorizedTaxProfessional:
+		return true
+	}
+	return false
 }
 
 // ──────────────────────────────────────────────
@@ -779,6 +1107,22 @@ func (m *multiFlag) Set(value string) error {
 	return nil
 }
 
+// splitCSV splits a comma-separated list, trimming spaces and dropping empties
+// (the CLI's role-list parser for auth seed-local-dev).
+func splitCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func printUsage(w *os.File) {
 	fmt.Fprintln(w, `drenyra-engram — institutional accounting memory engine (v0.2 Go foundation)
 
@@ -789,7 +1133,9 @@ Usage:
   drenyra-engram context <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram doctor [--db <path>]
   drenyra-engram compare <idA> <idB> [--db <path>]
-  drenyra-engram approve <id> [--actor <name>] [--db <path>]   (human gate)
+  drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
+  drenyra-engram auth login --token <token> [--db <path>]
+  drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <list>   (DRENYRA_ENV=local_dev only)
   drenyra-engram reject <id> [--actor <name>] [--db <path>]    (human gate)
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
@@ -805,10 +1151,13 @@ Flags:
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
   --period <YYYYMM> fiscal period; omitted scopes only match period-less observations
   --any            match ANY query token (default: match ALL)
+  --expected-envelope <hash> envelope hash the reviewer actually saw (approve, REQUIRED)
+  --reason <text>            approval justification (approve, REQUIRED)
   --actor <name>   actor recorded in the audit trail (default cli)
   --target <id>    replacing observation for supersede (REQUIRED)
   --addr <host:port> listen address for serve (default 127.0.0.1:8787)
-  --token <secret> bearer token for serve (default $DRENYRA_ENGRAM_TOKEN, empty = no auth)
+  --token <token>  bearer token for serve (default $DRENYRA_ENGRAM_TOKEN) or auth login (REQUIRED)
+  --roles <list>   comma-separated accounting roles for auth seed-local-dev
 
 Surfaces: mcp runs the Model Context Protocol server over stdio (newline-
 delimited JSON-RPC) for agent clients; serve runs the local HTTP API (REST
@@ -817,9 +1166,17 @@ speak the same domain services as the CLI — compare verdicts and lifecycle
 semantics are identical everywhere.
 
 Lifecycle (v2): memories with fiscal effect are saved pending_review and only
-approve (HUMAN gate) moves them to approved; reject ends the review, void
-annuls without successor, supersede routes readers to --target. compare
-reports identity/scope/content deltas and a relation verdict.
+approve (AUTHENTICATED human gate) moves them to approved; reject ends the
+review, void annuls without successor, supersede routes readers to --target.
+compare reports identity/scope/content deltas and a relation verdict.
+
+Authentication (v0.4): approve requires an authenticated CLI session. "auth
+login --token <token>" validates the token against the store and stores the
+RAW token only in a user-only (0600) config file
+(~/.config/drenyra-engram/session.json, or $DRENYRA_ENGRAM_SESSION); the
+store keeps only its SHA-256 hash. "auth seed-local-dev" provisions a
+local_dev identity + one expiring session and prints the raw token once
+(DRENYRA_ENV=local_dev only; rejected in production).
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
 authorize/allow/execute command. Approve/Reject are the PROFESSIONAL review
