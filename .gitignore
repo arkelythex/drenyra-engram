@@ -25,3 +25,5 @@ coverage/
 # Local state
 .local/
 *.log
+# Local Pi runtime state
+.atl/
