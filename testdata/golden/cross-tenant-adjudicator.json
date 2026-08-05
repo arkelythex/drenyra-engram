@@ -1,0 +1,48 @@
+{
+  "name": "cross-tenant-adjudicator",
+  "contract": "judgment",
+  "description": "The SAME proposed judgment as proposed-confirmed, adjudicated by a principal from ANOTHER tenant (tenant-2) who would otherwise be authorized (controller, strong assurance). judgment-policy/v0.4.0 check order makes the FIRST frozen code win: TENANT_SCOPE_MISMATCH before company, membership, role or assurance. The record stays proposed - no confirmed state is derived - and the proposed hash is identical to the sibling vectors.",
+  "judgment": {
+    "id": "judgment-101",
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601",
+    "fromId": "obs-1",
+    "toId": "obs-2",
+    "relation": "supports",
+    "status": "proposed",
+    "proposer": {
+      "system": "sire",
+      "actorId": "agent-7",
+      "actorKind": "agent"
+    },
+    "proposalReason": "invoice totals agree with bank statement",
+    "proposedAt": "2026-08-05T12:00:00Z",
+    "updatedAt": "2026-08-05T12:00:00Z"
+  },
+  "principal": {
+    "subjectId": "subject-9",
+    "tenantId": "tenant-2",
+    "membershipId": "membership-9",
+    "companyScopes": [
+      "acme"
+    ],
+    "roles": [
+      "controller"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "strong",
+    "authenticatedAt": "2026-08-05T13:00:00Z"
+  },
+  "expected": {
+    "proposedJudgmentHash": "b2db687ce3e052b84064eca3e9b61ca1e632d7069d0bf965fa3407c24457062b",
+    "canPropose": true,
+    "canConfirm": true,
+    "canReject": true,
+    "canWithdraw": true,
+    "canSupersedeConfirmed": false,
+    "allowed": false,
+    "reasonCode": "TENANT_SCOPE_MISMATCH",
+    "policyVersion": "judgment-policy/v0.4.0"
+  }
+}

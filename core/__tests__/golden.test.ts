@@ -21,23 +21,28 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type {
+	AccountingJudgment,
 	AccountingMemory,
 	AccountingRole,
 	AssuranceLevel,
 	AuthenticationMethod,
+	JudgmentStatus,
 	MaterialityLevel,
 	MemoryStatus,
+	PrincipalSnapshot,
 	VerifiedApprovalPrincipal,
 } from "../types.js";
 import {
 	computeContentHash,
 	computeEnvelopeHash,
 	computeIdentityHash,
+	computeJudgmentHash,
 	type MemoryScope,
 	type MemorySource,
 	type MemoryContent,
 	type MemoryKind,
 	type FiscalEffect,
+	type MemoryRelation,
 } from "../types.js";
 import { approve, initialStatus } from "../../lifecycle/transitions.js";
 import {
@@ -45,6 +50,10 @@ import {
 	principalSnapshot,
 } from "../../auth/principal.js";
 import { authorizeApproval } from "../../authz/approval-policy.js";
+import {
+	authorizeJudgment,
+	JUDGMENT_POLICY_VERSION,
+} from "../../authz/judgment-policy.js";
 
 interface GoldenPrincipal {
 	subjectId: string;
@@ -74,9 +83,39 @@ interface GoldenMemory {
 	materialityLevel?: MaterialityLevel;
 }
 
+/**
+ * Canonical judgment record of a v0.4.0 vector (contract "judgment") - the same
+ * shape both runtimes consume. Status tells which state's lifecycle predicates
+ * the vector asserts; the confirmed state is always DERIVED by the harness
+ * (status=confirmed + the vector's resolution + the canonical snapshot of the
+ * vector's authorizing principal + the frozen policy version + the vector's
+ * decidedAt), never read from the JSON (ADR-003: only the factory path mints a
+ * principal).
+ */
+interface GoldenJudgment {
+	id: string;
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId?: string;
+	fromId: string;
+	toId: string;
+	relation: MemoryRelation;
+	status: JudgmentStatus;
+	proposer: MemorySource;
+	proposalReason: string;
+	predecessorId?: string;
+	proposedAt: string;
+	updatedAt: string;
+}
+
 interface GoldenCase {
 	name: string;
-	contract?: "legacy-hash" | "approval-policy" | "approval-envelope" | "principal-snapshot";
+	contract?:
+		| "legacy-hash"
+		| "approval-policy"
+		| "approval-envelope"
+		| "principal-snapshot"
+		| "judgment";
 	description?: string;
 	input: {
 		id: string;
@@ -102,6 +141,13 @@ interface GoldenCase {
 	memory?: GoldenMemory;
 	/** Evidence refs added AFTER the review — the stale-envelope proof. */
 	linkedAfterReviewRefs?: string[];
+	/** v0.4.0 judgment contract: the record plus the confirmation facts. */
+	judgment?: GoldenJudgment;
+	/** The confirmed judgment being corrected (correction vector only). */
+	predecessor?: GoldenJudgment;
+	resolution?: string;
+	decidedAt?: string;
+	supersededAt?: string;
 	expected: {
 		contentHash: string;
 		identityHash: string;
@@ -116,6 +162,18 @@ interface GoldenCase {
 		resultingEnvelopeHash?: string;
 		actualEnvelopeHash?: string;
 		canonicalRoles?: AccountingRole[];
+		proposedJudgmentHash?: string;
+		confirmedJudgmentHash?: string;
+		supersededJudgmentHash?: string;
+		canPropose?: boolean;
+		canConfirm?: boolean;
+		canReject?: boolean;
+		canWithdraw?: boolean;
+		canSupersedeConfirmed?: boolean;
+		predecessorCanSupersedeConfirmed?: boolean;
+		predecessorTerminalAfterSupersede?: boolean;
+		agentConfirmErrorCode?: string;
+		immutable?: boolean;
 	};
 }
 
@@ -165,6 +223,105 @@ function principalFromVector(p: GoldenPrincipal): VerifiedApprovalPrincipal {
 		assuranceLevel: p.assuranceLevel,
 		authenticatedAt: p.authenticatedAt,
 	});
+}
+
+/**
+ * Test-only mirror of core.CanPropose: only agent|system Sources may propose
+ * (provenance never authorizes). The production TS mirror of the pure judgment
+ * transitions lands with the lifecycle work; these helpers keep the SHARED
+ * vector assertions byte-identical with Go without duplicating production logic
+ * outside the harness.
+ */
+function canPropose(source: MemorySource): boolean {
+	return source.actorKind === "agent" || source.actorKind === "system";
+}
+
+/** Mirror of core.CanConfirm: proposed only. */
+function canConfirm(status: JudgmentStatus): boolean {
+	return status === "proposed";
+}
+
+/** Mirror of core.CanRejectJudgment: proposed only. */
+function canReject(status: JudgmentStatus): boolean {
+	return status === "proposed";
+}
+
+/** Mirror of core.CanWithdraw: proposed only. */
+function canWithdraw(status: JudgmentStatus): boolean {
+	return status === "proposed";
+}
+
+/** Mirror of core.CanSupersedeConfirmed: confirmed only. */
+function canSupersedeConfirmed(status: JudgmentStatus): boolean {
+	return status === "confirmed";
+}
+
+/**
+ * Test-only mirror of the Go pure confirm guard (core.ConfirmJudgment): the
+ * first failing frozen code wins - INVALID_JUDGMENT_TRANSITION (status), then
+ * RESOLUTION_REQUIRED (blank resolution), then AUTHENTICATION_REQUIRED (no
+ * verified principal). An agent Source can never be a VerifiedApprovalPrincipal
+ * (ADR-003 factory path), so the agent-shaped confirm fails with
+ * AUTHENTICATION_REQUIRED - provenance is never authority.
+ */
+function confirmGuardErrorCode(
+	status: JudgmentStatus,
+	resolution: string,
+	hasVerifiedPrincipal: boolean,
+): string {
+	if (status !== "proposed") {
+		return "INVALID_JUDGMENT_TRANSITION";
+	}
+	if (resolution.trim().length === 0) {
+		return "RESOLUTION_REQUIRED";
+	}
+	if (!hasVerifiedPrincipal) {
+		return "AUTHENTICATION_REQUIRED";
+	}
+	return "";
+}
+
+/** The vector's judgment record as a core.AccountingJudgment. */
+function buildJudgment(j: GoldenJudgment): AccountingJudgment {
+	return {
+		id: j.id,
+		tenantId: j.tenantId,
+		companyId: j.companyId,
+		...(j.fiscalPeriodId === undefined ? {} : { fiscalPeriodId: j.fiscalPeriodId }),
+		fromId: j.fromId,
+		toId: j.toId,
+		relation: j.relation,
+		status: j.status,
+		proposer: { ...j.proposer },
+		proposalReason: j.proposalReason,
+		...(j.predecessorId === undefined ? {} : { predecessorId: j.predecessorId }),
+		proposedAt: j.proposedAt,
+		updatedAt: j.updatedAt,
+	};
+}
+
+/**
+ * The DERIVED confirmed state of a vector: status=confirmed, the vector's
+ * resolution, the canonical adjudicator snapshot of the authorizing principal,
+ * the frozen judgment policy version and the vector's decidedAt. Mirrors
+ * goldenJudgment.confirmedState (Go); updatedAt is set to decidedAt exactly as
+ * the pure transition does and never participates in the hash.
+ */
+function confirmedJudgmentState(
+	j: AccountingJudgment,
+	snapshot: PrincipalSnapshot,
+	resolution: string,
+	decidedAt: string,
+): AccountingJudgment {
+	return {
+		...j,
+		status: "confirmed",
+		resolution,
+		adjudicator: snapshot,
+		policyVersion: JUDGMENT_POLICY_VERSION,
+		decidedAt,
+		updatedAt: decidedAt,
+	};
 }
 
 describe("shared golden vectors (Go ↔ TS parity)", () => {
@@ -299,6 +456,189 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 					expect(
 						principalSnapshot(principalFromVector(tc.principal)).roles,
 					).toEqual(tc.expected.canonicalRoles);
+					break;
+				}
+				case "judgment": {
+					if (tc.judgment === undefined) {
+						throw new Error(`${tc.name}: judgment vector requires judgment`);
+					}
+					const raw = buildJudgment(tc.judgment);
+
+					// Canonical reviewed/proposed hash - the same bytes the sibling
+					// vectors sharing this proposed judgment pin.
+					const proposedHash = await computeJudgmentHash({
+						...raw,
+						status: "proposed",
+						resolution: undefined,
+						decidedAt: undefined,
+					});
+					if (tc.expected.proposedJudgmentHash !== undefined) {
+						expect(proposedHash).toBe(tc.expected.proposedJudgmentHash);
+					}
+
+					// Lifecycle predicates against the vector's recorded state.
+					if (tc.expected.canPropose !== undefined) {
+						expect(canPropose(raw.proposer)).toBe(tc.expected.canPropose);
+					}
+					if (tc.expected.canConfirm !== undefined) {
+						expect(canConfirm(raw.status)).toBe(tc.expected.canConfirm);
+					}
+					if (tc.expected.canReject !== undefined) {
+						expect(canReject(raw.status)).toBe(tc.expected.canReject);
+					}
+					if (tc.expected.canWithdraw !== undefined) {
+						expect(canWithdraw(raw.status)).toBe(tc.expected.canWithdraw);
+					}
+					if (tc.expected.canSupersedeConfirmed !== undefined) {
+						expect(canSupersedeConfirmed(raw.status)).toBe(
+							tc.expected.canSupersedeConfirmed,
+						);
+					}
+
+					// Agent-confirm proof: an agent-shaped confirm (no verified
+					// principal) fails closed with AUTHENTICATION_REQUIRED, and the
+					// vector can never even carry a principal - the policy decision
+					// for the agent is impossible by construction.
+					if (tc.expected.agentConfirmErrorCode !== undefined) {
+						if (tc.resolution === undefined) {
+							throw new Error(
+								`${tc.name}: agentConfirmErrorCode requires a resolution`,
+							);
+						}
+						expect(tc.principal).toBeUndefined();
+						expect(
+							confirmGuardErrorCode(raw.status, tc.resolution, false),
+						).toBe(tc.expected.agentConfirmErrorCode);
+					}
+
+					// Confirmed state + policy (only with an authorizing principal).
+					if (tc.principal !== undefined) {
+						const principal = principalFromVector(tc.principal);
+						if (
+							tc.resolution !== undefined &&
+							tc.decidedAt !== undefined &&
+							tc.predecessor === undefined
+						) {
+							const confirmed = confirmedJudgmentState(
+								raw,
+								principalSnapshot(principal),
+								tc.resolution,
+								tc.decidedAt,
+							);
+							if (tc.expected.confirmedJudgmentHash !== undefined) {
+								expect(await computeJudgmentHash(confirmed)).toBe(
+									tc.expected.confirmedJudgmentHash,
+								);
+							}
+						}
+						const decision = authorizeJudgment(principal, raw);
+						if (tc.expected.allowed !== undefined) {
+							expect(decision.allowed).toBe(tc.expected.allowed);
+						}
+						if (tc.expected.reasonCode !== undefined) {
+							expect(decision.reasonCode).toBe(tc.expected.reasonCode);
+						}
+						if (tc.expected.policyVersion !== undefined) {
+							expect(decision.policyVersion).toBe(tc.expected.policyVersion);
+						}
+					}
+
+					// Predecessor supersession (correction vector): the confirmed
+					// predecessor can be superseded ONLY by the confirming correction,
+					// and once superseded it is terminal. The superseded hash is the
+					// reviewed shape with status=superseded (decided fields never
+					// participate; routing/updatedAt neither).
+					if (tc.predecessor !== undefined) {
+						if (
+							tc.principal === undefined ||
+							tc.resolution === undefined ||
+							tc.decidedAt === undefined ||
+							tc.supersededAt === undefined
+						) {
+							throw new Error(
+								`${tc.name}: predecessor supersession requires principal, resolution, decidedAt and supersededAt`,
+							);
+						}
+						const principal = principalFromVector(tc.principal);
+						const predConfirmed = confirmedJudgmentState(
+							buildJudgment(tc.predecessor),
+							principalSnapshot(principal),
+							tc.resolution,
+							tc.decidedAt,
+						);
+						if (tc.expected.confirmedJudgmentHash !== undefined) {
+							expect(await computeJudgmentHash(predConfirmed)).toBe(
+								tc.expected.confirmedJudgmentHash,
+							);
+						}
+						if (tc.expected.predecessorCanSupersedeConfirmed !== undefined) {
+							expect(canSupersedeConfirmed(predConfirmed.status)).toBe(
+								tc.expected.predecessorCanSupersedeConfirmed,
+							);
+						}
+						// A confirmed record is terminal except for the supersede route.
+						expect(canConfirm(predConfirmed.status)).toBe(false);
+						expect(canReject(predConfirmed.status)).toBe(false);
+						expect(canWithdraw(predConfirmed.status)).toBe(false);
+						// Superseding routes readers to the correction (supersedesId)
+						// and makes the predecessor terminal.
+						const predSuperseded: AccountingJudgment = {
+							...predConfirmed,
+							status: "superseded",
+							supersedesId: tc.judgment.id,
+							updatedAt: tc.supersededAt,
+						};
+						if (tc.expected.supersededJudgmentHash !== undefined) {
+							expect(await computeJudgmentHash(predSuperseded)).toBe(
+								tc.expected.supersededJudgmentHash,
+							);
+						}
+						if (tc.expected.predecessorTerminalAfterSupersede !== undefined) {
+							expect(predSuperseded.status).toBe("superseded");
+							expect(canConfirm(predSuperseded.status)).toBe(false);
+							expect(canReject(predSuperseded.status)).toBe(false);
+							expect(canWithdraw(predSuperseded.status)).toBe(false);
+						}
+					}
+
+					// Immutability proof: the confirmed hash is STABLE (recomputing
+					// from the same fields yields the same hash) and editing ANY
+					// adjudication field (resolution, decidedAt) yields a DIFFERENT
+					// hash - the record the hash protects cannot change silently.
+					if (tc.expected.immutable === true) {
+						if (
+							tc.principal === undefined ||
+							tc.resolution === undefined ||
+							tc.decidedAt === undefined
+						) {
+							throw new Error(
+								`${tc.name}: immutable proof requires principal, resolution and decidedAt`,
+							);
+						}
+						const principal = principalFromVector(tc.principal);
+						const confirmed = confirmedJudgmentState(
+							raw,
+							principalSnapshot(principal),
+							tc.resolution,
+							tc.decidedAt,
+						);
+						const a = await computeJudgmentHash(confirmed);
+						const b = await computeJudgmentHash(confirmed);
+						expect(a).toBe(b);
+						if (tc.expected.confirmedJudgmentHash !== undefined) {
+							expect(a).toBe(tc.expected.confirmedJudgmentHash);
+						}
+						const changedResolution = await computeJudgmentHash({
+							...confirmed,
+							resolution: "a different professional resolution",
+						});
+						expect(changedResolution).not.toBe(a);
+						const changedDecidedAt = await computeJudgmentHash({
+							...confirmed,
+							decidedAt: "2026-08-05T15:00:00Z",
+						});
+						expect(changedDecidedAt).not.toBe(a);
+					}
 					break;
 				}
 				default: {

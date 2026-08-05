@@ -1,0 +1,51 @@
+{
+  "name": "proposed-confirmed",
+  "contract": "judgment",
+  "description": "A proposed supports judgment by an agent proposer (provenance only). The harness derives the confirmed state (status=confirmed, the vector's resolution, the canonical adjudicator snapshot of the authorizing senior_accountant principal, the frozen policy version, the vector's decidedAt) and pins BOTH hashes: proposedJudgmentHash is the reviewed shape and confirmedJudgmentHash is the confirmed shape - Go and TS must compute the SAME two hex strings. The same principal is authorized by judgment-policy/v0.4.0 (minimum role, first code wins).",
+  "judgment": {
+    "id": "judgment-101",
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601",
+    "fromId": "obs-1",
+    "toId": "obs-2",
+    "relation": "supports",
+    "status": "proposed",
+    "proposer": {
+      "system": "sire",
+      "actorId": "agent-7",
+      "actorKind": "agent"
+    },
+    "proposalReason": "invoice totals agree with bank statement",
+    "proposedAt": "2026-08-05T12:00:00Z",
+    "updatedAt": "2026-08-05T12:00:00Z"
+  },
+  "resolution": "invoice totals agree at the 18 percent igv rate",
+  "decidedAt": "2026-08-05T13:00:00Z",
+  "principal": {
+    "subjectId": "subject-1",
+    "tenantId": "tenant-1",
+    "membershipId": "membership-1",
+    "companyScopes": [
+      "acme"
+    ],
+    "roles": [
+      "senior_accountant"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "standard",
+    "authenticatedAt": "2026-08-05T13:00:00Z"
+  },
+  "expected": {
+    "proposedJudgmentHash": "b2db687ce3e052b84064eca3e9b61ca1e632d7069d0bf965fa3407c24457062b",
+    "confirmedJudgmentHash": "50c8723e853e6190fa81d74574895fb0a121ce62ddf6a963ceaf78fa30105571",
+    "canPropose": true,
+    "canConfirm": true,
+    "canReject": true,
+    "canWithdraw": true,
+    "canSupersedeConfirmed": false,
+    "allowed": true,
+    "reasonCode": "AUTHORIZED",
+    "policyVersion": "judgment-policy/v0.4.0"
+  }
+}

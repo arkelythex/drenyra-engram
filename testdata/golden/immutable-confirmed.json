@@ -1,0 +1,51 @@
+{
+  "name": "immutable-confirmed",
+  "contract": "judgment",
+  "description": "A CONFIRMED judgment. Expected: confirmedJudgmentHash is STABLE (recomputing from the same fields yields the same hash, pinned to the same value as proposed-confirmed), the lifecycle predicates prove the only route out of confirmed is supersession (canConfirm=false, canReject=false, canWithdraw=false, canSupersedeConfirmed=true), and editing ANY adjudication field (e.g. resolution or decidedAt) yields a DIFFERENT hash - the harness proves the immutability of the record that the hash protects.",
+  "judgment": {
+    "id": "judgment-101",
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601",
+    "fromId": "obs-1",
+    "toId": "obs-2",
+    "relation": "supports",
+    "status": "confirmed",
+    "proposer": {
+      "system": "sire",
+      "actorId": "agent-7",
+      "actorKind": "agent"
+    },
+    "proposalReason": "invoice totals agree with bank statement",
+    "proposedAt": "2026-08-05T12:00:00Z",
+    "updatedAt": "2026-08-05T13:00:00Z"
+  },
+  "resolution": "invoice totals agree at the 18 percent igv rate",
+  "decidedAt": "2026-08-05T13:00:00Z",
+  "principal": {
+    "subjectId": "subject-1",
+    "tenantId": "tenant-1",
+    "membershipId": "membership-1",
+    "companyScopes": [
+      "acme"
+    ],
+    "roles": [
+      "senior_accountant"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "standard",
+    "authenticatedAt": "2026-08-05T13:00:00Z"
+  },
+  "expected": {
+    "confirmedJudgmentHash": "50c8723e853e6190fa81d74574895fb0a121ce62ddf6a963ceaf78fa30105571",
+    "canPropose": true,
+    "canConfirm": false,
+    "canReject": false,
+    "canWithdraw": false,
+    "canSupersedeConfirmed": true,
+    "immutable": true,
+    "allowed": true,
+    "reasonCode": "AUTHORIZED",
+    "policyVersion": "judgment-policy/v0.4.0"
+  }
+}

@@ -42,6 +42,17 @@ type goldenCase struct {
 	// produced reviewedEnvelopeHash — a stale-envelope proof: the actual
 	// envelope must differ from the hash the reviewer saw.
 	LinkedAfterReviewRefs []string `json:"linkedAfterReviewRefs,omitempty"`
+
+	// v0.4.0 judgment vectors (contract "judgment"). Resolution/DecidedAt are
+	// the CONFIRMATION facts the harness uses to derive the confirmed state
+	// (status=confirmed + resolution + canonical adjudicator snapshot of the
+	// vector's principal + frozen policy version + decidedAt); SupersededAt is
+	// the moment the correction confirms and routes the predecessor.
+	Judgment     *goldenJudgment `json:"judgment,omitempty"`
+	Predecessor  *goldenJudgment `json:"predecessor,omitempty"`
+	Resolution   string          `json:"resolution,omitempty"`
+	DecidedAt    string          `json:"decidedAt,omitempty"`
+	SupersededAt string          `json:"supersededAt,omitempty"`
 }
 
 type goldenInput struct {
@@ -144,6 +155,20 @@ type goldenExpected struct {
 	ResultingEnvelopeHash string   `json:"resultingEnvelopeHash"`
 	ActualEnvelopeHash    string   `json:"actualEnvelopeHash"`
 	CanonicalRoles        []string `json:"canonicalRoles"`
+
+	// v0.4.0 judgment contract (contract "judgment").
+	ProposedJudgmentHash     string `json:"proposedJudgmentHash,omitempty"`
+	ConfirmedJudgmentHash    string `json:"confirmedJudgmentHash,omitempty"`
+	SupersededJudgmentHash   string `json:"supersededJudgmentHash,omitempty"`
+	CanPropose               *bool  `json:"canPropose,omitempty"`
+	CanConfirm               *bool  `json:"canConfirm,omitempty"`
+	CanReject                *bool  `json:"canReject,omitempty"`
+	CanWithdraw              *bool  `json:"canWithdraw,omitempty"`
+	CanSupersedeConfirmed    *bool  `json:"canSupersedeConfirmed,omitempty"`
+	PredecessorCanSupersedeConfirmed *bool `json:"predecessorCanSupersedeConfirmed,omitempty"`
+	PredecessorTerminalAfterSupersede *bool `json:"predecessorTerminalAfterSupersede,omitempty"`
+	AgentConfirmErrorCode    string `json:"agentConfirmErrorCode,omitempty"`
+	Immutable                bool   `json:"immutable,omitempty"`
 }
 
 // TestGoldenVectorsGo runs every shared vector against the Go implementation,
@@ -178,6 +203,8 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runApprovalEnvelopeGolden(t, tc)
 			case "principal-snapshot":
 				runPrincipalSnapshotGolden(t, tc)
+			case "judgment":
+				runJudgmentGolden(t, tc)
 			default:
 				t.Fatalf("%s: unknown golden contract %q", tc.Name, tc.Contract)
 			}
@@ -391,4 +418,251 @@ func runPrincipalSnapshotGolden(t *testing.T, tc goldenCase) {
 		}
 	}
 	t.Logf("SNAPSHOT %s canonicalRoles=%v", tc.Name, got)
+}
+
+// ──────────────────────────────────────────────
+// v0.4.0 Step 2 — judgment contract ("judgment")
+// ──────────────────────────────────────────────
+
+// goldenJudgment is the canonical judgment shape of a v0.4.0 vector: the record
+// fields BOTH runtimes consume. Status tells which state's lifecycle predicates
+// the vector asserts; the confirmed state is NEVER read from the JSON — the
+// harness DERIVES it (status=confirmed + the vector's resolution + the canonical
+// snapshot of the vector's authorizing principal + the frozen policy version +
+// the vector's decidedAt), because the adjudicator snapshot must come from the
+// verified-principal factory path (ADR-003), never from caller-declared JSON.
+// The confirmed hash therefore pins the same bytes in Go and TS by construction.
+type goldenJudgment struct {
+	ID             string              `json:"id"`
+	TenantID       string              `json:"tenantId"`
+	CompanyID      string              `json:"companyId"`
+	FiscalPeriodID string              `json:"fiscalPeriodId,omitempty"`
+	FromID         string              `json:"fromId"`
+	ToID           string              `json:"toId"`
+	Relation       core.Relation       `json:"relation"`
+	Status         core.JudgmentStatus `json:"status"`
+	Proposer       core.Source         `json:"proposer"`
+	ProposalReason string              `json:"proposalReason"`
+	PredecessorID  string              `json:"predecessorId,omitempty"`
+	ProposedAt     string              `json:"proposedAt"`
+	UpdatedAt      string              `json:"updatedAt"`
+}
+
+// judgment builds the raw AccountingJudgment of the vector (the JSON state).
+func (g *goldenJudgment) judgment() core.AccountingJudgment {
+	return core.AccountingJudgment{
+		ID:             g.ID,
+		TenantID:       g.TenantID,
+		CompanyID:      g.CompanyID,
+		FiscalPeriodID: g.FiscalPeriodID,
+		FromID:         g.FromID,
+		ToID:           g.ToID,
+		Relation:       g.Relation,
+		Status:         g.Status,
+		Proposer:       g.Proposer,
+		ProposalReason: g.ProposalReason,
+		PredecessorID:  g.PredecessorID,
+		ProposedAt:     g.ProposedAt,
+		UpdatedAt:      g.UpdatedAt,
+	}
+}
+
+// reviewedState is the REVIEWED shape the proposed hash covers: base fields with
+// status forced to proposed and the decided fields cleared — the same shape a
+// confirm/reject compares ExpectedJudgmentHash against before deciding (design
+// §2). Routing (supersedesId) and updatedAt never participate either.
+func (g *goldenJudgment) reviewedState() core.AccountingJudgment {
+	j := g.judgment()
+	j.Status = core.JudgmentProposed
+	j.Resolution = ""
+	j.DecidedAt = ""
+	return j
+}
+
+// confirmedState derives the CONFIRMED state of the vector: status=confirmed,
+// the vector's resolution, the canonical adjudicator snapshot of the authorizing
+// principal, the frozen judgment policy version and the vector's decidedAt
+// (design §4/§6). updatedAt is set to decidedAt exactly as the pure transition
+// does; it never participates in the hash.
+func (g *goldenJudgment) confirmedState(snapshot *auth.PrincipalSnapshot, resolution, decidedAt string) core.AccountingJudgment {
+	j := g.judgment()
+	j.Status = core.JudgmentConfirmed
+	j.Resolution = resolution
+	j.Adjudicator = snapshot
+	j.PolicyVersion = authz.JudgmentPolicyVersion
+	j.DecidedAt = decidedAt
+	j.UpdatedAt = decidedAt
+	return j
+}
+
+// assertBool asserts an optional expected boolean when the vector pins one.
+func assertBool(t *testing.T, name, field string, got bool, want *bool) {
+	t.Helper()
+	if want != nil && got != *want {
+		t.Errorf("%s: %s = %v, want %v", name, field, got, *want)
+	}
+}
+
+// runJudgmentGolden runs the PURE v0.4.0 judgment contract on a vector: the
+// canonical reviewed/proposed hash, the DERIVED confirmed hash, the lifecycle
+// predicates against the vector's recorded state, the judgment policy decision
+// for the vector's principal (if present) and — for the agent vector — the
+// AUTHENTICATION_REQUIRED proof that an agent Source carries no adjudication
+// authority. The SAME vector file must yield the identical hashes, predicates
+// and policy outcomes from TypeScript (core/__tests__/golden.test.ts).
+func runJudgmentGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if tc.Judgment == nil {
+		t.Fatalf("%s: judgment vector requires judgment", tc.Name)
+	}
+	raw := tc.Judgment.judgment()
+
+	// Canonical reviewed/proposed hash (shared with every sibling vector that
+	// describes the same proposed judgment).
+	proposedHash := core.ComputeJudgmentHash(tc.Judgment.reviewedState())
+	if tc.Expected.ProposedJudgmentHash != "" && proposedHash != tc.Expected.ProposedJudgmentHash {
+		t.Errorf("%s: proposedJudgmentHash = %s, want %s", tc.Name, proposedHash, tc.Expected.ProposedJudgmentHash)
+	}
+
+	// Lifecycle predicates against the vector's recorded state. canPropose takes
+	// the proposer SOURCE (agents/systems propose; provenance never authorizes).
+	assertBool(t, tc.Name, "canPropose", core.CanPropose(raw.Proposer), tc.Expected.CanPropose)
+	assertBool(t, tc.Name, "canConfirm", core.CanConfirm(raw.Status), tc.Expected.CanConfirm)
+	assertBool(t, tc.Name, "canReject", core.CanRejectJudgment(raw.Status), tc.Expected.CanReject)
+	assertBool(t, tc.Name, "canWithdraw", core.CanWithdraw(raw.Status), tc.Expected.CanWithdraw)
+	assertBool(t, tc.Name, "canSupersedeConfirmed", core.CanSupersedeConfirmed(raw.Status), tc.Expected.CanSupersedeConfirmed)
+
+	confirmedHash := ""
+	if tc.Principal != nil {
+		principal, err := mintGoldenPrincipal(*tc.Principal)
+		if err != nil {
+			t.Fatalf("%s: mint golden principal: %v", tc.Name, err)
+		}
+
+		// Derive the confirmed state when the vector supplies the confirmation
+		// facts; the adjudicator snapshot is the canonical view of the SAME
+		// principal that authorized the decision. For a correction vector the
+		// expected confirmedJudgmentHash belongs to the PREDECESSOR (the confirmed
+		// record being corrected) and is asserted in the predecessor block below.
+		if tc.Resolution != "" && tc.DecidedAt != "" && tc.Predecessor == nil {
+			snapshot := principal.PrincipalSnapshot()
+			confirmed := tc.Judgment.confirmedState(&snapshot, tc.Resolution, tc.DecidedAt)
+			confirmedHash = core.ComputeJudgmentHash(confirmed)
+			if tc.Expected.ConfirmedJudgmentHash != "" && confirmedHash != tc.Expected.ConfirmedJudgmentHash {
+				t.Errorf("%s: confirmedJudgmentHash = %s, want %s", tc.Name, confirmedHash, tc.Expected.ConfirmedJudgmentHash)
+			}
+		}
+
+		// Frozen judgment policy on the vector's recorded judgment.
+		decision := authz.NewJudgmentPolicy().Authorize(principal, raw)
+		if tc.Expected.Allowed != nil && decision.Allowed != *tc.Expected.Allowed {
+			t.Errorf("%s: allowed = %v, want %v", tc.Name, decision.Allowed, *tc.Expected.Allowed)
+		}
+		if tc.Expected.ReasonCode != "" && decision.ReasonCode != tc.Expected.ReasonCode {
+			t.Errorf("%s: reasonCode = %q, want %q", tc.Name, decision.ReasonCode, tc.Expected.ReasonCode)
+		}
+		if tc.Expected.PolicyVersion != "" && decision.PolicyVersion != tc.Expected.PolicyVersion {
+			t.Errorf("%s: policyVersion = %q, want %q", tc.Name, decision.PolicyVersion, tc.Expected.PolicyVersion)
+		}
+	}
+
+	// Agent-confirm proof: an agent-shaped confirm (no verified principal) fails
+	// closed with AUTHENTICATION_REQUIRED before any mutation, and the vector can
+	// never even carry a principal — the policy decision is impossible by
+	// construction.
+	if tc.Expected.AgentConfirmErrorCode != "" {
+		if tc.Resolution == "" {
+			t.Fatalf("%s: agentConfirmErrorCode requires a resolution", tc.Name)
+		}
+		if tc.Principal != nil {
+			t.Errorf("%s: an agent proposer must not carry a principal (impossible by construction)", tc.Name)
+		}
+		attempt := raw
+		err := core.ConfirmJudgment(&attempt, tc.Resolution, nil, authz.JudgmentPolicyVersion, tc.DecidedAt)
+		if got := auth.Code(err); got != tc.Expected.AgentConfirmErrorCode {
+			t.Errorf("%s: agentConfirmErrorCode = %q, want %q", tc.Name, got, tc.Expected.AgentConfirmErrorCode)
+		}
+		if attempt.Status != raw.Status {
+			t.Errorf("%s: failed agent confirm mutated status to %q", tc.Name, attempt.Status)
+		}
+	}
+
+	// Predecessor supersession (correction vector): the confirmed predecessor can
+	// be superseded ONLY by the confirming correction, and once superseded it is
+	// terminal. The superseded hash is the reviewed shape with status=superseded
+	// (decided fields never participate; routing/updatedAt neither).
+		supersededHash := ""
+	if tc.Predecessor != nil {
+		if tc.Principal == nil || tc.Resolution == "" || tc.DecidedAt == "" || tc.SupersededAt == "" {
+			t.Fatalf("%s: predecessor supersession requires principal, resolution, decidedAt and supersededAt", tc.Name)
+		}
+		principal, err := mintGoldenPrincipal(*tc.Principal)
+		if err != nil {
+			t.Fatalf("%s: mint golden principal: %v", tc.Name, err)
+		}
+		snapshot := principal.PrincipalSnapshot()
+		predConfirmed := tc.Predecessor.confirmedState(&snapshot, tc.Resolution, tc.DecidedAt)
+		predConfirmedHash := core.ComputeJudgmentHash(predConfirmed)
+		if tc.Expected.ConfirmedJudgmentHash != "" && predConfirmedHash != tc.Expected.ConfirmedJudgmentHash {
+			t.Errorf("%s: confirmedJudgmentHash = %s, want %s", tc.Name, predConfirmedHash, tc.Expected.ConfirmedJudgmentHash)
+		}
+		// The PREDECESSOR's confirmed hash is the one the vector pins as
+		// expected.confirmedJudgmentHash (the confirmed record being corrected).
+		confirmedHash = predConfirmedHash
+		assertBool(t, tc.Name, "predecessorCanSupersedeConfirmed", core.CanSupersedeConfirmed(predConfirmed.Status), tc.Expected.PredecessorCanSupersedeConfirmed)
+		// A confirmed record is terminal except for the supersede route.
+		if core.CanConfirm(predConfirmed.Status) || core.CanRejectJudgment(predConfirmed.Status) || core.CanWithdraw(predConfirmed.Status) {
+			t.Errorf("%s: confirmed predecessor must be terminal except for supersession", tc.Name)
+		}
+
+		predSuperseded := predConfirmed
+		if err := core.SupersedeJudgment(&predSuperseded, tc.Judgment.ID, tc.SupersededAt); err != nil {
+			t.Fatalf("%s: supersede predecessor: %v", tc.Name, err)
+		}
+		supersededHash = core.ComputeJudgmentHash(predSuperseded)
+		if tc.Expected.SupersededJudgmentHash != "" && supersededHash != tc.Expected.SupersededJudgmentHash {
+			t.Errorf("%s: supersededJudgmentHash = %s, want %s", tc.Name, supersededHash, tc.Expected.SupersededJudgmentHash)
+		}
+		supersededOK := predSuperseded.Status == core.JudgmentSuperseded &&
+			!core.CanConfirm(predSuperseded.Status) &&
+			!core.CanRejectJudgment(predSuperseded.Status) &&
+			!core.CanWithdraw(predSuperseded.Status)
+		assertBool(t, tc.Name, "predecessorTerminalAfterSupersede", supersededOK, tc.Expected.PredecessorTerminalAfterSupersede)
+	}
+
+	// Immutability proof: the confirmed hash is STABLE (recomputing from the same
+	// fields yields the same hash) and editing ANY adjudication field (resolution,
+	// decidedAt) yields a DIFFERENT hash — the record the hash protects cannot
+	// change silently.
+	if tc.Expected.Immutable {
+		if tc.Principal == nil || tc.Resolution == "" || tc.DecidedAt == "" {
+			t.Fatalf("%s: immutable proof requires principal, resolution and decidedAt", tc.Name)
+		}
+		principal, err := mintGoldenPrincipal(*tc.Principal)
+		if err != nil {
+			t.Fatalf("%s: mint golden principal: %v", tc.Name, err)
+		}
+		snapshot := principal.PrincipalSnapshot()
+		confirmed := tc.Judgment.confirmedState(&snapshot, tc.Resolution, tc.DecidedAt)
+		a := core.ComputeJudgmentHash(confirmed)
+		b := core.ComputeJudgmentHash(confirmed)
+		if a != b {
+			t.Errorf("%s: recomputing the confirmed hash must be deterministic", tc.Name)
+		}
+		if tc.Expected.ConfirmedJudgmentHash != "" && a != tc.Expected.ConfirmedJudgmentHash {
+			t.Errorf("%s: confirmedJudgmentHash = %s, want %s", tc.Name, a, tc.Expected.ConfirmedJudgmentHash)
+		}
+		mutatedResolution := confirmed
+		mutatedResolution.Resolution = "a different professional resolution"
+		if core.ComputeJudgmentHash(mutatedResolution) == a {
+			t.Errorf("%s: editing resolution must change the confirmed hash", tc.Name)
+		}
+		mutatedDecidedAt := confirmed
+		mutatedDecidedAt.DecidedAt = "2026-08-05T15:00:00Z"
+		if core.ComputeJudgmentHash(mutatedDecidedAt) == a {
+			t.Errorf("%s: editing decidedAt must change the confirmed hash", tc.Name)
+		}
+	}
+
+	t.Logf("JUDGMENT %s proposed=%s confirmed=%s superseded=%s", tc.Name, proposedHash, confirmedHash, supersededHash)
 }

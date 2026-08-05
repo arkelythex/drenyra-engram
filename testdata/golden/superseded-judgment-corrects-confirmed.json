@@ -1,0 +1,74 @@
+{
+  "name": "superseded-judgment-corrects-confirmed",
+  "contract": "judgment",
+  "description": "A CONFIRMED judgment (judgment-101) plus a new proposed correction (judgment-102, predecessorId = the confirmed id, same pair + same supports relation). Expected: the correction's reviewed hash, the predecessor's DERIVED confirmed hash, and the predecessor's superseded hash (terminal reviewed shape: status=superseded, decided fields excluded). The confirmed predecessor CAN be superseded by the correction (canSupersedeConfirmed=true) and, once superseded, is terminal (canConfirm=false, canReject=false, canWithdraw=false) - the only route out of confirmed. Go and TS must compute identical hashes for all three states.",
+  "judgment": {
+    "id": "judgment-102",
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601",
+    "fromId": "obs-1",
+    "toId": "obs-2",
+    "relation": "supports",
+    "status": "proposed",
+    "proposer": {
+      "system": "sire",
+      "actorId": "agent-7",
+      "actorKind": "agent"
+    },
+    "proposalReason": "corrected totals with the confirmed igv rate",
+    "predecessorId": "judgment-101",
+    "proposedAt": "2026-08-06T12:00:00Z",
+    "updatedAt": "2026-08-06T12:00:00Z"
+  },
+  "predecessor": {
+    "id": "judgment-101",
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601",
+    "fromId": "obs-1",
+    "toId": "obs-2",
+    "relation": "supports",
+    "status": "confirmed",
+    "proposer": {
+      "system": "sire",
+      "actorId": "agent-7",
+      "actorKind": "agent"
+    },
+    "proposalReason": "invoice totals agree with bank statement",
+    "proposedAt": "2026-08-05T12:00:00Z",
+    "updatedAt": "2026-08-05T13:00:00Z"
+  },
+  "resolution": "invoice totals agree at the 18 percent igv rate",
+  "decidedAt": "2026-08-05T13:00:00Z",
+  "supersededAt": "2026-08-06T12:30:00Z",
+  "principal": {
+    "subjectId": "subject-1",
+    "tenantId": "tenant-1",
+    "membershipId": "membership-1",
+    "companyScopes": [
+      "acme"
+    ],
+    "roles": [
+      "senior_accountant"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "standard",
+    "authenticatedAt": "2026-08-05T13:00:00Z"
+  },
+  "expected": {
+    "proposedJudgmentHash": "a3ddc004366e611bd620b1d1bdbd9fa7eed7234143af5349a18dd59c14f6c605",
+    "confirmedJudgmentHash": "50c8723e853e6190fa81d74574895fb0a121ce62ddf6a963ceaf78fa30105571",
+    "supersededJudgmentHash": "46fe4b38b699b756f7abfa2f0ba6a16ae0f9bc2439fd518c621b24f440e1edf5",
+    "canPropose": true,
+    "canConfirm": true,
+    "canReject": true,
+    "canWithdraw": true,
+    "canSupersedeConfirmed": false,
+    "predecessorCanSupersedeConfirmed": true,
+    "predecessorTerminalAfterSupersede": true,
+    "allowed": true,
+    "reasonCode": "AUTHORIZED",
+    "policyVersion": "judgment-policy/v0.4.0"
+  }
+}
