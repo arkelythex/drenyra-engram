@@ -1214,314 +1214,320 @@ export async function computeJudgmentHash(
 		}
 	}
 	return sha256Hex(JSON.stringify(payload));
-    }
-    
-    // ──────────────────────────────────────────────
-    // v0.5.0 — First-class reconciliation (design §3)
-    // ──────────────────────────────────────────────
-    
-    /**
-     * Lifecycle state of a first-class reconciliation (v0.5.0). Mirrors
-     * core.ReconciliationStatus. Legal machine: proposed → confirmed | rejected |
-     * withdrawn | superseded; confirmed → superseded ONLY; rejected/withdrawn/
-     * superseded are terminal.
-     */
-    export const RECONCILIATION_STATUSES = [
-    	"proposed",
-    	"confirmed",
-    	"rejected",
-    	"withdrawn",
-    	"superseded",
-    ] as const;
-    
-    export type ReconciliationStatus = (typeof RECONCILIATION_STATUSES)[number];
-    
-    /**
-     * An adjudication act over two observations (v0.5.0, design §3.2) — NOT a
-     * memory kind. Confirmation atomically projects one observation relation
-     * leftMemoryId --reconciles--> rightMemoryId. Agents/systems may propose and
-     * withdraw their own proposals (proposer is provenance ONLY, never
-     * authority); only a VerifiedApprovalPrincipal may confirm or reject.
-     * Mirrors core.Reconciliation.
-     */
-    export interface Reconciliation {
-    	id: string;
-    	tenantId: string;
-    	companyId: string;
-    	/** Set only when both endpoints share a fiscal period. */
-    	fiscalPeriodId?: string;
-    	leftMemoryId: string;
-    	rightMemoryId: string;
-    	method: string;
-    	currency: string;
-    	leftAmountCents: bigint;
-    	rightAmountCents: bigint;
-    	/** Engine-derived = leftAmountCents − rightAmountCents (schema-enforced). */
-    	varianceCents: bigint;
-    	/** Accepted variance band (REQUIRED, non-negative). */
-    	toleranceCents: bigint;
-    	status: ReconciliationStatus;
-    	/** Provenance only — agent|system; never authority. */
-    	proposer: MemorySource;
-    	proposalReason: string;
-    	/** Empty until confirmed/rejected. */
-    	resolution?: string;
-    	/** Absent until an authenticated decision. */
-    	adjudicator?: PrincipalSnapshot;
-    	/** Empty until an authenticated decision. */
-    	policyVersion?: string;
-    	/** Correction target declared by the successor. */
-    	predecessorId?: string;
-    	/** Successor routing stored on the old row. */
-    	supersedesId?: string;
-    	proposedAt: string;
-    	/** Set when decided (confirmed/rejected/withdrawn/superseded). */
-    	decidedAt?: string;
-    }
-    
-    /**
-     * Proposal command (v0.5.0). Deliberately carries NO subject, membership,
-     * role, actor-kind or assurance fields (compile-level contract): the proposer
-     * Source arrives separately as provenance-only caller context, and authority
-     * never travels in the transport payload. VarianceCents is engine-derived
-     * (never caller-supplied). Amounts are signed BigInt cents (never float).
-     * Mirrors core.ProposeReconciliationCommand.
-     */
-    export interface ProposeReconciliationCommand {
-    	leftMemoryId: string;
-    	rightMemoryId: string;
-    	method: string;
-    	currency: string;
-    	leftAmountCents: bigint;
-    	rightAmountCents: bigint;
-    	/** Accepted variance band (REQUIRED, non-negative). */
-    	toleranceCents: bigint;
-    	/** Proposer's justification (REQUIRED, non-whitespace). */
-    	reason: string;
-    	/** Idempotency key scoped to (tenant, requestId). */
-    	requestId: string;
-    	/** Names an existing reconciliation this proposal corrects. */
-    	predecessorId?: string;
-    }
-    
-    /**
-     * Confirmation command (v0.5.0). Resolution is the professional human
-     * resolution (REQUIRED); expectedReconciliationHash is the reviewed proposed
-     * hash the adjudicator actually saw. Mirrors
-     * core.ConfirmReconciliationCommand.
-     */
-    export interface ConfirmReconciliationCommand {
-    	reconciliationId: string;
-    	resolution: string;
-    	expectedReconciliationHash: string;
-    	requestId: string;
-    }
-    
-    /**
-     * Rejection command (v0.5.0). Reason is the human reason, stored as the
-     * resolution (REQUIRED); expectedReconciliationHash is the reviewed proposed
-     * hash the adjudicator actually saw. Mirrors core.RejectReconciliationCommand.
-     */
-    export interface RejectReconciliationCommand {
-    	reconciliationId: string;
-    	reason: string;
-    	expectedReconciliationHash: string;
-    	requestId: string;
-    }
-    
-    /**
-     * Withdrawal command (v0.5.0): withdraws the caller's OWN proposed
-     * reconciliation. Mirrors core.WithdrawReconciliationCommand.
-     */
-    export interface WithdrawReconciliationCommand {
-    	reconciliationId: string;
-    	requestId: string;
-    }
-    
-    /** Proposal result (v0.5.0). A proposal writes NO reconciliation event, so the
-     * result carries the entity alone; a same-request retry replays the same
-     * reconciliation with idempotentReplay=true. Mirrors
-     * core.ProposeReconciliationResult. */
-    export interface ProposeReconciliationResult {
-    	reconciliationId: string;
-    	reconciliation: Reconciliation;
-    	idempotentReplay: boolean;
-    }
-    
-    /** Confirmation result (v0.5.0). Mirrors core.ConfirmReconciliationResult. */
-    export interface ConfirmReconciliationResult {
-    	reconciliationId: string;
-    	reconciliation: Reconciliation;
-    	/** The immutable 'confirm' event written for this decision. */
-    	reconciliationEventId: string;
-    	idempotentReplay: boolean;
-    }
-    
-    /** Rejection result (v0.5.0). Mirrors core.RejectReconciliationResult. */
-    export interface RejectReconciliationResult {
-    	reconciliationId: string;
-    	reconciliation: Reconciliation;
-    	/** The immutable 'reject' event written for this decision. */
-    	reconciliationEventId: string;
-    	idempotentReplay: boolean;
-    }
-    
-    /** Withdrawal result (v0.5.0). Mirrors core.WithdrawReconciliationResult. */
-    export interface WithdrawReconciliationResult {
-    	reconciliationId: string;
-    	reconciliation: Reconciliation;
-    	/** The immutable 'withdraw' event written for this withdrawal. */
-    	reconciliationEventId: string;
-    	idempotentReplay: boolean;
-    }
-    
-    /** Reports whether status is a known reconciliation status. Mirrors
-     * core.IsValidReconciliationStatus. */
-    export function isValidReconciliationStatus(
-    	status: string,
-    ): status is ReconciliationStatus {
-    	return (RECONCILIATION_STATUSES as readonly string[]).includes(status);
-    }
-    
-    /** Can be confirmed (proposed only). Mirrors core.CanConfirmReconciliation. */
-    export function canConfirmReconciliation(status: ReconciliationStatus): boolean {
-    	return status === "proposed";
-    }
-    
-    /** Can be rejected (proposed only). Mirrors core.CanRejectReconciliation. */
-    export function canRejectReconciliation(status: ReconciliationStatus): boolean {
-    	return status === "proposed";
-    }
-    
-    /** Can be withdrawn by its proposer (proposed only). Mirrors
-     * core.CanWithdrawReconciliation. */
-    export function canWithdrawReconciliation(status: ReconciliationStatus): boolean {
-    	return status === "proposed";
-    }
-    
-    /** Can be superseded (confirmed only — a correction supersedes its
-     * predecessor while atomically confirming). Mirrors
-     * core.CanSupersedeReconciliation. */
-    export function canSupersedeReconciliation(status: ReconciliationStatus): boolean {
-    	return status === "confirmed";
-    }
-    
-    /**
-     * The adjacency table of the reconciliation machine: proposed → confirmed|
-     * rejected|withdrawn|superseded; confirmed → superseded ONLY; terminal states
-     * never re-open. Mirrors core.IsLegalReconciliationTransition.
-     */
-    export function isLegalReconciliationTransition(
-    	from: ReconciliationStatus,
-    	to: ReconciliationStatus,
-    ): boolean {
-    	switch (from) {
-    		case "proposed":
-    			return (
-    				to === "confirmed" ||
-    				to === "rejected" ||
-    				to === "withdrawn" ||
-    				to === "superseded"
-    			);
-    		case "confirmed":
-    			return to === "superseded";
-    		default:
-    			return false;
-    	}
-    }
-    
-    /**
-     * Compact canonical JSON with NO HTML escaping and exact int64 support:
-     * strings delegate to JSON.stringify (identical escaping to Go's
-     * encoding/json without SetEscapeHTML), bigint values marshal as bare integer
-     * digits (never quoted, never coerced through a lossy JS Number), object keys
-     * follow insertion order (the caller builds payloads in the Go struct field
-     * order), undefined fails closed. This is the byte contract of
-     * computeReconciliationHash — Go marshals int64 cents as JSON numbers, and
-     * JSON.stringify alone cannot represent BigInt.
-     */
-    function canonicalJSONStringify(value: unknown): string {
-    	if (value === null) return "null";
-    	if (typeof value === "bigint") return value.toString();
-    	if (typeof value === "number" || typeof value === "boolean") {
-    		return JSON.stringify(value);
-    	}
-    	if (typeof value === "string") return JSON.stringify(value);
-    	if (Array.isArray(value)) {
-    		return `[${value.map(canonicalJSONStringify).join(",")}]`;
-    	}
-    	if (typeof value === "object") {
-    		const entries = Object.entries(value as Record<string, unknown>);
-    		return `{${entries
-    			.map(([key, v]) => `${JSON.stringify(key)}:${canonicalJSONStringify(v)}`)
-    			.join(",")}}`;
-    	}
-    	throw new Error(
-    		"canonical JSON: unsupported value in reconciliation hash payload",
-    	);
-    }
-    
-    /**
-     * Canonical SHA-256 (hex) of a reconciliation's REVIEWED or CONFIRMED state
-     * over canonical JSON — byte-identical with core.ComputeReconciliationHash
-     * (Go). The payload key order below is the byte contract (Go marshals its
-     * payload struct in this exact order).
-     *
-     * Documented field coverage per status:
-     * - proposed (and every non-confirmed status): id, tenantId, companyId,
-     *   fiscalPeriodId ("" when absent), leftMemoryId, rightMemoryId, method,
-     *   currency, leftAmountCents, rightAmountCents, varianceCents,
-     *   toleranceCents, status, canonical proposer (sorted keys, empties
-     *   omitted), proposalReason, predecessorId ("" when absent), proposedAt.
-     *   Routing fields (supersedesId) NEVER participate.
-     * - confirmed: the base fields PLUS resolution, the canonical adjudicator
-     *   snapshot (sorted roles), policyVersion, status and decidedAt.
-     *
-     * Rejected/withdrawn/superseded reconciliations hash with the reviewed shape
-     * (decided fields never participate).
-     */
-    export async function computeReconciliationHash(
-    	r: Reconciliation,
-    ): Promise<string> {
-    	const payload: Record<string, unknown> = {
-    		id: r.id,
-    		tenantId: r.tenantId,
-    		companyId: r.companyId,
-    		fiscalPeriodId: r.fiscalPeriodId ?? "",
-    		leftMemoryId: r.leftMemoryId,
-    		rightMemoryId: r.rightMemoryId,
-    		method: r.method,
-    		currency: r.currency,
-    		leftAmountCents: r.leftAmountCents,
-    		rightAmountCents: r.rightAmountCents,
-    		varianceCents: r.varianceCents,
-    		toleranceCents: r.toleranceCents,
-    		status: r.status,
-    		proposer: canonicalJudgmentProposer(r.proposer),
-    		proposalReason: r.proposalReason,
-    		predecessorId: r.predecessorId ?? "",
-    		proposedAt: r.proposedAt,
-    	};
-    	if (r.status === "confirmed") {
-    		if (r.resolution !== undefined && r.resolution !== "") {
-    			payload.resolution = r.resolution;
-    		}
-    		if (r.adjudicator !== undefined) {
-    			payload.adjudicator = canonicalJudgmentSnapshot(r.adjudicator);
-    		}
-    		if (r.policyVersion !== undefined && r.policyVersion !== "") {
-    			payload.policyVersion = r.policyVersion;
-    		}
-    		if (r.decidedAt !== undefined && r.decidedAt !== "") {
-    			payload.decidedAt = r.decidedAt;
-    		}
-    	}
-    	return sha256Hex(canonicalJSONStringify(payload));
-    }
-    
-    // ──────────────────────────────────────────────
-    // v0.4.0 Step 3 — Ed25519 action receipts
-    // ──────────────────────────────────────────────
+}
+
+// ──────────────────────────────────────────────
+// v0.5.0 — First-class reconciliation (design §3)
+// ──────────────────────────────────────────────
+
+/**
+ * Lifecycle state of a first-class reconciliation (v0.5.0). Mirrors
+ * core.ReconciliationStatus. Legal machine: proposed → confirmed | rejected |
+ * withdrawn | superseded; confirmed → superseded ONLY; rejected/withdrawn/
+ * superseded are terminal.
+ */
+export const RECONCILIATION_STATUSES = [
+	"proposed",
+	"confirmed",
+	"rejected",
+	"withdrawn",
+	"superseded",
+] as const;
+
+export type ReconciliationStatus = (typeof RECONCILIATION_STATUSES)[number];
+
+/**
+ * An adjudication act over two observations (v0.5.0, design §3.2) — NOT a
+ * memory kind. Confirmation atomically projects one observation relation
+ * leftMemoryId --reconciles--> rightMemoryId. Agents/systems may propose and
+ * withdraw their own proposals (proposer is provenance ONLY, never
+ * authority); only a VerifiedApprovalPrincipal may confirm or reject.
+ * Mirrors core.Reconciliation.
+ */
+export interface Reconciliation {
+	id: string;
+	tenantId: string;
+	companyId: string;
+	/** Set only when both endpoints share a fiscal period. */
+	fiscalPeriodId?: string;
+	leftMemoryId: string;
+	rightMemoryId: string;
+	method: string;
+	currency: string;
+	leftAmountCents: bigint;
+	rightAmountCents: bigint;
+	/** Engine-derived = leftAmountCents − rightAmountCents (schema-enforced). */
+	varianceCents: bigint;
+	/** Accepted variance band (REQUIRED, non-negative). */
+	toleranceCents: bigint;
+	status: ReconciliationStatus;
+	/** Provenance only — agent|system; never authority. */
+	proposer: MemorySource;
+	proposalReason: string;
+	/** Empty until confirmed/rejected. */
+	resolution?: string;
+	/** Absent until an authenticated decision. */
+	adjudicator?: PrincipalSnapshot;
+	/** Empty until an authenticated decision. */
+	policyVersion?: string;
+	/** Correction target declared by the successor. */
+	predecessorId?: string;
+	/** Successor routing stored on the old row. */
+	supersedesId?: string;
+	proposedAt: string;
+	/** Set when decided (confirmed/rejected/withdrawn/superseded). */
+	decidedAt?: string;
+}
+
+/**
+ * Proposal command (v0.5.0). Deliberately carries NO subject, membership,
+ * role, actor-kind or assurance fields (compile-level contract): the proposer
+ * Source arrives separately as provenance-only caller context, and authority
+ * never travels in the transport payload. VarianceCents is engine-derived
+ * (never caller-supplied). Amounts are signed BigInt cents (never float).
+ * Mirrors core.ProposeReconciliationCommand.
+ */
+export interface ProposeReconciliationCommand {
+	leftMemoryId: string;
+	rightMemoryId: string;
+	method: string;
+	currency: string;
+	leftAmountCents: bigint;
+	rightAmountCents: bigint;
+	/** Accepted variance band (REQUIRED, non-negative). */
+	toleranceCents: bigint;
+	/** Proposer's justification (REQUIRED, non-whitespace). */
+	reason: string;
+	/** Idempotency key scoped to (tenant, requestId). */
+	requestId: string;
+	/** Names an existing reconciliation this proposal corrects. */
+	predecessorId?: string;
+}
+
+/**
+ * Confirmation command (v0.5.0). Resolution is the professional human
+ * resolution (REQUIRED); expectedReconciliationHash is the reviewed proposed
+ * hash the adjudicator actually saw. Mirrors
+ * core.ConfirmReconciliationCommand.
+ */
+export interface ConfirmReconciliationCommand {
+	reconciliationId: string;
+	resolution: string;
+	expectedReconciliationHash: string;
+	requestId: string;
+}
+
+/**
+ * Rejection command (v0.5.0). Reason is the human reason, stored as the
+ * resolution (REQUIRED); expectedReconciliationHash is the reviewed proposed
+ * hash the adjudicator actually saw. Mirrors core.RejectReconciliationCommand.
+ */
+export interface RejectReconciliationCommand {
+	reconciliationId: string;
+	reason: string;
+	expectedReconciliationHash: string;
+	requestId: string;
+}
+
+/**
+ * Withdrawal command (v0.5.0): withdraws the caller's OWN proposed
+ * reconciliation. Mirrors core.WithdrawReconciliationCommand.
+ */
+export interface WithdrawReconciliationCommand {
+	reconciliationId: string;
+	requestId: string;
+}
+
+/** Proposal result (v0.5.0). A proposal writes NO reconciliation event, so the
+ * result carries the entity alone; a same-request retry replays the same
+ * reconciliation with idempotentReplay=true. Mirrors
+ * core.ProposeReconciliationResult. */
+export interface ProposeReconciliationResult {
+	reconciliationId: string;
+	reconciliation: Reconciliation;
+	idempotentReplay: boolean;
+}
+
+/** Confirmation result (v0.5.0). Mirrors core.ConfirmReconciliationResult. */
+export interface ConfirmReconciliationResult {
+	reconciliationId: string;
+	reconciliation: Reconciliation;
+	/** The immutable 'confirm' event written for this decision. */
+	reconciliationEventId: string;
+	idempotentReplay: boolean;
+}
+
+/** Rejection result (v0.5.0). Mirrors core.RejectReconciliationResult. */
+export interface RejectReconciliationResult {
+	reconciliationId: string;
+	reconciliation: Reconciliation;
+	/** The immutable 'reject' event written for this decision. */
+	reconciliationEventId: string;
+	idempotentReplay: boolean;
+}
+
+/** Withdrawal result (v0.5.0). Mirrors core.WithdrawReconciliationResult. */
+export interface WithdrawReconciliationResult {
+	reconciliationId: string;
+	reconciliation: Reconciliation;
+	/** The immutable 'withdraw' event written for this withdrawal. */
+	reconciliationEventId: string;
+	idempotentReplay: boolean;
+}
+
+/** Reports whether status is a known reconciliation status. Mirrors
+ * core.IsValidReconciliationStatus. */
+export function isValidReconciliationStatus(
+	status: string,
+): status is ReconciliationStatus {
+	return (RECONCILIATION_STATUSES as readonly string[]).includes(status);
+}
+
+/** Can be confirmed (proposed only). Mirrors core.CanConfirmReconciliation. */
+export function canConfirmReconciliation(
+	status: ReconciliationStatus,
+): boolean {
+	return status === "proposed";
+}
+
+/** Can be rejected (proposed only). Mirrors core.CanRejectReconciliation. */
+export function canRejectReconciliation(status: ReconciliationStatus): boolean {
+	return status === "proposed";
+}
+
+/** Can be withdrawn by its proposer (proposed only). Mirrors
+ * core.CanWithdrawReconciliation. */
+export function canWithdrawReconciliation(
+	status: ReconciliationStatus,
+): boolean {
+	return status === "proposed";
+}
+
+/** Can be superseded (confirmed only — a correction supersedes its
+ * predecessor while atomically confirming). Mirrors
+ * core.CanSupersedeReconciliation. */
+export function canSupersedeReconciliation(
+	status: ReconciliationStatus,
+): boolean {
+	return status === "confirmed";
+}
+
+/**
+ * The adjacency table of the reconciliation machine: proposed → confirmed|
+ * rejected|withdrawn|superseded; confirmed → superseded ONLY; terminal states
+ * never re-open. Mirrors core.IsLegalReconciliationTransition.
+ */
+export function isLegalReconciliationTransition(
+	from: ReconciliationStatus,
+	to: ReconciliationStatus,
+): boolean {
+	switch (from) {
+		case "proposed":
+			return (
+				to === "confirmed" ||
+				to === "rejected" ||
+				to === "withdrawn" ||
+				to === "superseded"
+			);
+		case "confirmed":
+			return to === "superseded";
+		default:
+			return false;
+	}
+}
+
+/**
+ * Compact canonical JSON with NO HTML escaping and exact int64 support:
+ * strings delegate to JSON.stringify (identical escaping to Go's
+ * encoding/json without SetEscapeHTML), bigint values marshal as bare integer
+ * digits (never quoted, never coerced through a lossy JS Number), object keys
+ * follow insertion order (the caller builds payloads in the Go struct field
+ * order), undefined fails closed. This is the byte contract of
+ * computeReconciliationHash — Go marshals int64 cents as JSON numbers, and
+ * JSON.stringify alone cannot represent BigInt.
+ */
+function canonicalJSONStringify(value: unknown): string {
+	if (value === null) return "null";
+	if (typeof value === "bigint") return value.toString();
+	if (typeof value === "number" || typeof value === "boolean") {
+		return JSON.stringify(value);
+	}
+	if (typeof value === "string") return JSON.stringify(value);
+	if (Array.isArray(value)) {
+		return `[${value.map(canonicalJSONStringify).join(",")}]`;
+	}
+	if (typeof value === "object") {
+		const entries = Object.entries(value as Record<string, unknown>);
+		return `{${entries
+			.map(([key, v]) => `${JSON.stringify(key)}:${canonicalJSONStringify(v)}`)
+			.join(",")}}`;
+	}
+	throw new Error(
+		"canonical JSON: unsupported value in reconciliation hash payload",
+	);
+}
+
+/**
+ * Canonical SHA-256 (hex) of a reconciliation's REVIEWED or CONFIRMED state
+ * over canonical JSON — byte-identical with core.ComputeReconciliationHash
+ * (Go). The payload key order below is the byte contract (Go marshals its
+ * payload struct in this exact order).
+ *
+ * Documented field coverage per status:
+ * - proposed (and every non-confirmed status): id, tenantId, companyId,
+ *   fiscalPeriodId ("" when absent), leftMemoryId, rightMemoryId, method,
+ *   currency, leftAmountCents, rightAmountCents, varianceCents,
+ *   toleranceCents, status, canonical proposer (sorted keys, empties
+ *   omitted), proposalReason, predecessorId ("" when absent), proposedAt.
+ *   Routing fields (supersedesId) NEVER participate.
+ * - confirmed: the base fields PLUS resolution, the canonical adjudicator
+ *   snapshot (sorted roles), policyVersion, status and decidedAt.
+ *
+ * Rejected/withdrawn/superseded reconciliations hash with the reviewed shape
+ * (decided fields never participate).
+ */
+export async function computeReconciliationHash(
+	r: Reconciliation,
+): Promise<string> {
+	const payload: Record<string, unknown> = {
+		id: r.id,
+		tenantId: r.tenantId,
+		companyId: r.companyId,
+		fiscalPeriodId: r.fiscalPeriodId ?? "",
+		leftMemoryId: r.leftMemoryId,
+		rightMemoryId: r.rightMemoryId,
+		method: r.method,
+		currency: r.currency,
+		leftAmountCents: r.leftAmountCents,
+		rightAmountCents: r.rightAmountCents,
+		varianceCents: r.varianceCents,
+		toleranceCents: r.toleranceCents,
+		status: r.status,
+		proposer: canonicalJudgmentProposer(r.proposer),
+		proposalReason: r.proposalReason,
+		predecessorId: r.predecessorId ?? "",
+		proposedAt: r.proposedAt,
+	};
+	if (r.status === "confirmed") {
+		if (r.resolution !== undefined && r.resolution !== "") {
+			payload.resolution = r.resolution;
+		}
+		if (r.adjudicator !== undefined) {
+			payload.adjudicator = canonicalJudgmentSnapshot(r.adjudicator);
+		}
+		if (r.policyVersion !== undefined && r.policyVersion !== "") {
+			payload.policyVersion = r.policyVersion;
+		}
+		if (r.decidedAt !== undefined && r.decidedAt !== "") {
+			payload.decidedAt = r.decidedAt;
+		}
+	}
+	return sha256Hex(canonicalJSONStringify(payload));
+}
+
+// ──────────────────────────────────────────────
+// v0.4.0 Step 3 — Ed25519 action receipts
+// ──────────────────────────────────────────────
 
 /**
  * Subject kind of an Ed25519 action receipt (v0.4.0 Step 3): an immutable
@@ -1560,16 +1566,16 @@ export const RECEIPT_ACTIONS = [
 export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];
 
 /** Frozen receipt payload version (v0.4.0 Step 3). */
-    export const RECEIPT_PAYLOAD_VERSION = "receipt-payload/v0.4.0";
+export const RECEIPT_PAYLOAD_VERSION = "receipt-payload/v0.4.0";
 
-    /**
-     * Payload version stamped on the v0.5.0 actions (memory_closed,
-     * memory_reopened, reconciliation_confirmed, reconciliation_rejected).
-     * Canonicalization is version-agnostic (the payload shape is unchanged), so
-     * verifiers accept both v0.4.0 and v0.5.0 payloads. Mirrors
-     * core.ReceiptPayloadVersionV05.
-     */
-    export const RECEIPT_PAYLOAD_VERSION_V05 = "receipt-payload/v0.5.0";
+/**
+ * Payload version stamped on the v0.5.0 actions (memory_closed,
+ * memory_reopened, reconciliation_confirmed, reconciliation_rejected).
+ * Canonicalization is version-agnostic (the payload shape is unchanged), so
+ * verifiers accept both v0.4.0 and v0.5.0 payloads. Mirrors
+ * core.ReceiptPayloadVersionV05.
+ */
+export const RECEIPT_PAYLOAD_VERSION_V05 = "receipt-payload/v0.5.0";
 
 /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
 export const RECEIPT_ALGORITHM = "Ed25519";
@@ -1772,7 +1778,9 @@ export interface CurrentContext {
  */
 export function monthEndUTC(period: string): string {
 	if (!isValidPeriod(period)) {
-		throw new Error(`INVALID_PERIOD: expected YYYYMM (six digits, month 01-12), got "${period}"`);
+		throw new Error(
+			`INVALID_PERIOD: expected YYYYMM (six digits, month 01-12), got "${period}"`,
+		);
 	}
 	const year = Number(period.slice(0, 4));
 	const month = Number(period.slice(4, 6));
@@ -1780,396 +1788,404 @@ export function monthEndUTC(period: string): string {
 	return end.toISOString();
 }
 
-    // ──────────────────────────────────────────────
-    // v0.5.0 — Period-over-period comparison (design §4)
-    // ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// v0.5.0 — Period-over-period comparison (design §4)
+// ──────────────────────────────────────────────
 
-    /**
-     * Count digest of the comparison (design §4 counts). byKindDelta/byStatusDelta
-     * map each kind/status present in either period to toCount − fromCount.
-     * Mirrors core.PeriodCounts.
-     */
-    export interface PeriodCounts {
-    	fromTotal: number;
-    	toTotal: number;
-    	/** Delta is toTotal − fromTotal. */
-    	delta: number;
-    	byKindDelta: Record<string, number>;
-    	byStatusDelta: Record<string, number>;
-    }
+/**
+ * Count digest of the comparison (design §4 counts). byKindDelta/byStatusDelta
+ * map each kind/status present in either period to toCount − fromCount.
+ * Mirrors core.PeriodCounts.
+ */
+export interface PeriodCounts {
+	fromTotal: number;
+	toTotal: number;
+	/** Delta is toTotal − fromTotal. */
+	delta: number;
+	byKindDelta: Record<string, number>;
+	byStatusDelta: Record<string, number>;
+}
 
-    /** One chain identified by topic key in a new/removed list. Mirrors
-     * core.ChainRef. */
-    export interface ChainRef {
-    	topicKey: string;
-    	memoryId: string;
-    	kind: string;
-    	status: string;
-    	title: string;
-    }
+/** One chain identified by topic key in a new/removed list. Mirrors
+ * core.ChainRef. */
+export interface ChainRef {
+	topicKey: string;
+	memoryId: string;
+	kind: string;
+	status: string;
+	title: string;
+}
 
-    /** One matched chain whose canonical content / envelope-relevant state differs
-     * between the periods (design §4 chains.changed). Mirrors core.ChainChange. */
-    export interface ChainChange {
-    	topicKey: string;
-    	fromId: string;
-    	toId: string;
-    	kind: string;
-    	title: string;
-    }
+/** One matched chain whose canonical content / envelope-relevant state differs
+ * between the periods (design §4 chains.changed). Mirrors core.ChainChange. */
+export interface ChainChange {
+	topicKey: string;
+	fromId: string;
+	toId: string;
+	kind: string;
+	title: string;
+}
 
-    /** One matched chain whose lifecycle status differs between the periods
-     * (design §4 statusChanges). Mirrors core.StatusChange. */
-    export interface StatusChange {
-    	topicKey: string;
-    	fromId: string;
-    	toId: string;
-    	fromStatus: string;
-    	toStatus: string;
-    }
+/** One matched chain whose lifecycle status differs between the periods
+ * (design §4 statusChanges). Mirrors core.StatusChange. */
+export interface StatusChange {
+	topicKey: string;
+	fromId: string;
+	toId: string;
+	fromStatus: string;
+	toStatus: string;
+}
 
-    /** Chain-membership digest of the comparison (design §4 chains). Every array is
-     * stable-sorted by topic key then memory ID. Mirrors core.PeriodChains. */
-    export interface PeriodChains {
-    	/** Chains present only in the `to` period. */
-    	new: ChainRef[];
-    	/** Chains present only in the `from` period. */
-    	removed: ChainRef[];
-    	/** Matched chains whose canonical content / envelope-relevant fields differ. */
-    	changed: ChainChange[];
-    	/** Matched chains with identical canonical content and envelope-relevant state. */
-    	unchangedCount: number;
-    }
+/** Chain-membership digest of the comparison (design §4 chains). Every array is
+ * stable-sorted by topic key then memory ID. Mirrors core.PeriodChains. */
+export interface PeriodChains {
+	/** Chains present only in the `to` period. */
+	new: ChainRef[];
+	/** Chains present only in the `from` period. */
+	removed: ChainRef[];
+	/** Matched chains whose canonical content / envelope-relevant fields differ. */
+	changed: ChainChange[];
+	/** Matched chains with identical canonical content and envelope-relevant state. */
+	unchangedCount: number;
+}
 
-    /**
-     * Pending-item digest delta keyed by CHAIN (topic key): a chain pending in both
-     * periods carries over and is neither added nor resolved. addedIds are the `to`
-     * period's current memory IDs of chains pending only in `to`; resolvedIds are
-     * the `from` period's current memory IDs of chains pending only in `from`;
-     * both lists are sorted ascending. Mirrors core.PendingItemsDelta.
-     */
-    export interface PendingItemsDelta {
-    	from: number;
-    	to: number;
-    	delta: number;
-    	addedIds: string[];
-    	resolvedIds: string[];
-    }
+/**
+ * Pending-item digest delta keyed by CHAIN (topic key): a chain pending in both
+ * periods carries over and is neither added nor resolved. addedIds are the `to`
+ * period's current memory IDs of chains pending only in `to`; resolvedIds are
+ * the `from` period's current memory IDs of chains pending only in `from`;
+ * both lists are sorted ascending. Mirrors core.PendingItemsDelta.
+ */
+export interface PendingItemsDelta {
+	from: number;
+	to: number;
+	delta: number;
+	addedIds: string[];
+	resolvedIds: string[];
+}
 
-    /** period_closures projection state per period ("open" | "closed" | "reopened").
-     * Mirrors core.CloseStatePair. */
-    export interface CloseStatePair {
-    	from: string;
-    	to: string;
-    }
+/** period_closures projection state per period ("open" | "closed" | "reopened").
+ * Mirrors core.CloseStatePair. */
+export interface CloseStatePair {
+	from: string;
+	to: string;
+}
 
-    /**
-     * The pure scope-first read model of a period-over-period comparison (design
-     * §4): from/to, counts, chains (new/removed/changed/unchangedCount),
-     * statusChanges, pendingItems, closeState and the deterministic narrative.
-     * Chains are matched by topic key after the exact scope is stripped. Mirrors
-     * core.PeriodComparison.
-     */
-    export interface PeriodComparison {
-    	from: string;
-    	to: string;
-    	counts: PeriodCounts;
-    	chains: PeriodChains;
-    	statusChanges: StatusChange[];
-    	pendingItems: PendingItemsDelta;
-    	closeState: CloseStatePair;
-    	/** Deterministic human-readable delta summary (Spanish, fixed shape). */
-    	narrative: string;
-    }
+/**
+ * The pure scope-first read model of a period-over-period comparison (design
+ * §4): from/to, counts, chains (new/removed/changed/unchangedCount),
+ * statusChanges, pendingItems, closeState and the deterministic narrative.
+ * Chains are matched by topic key after the exact scope is stripped. Mirrors
+ * core.PeriodComparison.
+ */
+export interface PeriodComparison {
+	from: string;
+	to: string;
+	counts: PeriodCounts;
+	chains: PeriodChains;
+	statusChanges: StatusChange[];
+	pendingItems: PendingItemsDelta;
+	closeState: CloseStatePair;
+	/** Deterministic human-readable delta summary (Spanish, fixed shape). */
+	narrative: string;
+}
 
-    /** Maps each current memory by topic key (the exact scope is implicitly
-     * stripped: within one FindByScope result every (topicKey, scope) chain is
-     * unique, and the two compared scopes differ only by period). */
-    function indexByTopic(memories: AccountingMemory[]): Map<string, AccountingMemory> {
-    	const out = new Map<string, AccountingMemory>();
-    	for (const memory of memories) {
-    		out.set(memory.identity.topicKey, memory);
-    	}
-    	return out;
-    }
+/** Maps each current memory by topic key (the exact scope is implicitly
+ * stripped: within one FindByScope result every (topicKey, scope) chain is
+ * unique, and the two compared scopes differ only by period). */
+function indexByTopic(
+	memories: AccountingMemory[],
+): Map<string, AccountingMemory> {
+	const out = new Map<string, AccountingMemory>();
+	for (const memory of memories) {
+		out.set(memory.identity.topicKey, memory);
+	}
+	return out;
+}
 
-    /** Maps every kind present in either period to toCount − fromCount. */
-    function kindDeltas(from: AccountingMemory[], to: AccountingMemory[]): Record<string, number> {
-    	const out: Record<string, number> = {};
-    	for (const memory of from) {
-    		out[memory.kind] = (out[memory.kind] ?? 0) - 1;
-    	}
-    	for (const memory of to) {
-    		out[memory.kind] = (out[memory.kind] ?? 0) + 1;
-    	}
-    	return out;
-    }
+/** Maps every kind present in either period to toCount − fromCount. */
+function kindDeltas(
+	from: AccountingMemory[],
+	to: AccountingMemory[],
+): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const memory of from) {
+		out[memory.kind] = (out[memory.kind] ?? 0) - 1;
+	}
+	for (const memory of to) {
+		out[memory.kind] = (out[memory.kind] ?? 0) + 1;
+	}
+	return out;
+}
 
-    /** Maps every status present in either period to toCount − fromCount. */
-    function statusDeltas(from: AccountingMemory[], to: AccountingMemory[]): Record<string, number> {
-    	const out: Record<string, number> = {};
-    	for (const memory of from) {
-    		out[memory.status] = (out[memory.status] ?? 0) - 1;
-    	}
-    	for (const memory of to) {
-    		out[memory.status] = (out[memory.status] ?? 0) + 1;
-    	}
-    	return out;
-    }
+/** Maps every status present in either period to toCount − fromCount. */
+function statusDeltas(
+	from: AccountingMemory[],
+	to: AccountingMemory[],
+): Record<string, number> {
+	const out: Record<string, number> = {};
+	for (const memory of from) {
+		out[memory.status] = (out[memory.status] ?? 0) - 1;
+	}
+	for (const memory of to) {
+		out[memory.status] = (out[memory.status] ?? 0) + 1;
+	}
+	return out;
+}
 
-    /** Builds the deterministic new/removed reference of one current memory. */
-    function chainRef(memory: AccountingMemory): ChainRef {
-    	return {
-    		topicKey: memory.identity.topicKey,
-    		memoryId: memory.identity.id,
-    		kind: memory.kind,
-    		status: memory.status,
-    		title: memory.title,
-    	};
-    }
+/** Builds the deterministic new/removed reference of one current memory. */
+function chainRef(memory: AccountingMemory): ChainRef {
+	return {
+		topicKey: memory.identity.topicKey,
+		memoryId: memory.identity.id,
+		kind: memory.kind,
+		status: memory.status,
+		title: memory.title,
+	};
+}
 
-    /** Orders new/removed references by topic key then memory ID (stable). */
-    function chainRefLess(a: ChainRef, b: ChainRef): number {
-    	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
-    	if (a.memoryId !== b.memoryId) return a.memoryId < b.memoryId ? -1 : 1;
-    	return 0;
-    }
+/** Orders new/removed references by topic key then memory ID (stable). */
+function chainRefLess(a: ChainRef, b: ChainRef): number {
+	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
+	if (a.memoryId !== b.memoryId) return a.memoryId < b.memoryId ? -1 : 1;
+	return 0;
+}
 
-    function chainChangeLess(a: ChainChange, b: ChainChange): number {
-    	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
-    	if (a.fromId !== b.fromId) return a.fromId < b.fromId ? -1 : 1;
-    	if (a.toId !== b.toId) return a.toId < b.toId ? -1 : 1;
-    	return 0;
-    }
+function chainChangeLess(a: ChainChange, b: ChainChange): number {
+	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
+	if (a.fromId !== b.fromId) return a.fromId < b.fromId ? -1 : 1;
+	if (a.toId !== b.toId) return a.toId < b.toId ? -1 : 1;
+	return 0;
+}
 
-    function statusChangeLess(a: StatusChange, b: StatusChange): number {
-    	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
-    	if (a.fromId !== b.fromId) return a.fromId < b.fromId ? -1 : 1;
-    	if (a.toId !== b.toId) return a.toId < b.toId ? -1 : 1;
-    	return 0;
-    }
+function statusChangeLess(a: StatusChange, b: StatusChange): number {
+	if (a.topicKey !== b.topicKey) return a.topicKey < b.topicKey ? -1 : 1;
+	if (a.fromId !== b.fromId) return a.fromId < b.fromId ? -1 : 1;
+	if (a.toId !== b.toId) return a.toId < b.toId ? -1 : 1;
+	return 0;
+}
 
-    /** Clone of a memory with the scope PERIOD stripped (the compared scopes differ
-     * only by period — the period must never mark a chain changed on its own). */
-    function stripPeriod(memory: AccountingMemory): AccountingMemory {
-    	if (memory.scope.kind !== "company") return memory;
-    	return { ...memory, scope: { ...memory.scope, period: undefined } };
-    }
+/** Clone of a memory with the scope PERIOD stripped (the compared scopes differ
+ * only by period — the period must never mark a chain changed on its own). */
+function stripPeriod(memory: AccountingMemory): AccountingMemory {
+	if (memory.scope.kind !== "company") return memory;
+	return { ...memory, scope: { ...memory.scope, period: undefined } };
+}
 
-    /** Canonical content hash with the scope period stripped — mirrors
-     * core.strippedContentHash (reuses the same canonical computeContentHash). */
-    async function strippedContentHash(memory: AccountingMemory): Promise<string> {
-    	return computeContentHash(stripPeriod(memory));
-    }
+/** Canonical content hash with the scope period stripped — mirrors
+ * core.strippedContentHash (reuses the same canonical computeContentHash). */
+async function strippedContentHash(memory: AccountingMemory): Promise<string> {
+	return computeContentHash(stripPeriod(memory));
+}
 
-    /**
-     * Reports whether the two current revisions of the same chain carry different
-     * canonical content or envelope-relevant state between periods: the stripped
-     * canonical content hash, the lifecycle status, the evidence and rule link
-     * SETS (order-insensitive) and the supersedesId link. Pure write-time metadata
-     * (recordedAt, revision) never marks a chain changed on its own. Mirrors
-     * core.chainsDiffer.
-     */
-    async function chainsDiffer(
-    	a: AccountingMemory,
-    	b: AccountingMemory,
-    ): Promise<boolean> {
-    	if ((await strippedContentHash(a)) !== (await strippedContentHash(b))) {
-    		return true;
-    	}
-    	if (a.status !== b.status) return true;
-    	if ((a.supersedesId ?? "") !== (b.supersedesId ?? "")) return true;
-    	return (
-    		!refSetsEqual(a.evidenceRefs ?? [], b.evidenceRefs ?? []) ||
-    		!refSetsEqual(a.ruleRefs ?? [], b.ruleRefs ?? [])
-    	);
-    }
+/**
+ * Reports whether the two current revisions of the same chain carry different
+ * canonical content or envelope-relevant state between periods: the stripped
+ * canonical content hash, the lifecycle status, the evidence and rule link
+ * SETS (order-insensitive) and the supersedesId link. Pure write-time metadata
+ * (recordedAt, revision) never marks a chain changed on its own. Mirrors
+ * core.chainsDiffer.
+ */
+async function chainsDiffer(
+	a: AccountingMemory,
+	b: AccountingMemory,
+): Promise<boolean> {
+	if ((await strippedContentHash(a)) !== (await strippedContentHash(b))) {
+		return true;
+	}
+	if (a.status !== b.status) return true;
+	if ((a.supersedesId ?? "") !== (b.supersedesId ?? "")) return true;
+	return (
+		!refSetsEqual(a.evidenceRefs ?? [], b.evidenceRefs ?? []) ||
+		!refSetsEqual(a.ruleRefs ?? [], b.ruleRefs ?? [])
+	);
+}
 
-    /** Compares two reference slices as SETS (order and duplicates are not
-     * semantically meaningful for evidence/rule refs). Mirrors core.refSetsEqual. */
-    function refSetsEqual(a: string[], b: string[]): boolean {
-    	if (a.length !== b.length) return false;
-    	const counts = new Map<string, number>();
-    	for (const ref of a) {
-    		counts.set(ref, (counts.get(ref) ?? 0) + 1);
-    	}
-    	for (const ref of b) {
-    		const next = (counts.get(ref) ?? 0) - 1;
-    		if (next < 0) return false;
-    		counts.set(ref, next);
-    	}
-    	return true;
-    }
+/** Compares two reference slices as SETS (order and duplicates are not
+ * semantically meaningful for evidence/rule refs). Mirrors core.refSetsEqual. */
+function refSetsEqual(a: string[], b: string[]): boolean {
+	if (a.length !== b.length) return false;
+	const counts = new Map<string, number>();
+	for (const ref of a) {
+		counts.set(ref, (counts.get(ref) ?? 0) + 1);
+	}
+	for (const ref of b) {
+		const next = (counts.get(ref) ?? 0) - 1;
+		if (next < 0) return false;
+		counts.set(ref, next);
+	}
+	return true;
+}
 
-    /** Derives the pending-item digest delta keyed by CHAIN (topic key), matching
-     * the design's chain-matching rule: a pending item that carries over across
-     * periods is the same chain even though its current revision (memory ID)
-     * differs — neither added nor resolved. Both lists are sorted ascending.
-     * Mirrors core.pendingDelta. */
-    function pendingDelta(
-    	fromPending: ClosePendingItem[],
-    	toPending: ClosePendingItem[],
-    ): PendingItemsDelta {
-    	const fromByTopic = new Map<string, string>();
-    	for (const item of fromPending) {
-    		fromByTopic.set(item.topicKey, item.memoryId);
-    	}
-    	const toByTopic = new Map<string, string>();
-    	for (const item of toPending) {
-    		toByTopic.set(item.topicKey, item.memoryId);
-    	}
-    	const added: string[] = [];
-    	const resolved: string[] = [];
-    	for (const [topic, id] of toByTopic.entries()) {
-    		if (!fromByTopic.has(topic)) added.push(id);
-    	}
-    	for (const [topic, id] of fromByTopic.entries()) {
-    		if (!toByTopic.has(topic)) resolved.push(id);
-    	}
-    	added.sort();
-    	resolved.sort();
-    	return {
-    		from: fromPending.length,
-    		to: toPending.length,
-    		delta: toPending.length - fromPending.length,
-    		addedIds: added,
-    		resolvedIds: resolved,
-    	};
-    }
+/** Derives the pending-item digest delta keyed by CHAIN (topic key), matching
+ * the design's chain-matching rule: a pending item that carries over across
+ * periods is the same chain even though its current revision (memory ID)
+ * differs — neither added nor resolved. Both lists are sorted ascending.
+ * Mirrors core.pendingDelta. */
+function pendingDelta(
+	fromPending: ClosePendingItem[],
+	toPending: ClosePendingItem[],
+): PendingItemsDelta {
+	const fromByTopic = new Map<string, string>();
+	for (const item of fromPending) {
+		fromByTopic.set(item.topicKey, item.memoryId);
+	}
+	const toByTopic = new Map<string, string>();
+	for (const item of toPending) {
+		toByTopic.set(item.topicKey, item.memoryId);
+	}
+	const added: string[] = [];
+	const resolved: string[] = [];
+	for (const [topic, id] of toByTopic.entries()) {
+		if (!fromByTopic.has(topic)) added.push(id);
+	}
+	for (const [topic, id] of fromByTopic.entries()) {
+		if (!toByTopic.has(topic)) resolved.push(id);
+	}
+	added.sort();
+	resolved.sort();
+	return {
+		from: fromPending.length,
+		to: toPending.length,
+		delta: toPending.length - fromPending.length,
+		addedIds: added,
+		resolvedIds: resolved,
+	};
+}
 
-    /** Formats n with an explicit + for positive values (the narrative delta
-     * convention: "+2", "0", "-1"). Mirrors core.signed. */
-    function signed(n: number): string {
-    	return n > 0 ? `+${itoa(n)}` : itoa(n);
-    }
+/** Formats n with an explicit + for positive values (the narrative delta
+ * convention: "+2", "0", "-1"). Mirrors core.signed. */
+function signed(n: number): string {
+	return n > 0 ? `+${itoa(n)}` : itoa(n);
+}
 
-    /** Small int formatter for the narrative. Mirrors core.itoa. */
-    function itoa(n: number): string {
-    	if (n === 0) return "0";
-    	const negative = n < 0;
-    	let abs = Math.abs(n);
-    	const digits: string[] = [];
-    	while (abs > 0) {
-    		digits.unshift(String(abs % 10));
-    		abs = Math.floor(abs / 10);
-    	}
-    	return `${negative ? "-" : ""}${digits.join("")}`;
-    }
+/** Small int formatter for the narrative. Mirrors core.itoa. */
+function itoa(n: number): string {
+	if (n === 0) return "0";
+	const negative = n < 0;
+	let abs = Math.abs(n);
+	const digits: string[] = [];
+	while (abs > 0) {
+		digits.unshift(String(abs % 10));
+		abs = Math.floor(abs / 10);
+	}
+	return `${negative ? "-" : ""}${digits.join("")}`;
+}
 
-    /** The deterministic human-readable delta summary (design §4 narrative — a
-     * self-contained delta shape that never depends on memory content or ordering).
-     * Mirrors core.comparisonNarrative. */
-    function comparisonNarrative(c: PeriodComparison): string {
-    	let sb = "";
-    	sb += "Comparacion ";
-    	sb += c.from;
-    	sb += " → ";
-    	sb += c.to;
-    	sb += ": ";
-    	sb += itoa(c.counts.fromTotal);
-    	sb += " memorias en el periodo de origen, ";
-    	sb += itoa(c.counts.toTotal);
-    	sb += " en el de destino (delta ";
-    	sb += signed(c.counts.delta);
-    	sb += "); cadenas nuevas: ";
-    	sb += itoa(c.chains.new.length);
-    	sb += ", removidas: ";
-    	sb += itoa(c.chains.removed.length);
-    	sb += ", cambiadas: ";
-    	sb += itoa(c.chains.changed.length);
-    	sb += ", sin cambios: ";
-    	sb += itoa(c.chains.unchangedCount);
-    	sb += "; cambios de estado: ";
-    	sb += itoa(c.statusChanges.length);
-    	sb += "; items pendientes: ";
-    	sb += itoa(c.pendingItems.from);
-    	sb += " → ";
-    	sb += itoa(c.pendingItems.to);
-    	sb += " (delta ";
-    	sb += signed(c.pendingItems.delta);
-    	sb += "); estado de cierre: ";
-    	sb += c.closeState.from;
-    	sb += " → ";
-    	sb += c.closeState.to;
-    	sb += ".";
-    	return sb;
-    }
+/** The deterministic human-readable delta summary (design §4 narrative — a
+ * self-contained delta shape that never depends on memory content or ordering).
+ * Mirrors core.comparisonNarrative. */
+function comparisonNarrative(c: PeriodComparison): string {
+	let sb = "";
+	sb += "Comparacion ";
+	sb += c.from;
+	sb += " → ";
+	sb += c.to;
+	sb += ": ";
+	sb += itoa(c.counts.fromTotal);
+	sb += " memorias en el periodo de origen, ";
+	sb += itoa(c.counts.toTotal);
+	sb += " en el de destino (delta ";
+	sb += signed(c.counts.delta);
+	sb += "); cadenas nuevas: ";
+	sb += itoa(c.chains.new.length);
+	sb += ", removidas: ";
+	sb += itoa(c.chains.removed.length);
+	sb += ", cambiadas: ";
+	sb += itoa(c.chains.changed.length);
+	sb += ", sin cambios: ";
+	sb += itoa(c.chains.unchangedCount);
+	sb += "; cambios de estado: ";
+	sb += itoa(c.statusChanges.length);
+	sb += "; items pendientes: ";
+	sb += itoa(c.pendingItems.from);
+	sb += " → ";
+	sb += itoa(c.pendingItems.to);
+	sb += " (delta ";
+	sb += signed(c.pendingItems.delta);
+	sb += "); estado de cierre: ";
+	sb += c.closeState.from;
+	sb += " → ";
+	sb += c.closeState.to;
+	sb += ".";
+	return sb;
+}
 
-    /**
-     * Derives the deterministic period-over-period delta from the two periods'
-     * CURRENT memories (latest revision per chain), pending item digests and
-     * closure states. Pure function: no store, no clock, no I/O — same inputs
-     * always produce byte-identical output (arrays stable-sorted by topic key then
-     * memory ID). Mirrors core.ComputePeriodComparison.
-     */
-    export async function computePeriodComparison(
-    	fromPeriod: string,
-    	toPeriod: string,
-    	from: AccountingMemory[],
-    	to: AccountingMemory[],
-    	fromPending: ClosePendingItem[],
-    	toPending: ClosePendingItem[],
-    	fromCloseState: string,
-    	toCloseState: string,
-    ): Promise<PeriodComparison> {
-    	const fromByTopic = indexByTopic(from);
-    	const toByTopic = indexByTopic(to);
+/**
+ * Derives the deterministic period-over-period delta from the two periods'
+ * CURRENT memories (latest revision per chain), pending item digests and
+ * closure states. Pure function: no store, no clock, no I/O — same inputs
+ * always produce byte-identical output (arrays stable-sorted by topic key then
+ * memory ID). Mirrors core.ComputePeriodComparison.
+ */
+export async function computePeriodComparison(
+	fromPeriod: string,
+	toPeriod: string,
+	from: AccountingMemory[],
+	to: AccountingMemory[],
+	fromPending: ClosePendingItem[],
+	toPending: ClosePendingItem[],
+	fromCloseState: string,
+	toCloseState: string,
+): Promise<PeriodComparison> {
+	const fromByTopic = indexByTopic(from);
+	const toByTopic = indexByTopic(to);
 
-    	const comparison: PeriodComparison = {
-    		from: fromPeriod,
-    		to: toPeriod,
-    		counts: {
-    			fromTotal: from.length,
-    			toTotal: to.length,
-    			delta: to.length - from.length,
-    			byKindDelta: kindDeltas(from, to),
-    			byStatusDelta: statusDeltas(from, to),
-    		},
-    		chains: { new: [], removed: [], changed: [], unchangedCount: 0 },
-    		statusChanges: [],
-    		pendingItems: pendingDelta(fromPending, toPending),
-    		closeState: { from: fromCloseState, to: toCloseState },
-    		narrative: "",
-    	};
+	const comparison: PeriodComparison = {
+		from: fromPeriod,
+		to: toPeriod,
+		counts: {
+			fromTotal: from.length,
+			toTotal: to.length,
+			delta: to.length - from.length,
+			byKindDelta: kindDeltas(from, to),
+			byStatusDelta: statusDeltas(from, to),
+		},
+		chains: { new: [], removed: [], changed: [], unchangedCount: 0 },
+		statusChanges: [],
+		pendingItems: pendingDelta(fromPending, toPending),
+		closeState: { from: fromCloseState, to: toCloseState },
+		narrative: "",
+	};
 
-    	for (const [topicKey, toMem] of toByTopic.entries()) {
-    		const fromMem = fromByTopic.get(topicKey);
-    		if (fromMem === undefined) {
-    			comparison.chains.new.push(chainRef(toMem));
-    			continue;
-    		}
-    		if (await chainsDiffer(fromMem, toMem)) {
-    			comparison.chains.changed.push({
-    				topicKey,
-    				fromId: fromMem.identity.id,
-    				toId: toMem.identity.id,
-    				kind: toMem.kind,
-    				title: toMem.title,
-    			});
-    		} else {
-    			comparison.chains.unchangedCount++;
-    		}
-    		if (fromMem.status !== toMem.status) {
-    			comparison.statusChanges.push({
-    				topicKey,
-    				fromId: fromMem.identity.id,
-    				toId: toMem.identity.id,
-    				fromStatus: fromMem.status,
-    				toStatus: toMem.status,
-    			});
-    		}
-    	}
-    	for (const [topicKey, fromMem] of fromByTopic.entries()) {
-    		if (!toByTopic.has(topicKey)) {
-    			comparison.chains.removed.push(chainRef(fromMem));
-    		}
-    	}
+	for (const [topicKey, toMem] of toByTopic.entries()) {
+		const fromMem = fromByTopic.get(topicKey);
+		if (fromMem === undefined) {
+			comparison.chains.new.push(chainRef(toMem));
+			continue;
+		}
+		if (await chainsDiffer(fromMem, toMem)) {
+			comparison.chains.changed.push({
+				topicKey,
+				fromId: fromMem.identity.id,
+				toId: toMem.identity.id,
+				kind: toMem.kind,
+				title: toMem.title,
+			});
+		} else {
+			comparison.chains.unchangedCount++;
+		}
+		if (fromMem.status !== toMem.status) {
+			comparison.statusChanges.push({
+				topicKey,
+				fromId: fromMem.identity.id,
+				toId: toMem.identity.id,
+				fromStatus: fromMem.status,
+				toStatus: toMem.status,
+			});
+		}
+	}
+	for (const [topicKey, fromMem] of fromByTopic.entries()) {
+		if (!toByTopic.has(topicKey)) {
+			comparison.chains.removed.push(chainRef(fromMem));
+		}
+	}
 
-    	comparison.chains.new.sort(chainRefLess);
-    	comparison.chains.removed.sort(chainRefLess);
-    	comparison.chains.changed.sort(chainChangeLess);
-    	comparison.statusChanges.sort(statusChangeLess);
+	comparison.chains.new.sort(chainRefLess);
+	comparison.chains.removed.sort(chainRefLess);
+	comparison.chains.changed.sort(chainChangeLess);
+	comparison.statusChanges.sort(statusChangeLess);
 
-    	comparison.narrative = comparisonNarrative(comparison);
-    	return comparison;
-    }
+	comparison.narrative = comparisonNarrative(comparison);
+	return comparison;
+}

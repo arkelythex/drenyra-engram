@@ -3,16 +3,16 @@
 // ACCEPTANCE story at the service boundary
 // (docs/architecture/close-intelligence-v0.5.md §9.1-§9.4):
 //
-//   1. create a July close from a seeded period → pending_review with the frozen
-//      pending items/totals in the CloseSnapshot;
-//   2. accountant approval is DENIED (ROLE_NOT_AUTHORIZED — closing requires
-//      controller); controller approval SUCCEEDS against the reviewed envelope;
-//   3. after approval: the closure projection is 'closed' and the memory_closed
-//      receipt is on the close chain; an ordinary July save FAILS PERIOD_CLOSED
-//      with no new row;
-//   4. reopen with the controller → the period is writable again (a save
-//      succeeds), the memory_reopened receipt is emitted and the closure event
-//      appended; a new close revision re-closes the period on approval.
+//  1. create a July close from a seeded period → pending_review with the frozen
+//     pending items/totals in the CloseSnapshot;
+//  2. accountant approval is DENIED (ROLE_NOT_AUTHORIZED — closing requires
+//     controller); controller approval SUCCEEDS against the reviewed envelope;
+//  3. after approval: the closure projection is 'closed' and the memory_closed
+//     receipt is on the close chain; an ordinary July save FAILS PERIOD_CLOSED
+//     with no new row;
+//  4. reopen with the controller → the period is writable again (a save
+//     succeeds), the memory_reopened receipt is emitted and the closure event
+//     appended; a new close revision re-closes the period on approval.
 //
 // Receipts are asserted through the store's exported ReceiptsForSubject surface
 // with the REAL signer on a temp keyring (the parity-signature proofs live at
