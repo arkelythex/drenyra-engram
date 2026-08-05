@@ -68,6 +68,47 @@ reproducible policy against the exact envelope version that was reviewed.
 - **Legacy HTTP approval route**: compiled for one release, disabled by
   default, removed in v0.5.0.
 
+### Step 2 — Conflictos adjudicables / AccountingJudgment (DONE)
+
+An agent may PROPOSE a contradiction but never confirm it. Only an
+authenticated principal adjudicates; a confirmed judgment is immutable and a
+correction is a NEW judgment that supersedes it.
+
+- **First-class entity**: `AccountingJudgment` (schema v4 `judgments` +
+  immutable `judgment_events` + `judgment_idempotency_keys` +
+  `judgment_relations`; additive v3→v4 migration, fail-closed).
+  `proposed → confirmed|rejected|withdrawn|superseded`;
+  `confirmed → superseded` only. Confirmed rows are immutable (SQLite
+  triggers) — the only legal update is the atomic confirmed→superseded
+  routing of a correction.
+- **Authority never caller-declared**: agents/systems propose and withdraw
+  (provenance only — the same proposer identity is enforced); only a
+  `VerifiedApprovalPrincipal` confirms/rejects under the frozen
+  `judgment-policy/v0.4.0` (senior_accountant minimum via ladder, assurance ≥
+  standard, exact tenant, company in scope).
+- **Atomic adjudication**: one `BEGIN IMMEDIATE` transaction — idempotency →
+  locked re-read → status → fresh `ComputeJudgmentHash` vs
+  `expectedJudgmentHash` (mismatch carries only the two hashes) → pure policy
+  → guarded status flip + immutable event + relation projection → completed
+  reservation. Two concurrent confirms produce exactly one transition.
+- **Corrections**: a new proposed judgment with `predecessorId`; confirming it
+  atomically supersedes the confirmed predecessor and routes readers
+  (`judgment_relations` + `JudgmentSuccessorOf`).
+- **Confirmation does not approve**: the related observations keep their
+  status — adjudication and approval are separate acts (contracts/approval.md).
+- **Legacy gap closed**: `accounting_judge` (caller-supplied `actorId`) is
+  REMOVED from MCP; `API.Judge` fails closed `AUTHENTICATION_REQUIRED` and no
+  longer writes (removed in v0.5.0).
+- **Surfaces**: HTTP `POST /accounting/judgments` + `/confirm` + `/reject` +
+  `/withdraw` (strict bodies, Idempotency-Key) · MCP
+  `accounting_judgment_propose/confirm/reject/withdraw` (confirm/reject fail
+  closed without a session) · CLI `judge propose|confirm|reject|withdraw|show`
+  (confirm/reject bound to the 0600 auth session).
+- **Parity**: golden protocol `contract: "judgment"` — five vectors
+  (proposed-confirmed, agent-cannot-confirm, cross-tenant-adjudicator,
+  superseded-judgment-corrects-confirmed, immutable-confirmed) pass
+  byte-identically in Go and TS.
+
 ## v0.3.0 — Accounting Memory Kernel (released)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is

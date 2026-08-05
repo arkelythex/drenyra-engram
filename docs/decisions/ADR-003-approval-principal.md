@@ -156,9 +156,13 @@ Surfaces:
   changes never alter historical audit.
 - Idempotency by (tenant, requestId) makes a retry after a lost response safe:
   no duplicate approval event.
-- OIDC, signed service assertions, adjudicable judgments, Ed25519 receipts and
-  offline verification remain later v0.4.0 steps (ADR-003 direction applies;
-  their data/policy contracts are not frozen here).
+- OIDC, signed service assertions, Ed25519 receipts and offline verification
+  remain later v0.4.0 steps (ADR-003 direction applies; their data/policy
+  contracts are not frozen here). Adjudicable conflicts ARE frozen in Step 2
+  (`AccountingJudgment`, contracts/judgment.md): agents propose, authenticated
+  principals confirm/reject, a confirmed judgment is immutable and corrections
+  supersede it — the same never-caller-declared-authority invariant applies to
+  adjudication.
 
 ## Reference
 

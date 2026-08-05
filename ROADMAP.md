@@ -90,12 +90,19 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       HTTP `/accounting/memories/{id}/approve` · MCP `accounting_approve`
       (fail-closed without session) · CLI `auth login` + authenticated
       `approve`. Implemented in commits 9d4211c..65af686.
-- [ ] **2. Conflictos adjudicables** (`AccountingJudgment`): an agent may
+- [x] **2. Conflictos adjudicables** (`AccountingJudgment` — DONE): an agent may
       PROPOSE a contradiction (`supports`/`contradicts`/`explains`/
       `reconciles`/`reverses`/`supersedes`) but never confirm it.
       `status: proposed → confirmed|rejected|superseded|withdrawn`; a
       confirmed judgment is immutable — a correction is a NEW judgment that
-      supersedes it.
+      supersedes it. First-class entity (schema v4 `judgments` + immutable
+      events + idempotency), atomic adjudication (`BEGIN IMMEDIATE`, hash
+      guard `expectedJudgmentHash`, `judgment-policy/v0.4.0` senior_accountant+
+      standard assurance), legacy `API.Judge` caller-authority path closed,
+      surfaces: HTTP `/accounting/judgments*` · MCP
+      `accounting_judgment_*` (confirm/reject fail-closed without session) ·
+      CLI `judge propose|confirm|reject|withdraw|show`. Contracts:
+      contracts/judgment.md. Implemented in commits 0333a29..b49436f.
 - [ ] **3. Receipts Ed25519** covering ACTS (memory_recorded, memory_approved,
       memory_rejected, memory_voided, relation_confirmed, relation_rejected,
       evidence_linked, memory_superseded): envelope { subjectType, subjectId,
