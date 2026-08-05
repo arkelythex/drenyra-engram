@@ -65,22 +65,63 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       period-summary/timeline; HTTP approve/reject/void endpoints.
 - [x] Kill demo: explainable period summary of account 4011 (280 Go tests).
 
-## Phase 4 — Evidence, Conflict and Judgment (v0.4.0)
+## Phase 4 — Evidence, Conflict and Judgment (v0.4.0) — MILESTONE FROZEN
 
-- [ ] **Adjudicated contradictions**: proposed/confirmed/rejected relation
-      lifecycle (an agent may PROPOSE `XML contradicts PDF`; it cannot make it
-      institutional truth)
-- [ ] **Receipts Ed25519**: sign the full envelope (identity + content + fiscal
-      effect + source + evidence/rule refs + supersession + actor + action +
-      policy version); a signature proves integrity and provenance, never
-      accounting correctness
-- [ ] **Offline verification**: `drenyra-engram verify memory|receipt|period`
-      answering per layer (payload integrity, receipt signature, evidence
-      refs, approval principal, policy version, supersession chain;
-      "Accounting correctness: NOT ASSERTED")
-- [ ] **Authenticated approval principal** (authz risk): derive approval from
-      an authenticated principal (subjectId, tenantId, company membership,
-      roles, auth method) — never from caller-declared `actorKind`
+> Four vertical capabilities, in this order:
+> `1. ApprovalPrincipal` → `2. adjudicable conflicts` → `3. Ed25519 receipts`
+> → `4. offline verification`.
+
+- [ ] **1. ApprovalPrincipal autenticado** (ADR-003): the API never accepts
+      authorization via `{ "actorKind": "human" }` — the service derives the
+      principal from the authenticated session (subjectId, tenantId,
+      membershipId, companyScopes, roles, authenticationMethod,
+      authenticatedAt). Command shape: `approveMemory({ memoryId, principal,
+      reason, expectedEnvelopeHash })` — the expected envelope hash protects
+      against approving a version different from the one the human reviewed.
+      Invariants: principal authenticated · tenant matches · membership
+      active · company in scope · role authorized for the fiscalEffect ·
+      status == pending_review · envelope current == envelope reviewed ·
+      reason required.
+- [ ] **2. Conflictos adjudicables** (`AccountingJudgment`): an agent may
+      PROPOSE a contradiction (`supports`/`contradicts`/`explains`/
+      `reconciles`/`reverses`/`supersedes`) but never confirm it.
+      `status: proposed → confirmed|rejected|superseded|withdrawn`; a
+      confirmed judgment is immutable — a correction is a NEW judgment that
+      supersedes it.
+- [ ] **3. Receipts Ed25519** covering ACTS (memory_recorded, memory_approved,
+      memory_rejected, memory_voided, relation_confirmed, relation_rejected,
+      evidence_linked, memory_superseded): envelope { subjectType, subjectId,
+      action, tenantId, companyId, fiscalPeriodId, payloadHash,
+      previousReceiptHash, principalId, membershipId, policyVersion,
+      algorithm, keyId, signature, issuedAt }. An approval signs the reviewed
+      envelopeHash + principal identity + action + policy used.
+- [ ] **4. Verificación offline**: `drenyra-engram verify memory|judgment|
+      receipt` answering per layer — Payload canonicalization, Envelope
+      integrity, Signature, Signing-key validity, Principal provenance,
+      Tenant/company scope, Supersession chain, Evidence availability, Rule
+      availability — ending with **"Accounting correctness: NOT ASSERTED"**
+      (a valid signature proves nobody altered the act, never that the
+      professional decision is correct).
+- [ ] **Acceptance criteria** (all 12 must pass to close the milestone):
+      1 agent proposes a contradiction but cannot confirm it · 2 an
+      authenticated human without company access cannot approve · 3 an
+      authorized accountant approves exactly the envelope reviewed · 4 the
+      memory changes between review and approval → optimistic conflict · 5 the
+      approval emits an offline-verifiable Ed25519 receipt · 6 a modified
+      signature fails · 7 a removed evidence is detected by verification · 8 a
+      confirmed judgment can be superseded, never edited · 9 Go signs and TS
+      verifies · 10 TS canonicalizes and Go verifies · 11 an approved
+      superseded memory produces a new pending_review revision · 12 the
+      verifier never presents cryptographic integrity as accounting
+      correctness.
+- [ ] **Secuencia de implementación**: feat(auth) ApprovalPrincipal ·
+      feat(authz) authorize by tenant/company/role/fiscalEffect ·
+      feat(concurrency) approve against expected envelope hash · feat(judgment)
+      proposed/confirmed/rejected lifecycle · feat(receipts) canonical signed
+      action envelope · feat(keys) signing-key lifecycle + key IDs ·
+      feat(verify) memory/judgment/receipt offline · test(protocol) Go↔TS
+      signature golden vectors · feat(cli) judgment + verification commands ·
+      docs freeze v0.4 contracts and threat model.
 - [ ] Evidence object store references (XML/PDF/CDR beyond refs)
 - [ ] Materiality-aware period views
 

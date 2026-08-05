@@ -15,6 +15,23 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 > Judgment). The numbering continues: `v0.5.0` Close Intelligence, `v0.6.0`
 > Fiscal Policy Memory, `v1.0.0` Institutional Accounting Brain.
 
+### Frozen decisions (v0.3.0 review round 2)
+
+- **Evidence/rule refs are SETS**: `canonicalRefs` (sort + unique) runs before
+  the envelope hash in Go and TS — `[XML, CDR]` and `[CDR, XML]` now produce
+  the SAME envelope hash. Two runtimes loading the same links in different SQL
+  orders can no longer diverge. When ordinal or role matters, an explicit
+  EvidenceLink entity is the vehicle, not a bare ref list. Golden vectors
+  `evidence-order-1/2` were re-pinned to the same envelope.
+- **Vigencia provenance is recorded**: `Validity.Source` distinguishes
+  `"declared"` (written explicitly by a v2 caller) from
+  `"migrated_from_effective_at_v1"` (inferred during the v1→v2 migration — the
+  v1 `effective_at` doubled as the vigencia start). An audit never mistakes an
+  inferred vigencia for originally confirmed data.
+- **Fix (carried from bed2ecd)**: the v1→v2 migration backfill now writes
+  `identity_hash` and `envelope_hash` (it calculated them but the SQL did not
+  persist them — the import fallback masked it).
+
 ### Post-release fixes (review follow-ups)
 
 - **P0.1 — persist `Validity.EffectiveAt`**: the vigencia start of a rule
