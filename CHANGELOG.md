@@ -7,7 +7,44 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
-## v0.3.0 — unreleased (AccountingMemory v2 kernel)
+## v0.3.0 — Accounting Memory Kernel (released)
+
+> **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
+> NOT closed by this release — adjudicated contradictions, cryptographic
+> receipts and offline verification are `v0.4.0` (Evidence, Conflict and
+> Judgment). The numbering continues: `v0.5.0` Close Intelligence, `v0.6.0`
+> Fiscal Policy Memory, `v1.0.0` Institutional Accounting Brain.
+
+### Post-release fixes (review follow-ups)
+
+- **P0.1 — persist `Validity.EffectiveAt`**: the vigencia start of a rule
+  (published 1 Aug, effective 1 Jul, known 4 Aug) is now persisted in
+  `validity_effective_at`, migrated from v1 stores and scanned back; the Go
+  store no longer loses it (mirror TS already preserved it).
+- **P0.2 — separate content/identity/envelope hashes**: `identityHash` (domain
+  identity: scope + topicKey + effectiveAt + source reference) and
+  `envelopeHash` (everything signable: identity + content + fiscal effect +
+  source + evidence/rule refs + timestamps + supersession) join the canonical
+  `contentHash`. `ImportObservation` decides on the envelope: matching envelope
+  → exact duplicate (no-op); same identity + different envelope → immutable
+  conflict; same content + different scope → independent memories.
+- **P0.3 — terminal-state supersession policy**: the TS mirror no longer
+  supersedes terminal heads (rejected/superseded/voided never reopen) and a
+  new revision never inherits the previous approval (a fiscal effect lands it
+  `pending_review` behind the human gate) — matching the Go store.
+- **Shared golden vectors**: `testdata/golden/*.json` run from BOTH Go and
+  TypeScript with FIXED expected hashes (content/identity/envelope), the
+  approval gate and the initial status. Go creates → TS verifies the same
+  hash; divergence fails one runner, never silently. 10 vectors: unicode,
+  timezone offsets, materiality 0, evidence order, cross-tenant, late
+  documents, system/agent/human actors, gated vs informative memories.
+- **Known harness defect (P0.4, external)**: the gentle-ai review capture
+  requires a provider-owned finding-id format inaccessible from this
+  environment, and the client guard blocks repository commits without an
+  exception for review-mode off. Commits for this release were executed by
+  the maintainer from a terminal. Not fixable from the repository.
+
+
 
 ### Added
 

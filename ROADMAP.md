@@ -1,6 +1,13 @@
 # Drenyra Engram — Roadmap
 
-> **Last updated:** 2026-08-02. Status: pre-alpha.
+> **Last updated:** 2026-08-05. Status: alpha (v0.3.0 Accounting Memory Kernel released).
+>
+> **Version nomenclature (frozen):** `v0.3.0` is the Accounting Memory Kernel.
+> The original vision's "V0.2 Evidence and Judgment" is NOT closed by it —
+> adjudicated contradictions, cryptographic receipts and offline verification
+> are Phase 4 (`v0.4.0`). The numbering is therefore: `v0.4.0` Evidence,
+> Conflict and Judgment · `v0.5.0` Close Intelligence · `v0.6.0` Fiscal Policy
+> Memory · `v1.0.0` Institutional Accounting Brain.
 
 ## Phase 0 — Identity (current)
 
@@ -58,28 +65,40 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       period-summary/timeline; HTTP approve/reject/void endpoints.
 - [x] Kill demo: explainable period summary of account 4011 (280 Go tests).
 
-## Phase 4 — Evidence and Judgment (V0.2 of the vision)
+## Phase 4 — Evidence, Conflict and Judgment (v0.4.0)
 
+- [ ] **Adjudicated contradictions**: proposed/confirmed/rejected relation
+      lifecycle (an agent may PROPOSE `XML contradicts PDF`; it cannot make it
+      institutional truth)
+- [ ] **Receipts Ed25519**: sign the full envelope (identity + content + fiscal
+      effect + source + evidence/rule refs + supersession + actor + action +
+      policy version); a signature proves integrity and provenance, never
+      accounting correctness
+- [ ] **Offline verification**: `drenyra-engram verify memory|receipt|period`
+      answering per layer (payload integrity, receipt signature, evidence
+      refs, approval principal, policy version, supersession chain;
+      "Accounting correctness: NOT ASSERTED")
+- [ ] **Authenticated approval principal** (authz risk): derive approval from
+      an authenticated principal (subjectId, tenantId, company membership,
+      roles, auth method) — never from caller-declared `actorKind`
 - [ ] Evidence object store references (XML/PDF/CDR beyond refs)
-- [ ] Contradiction detection across memories
-- [ ] Receipt Ed25519 integration (receiptId currently a reference)
 - [ ] Materiality-aware period views
 
-## Phase 5 — Close Intelligence (V0.3 of the vision)
+## Phase 5 — Close Intelligence (v0.5.0)
 
 - [ ] Monthly close memory (cierre) with pending items
 - [ ] Reconciliations as first-class memories (reconciles relation)
 - [ ] Period-over-period comparison
 - [ ] Automatic agent context on session start
 
-## Phase 6 — Fiscal Policy Memory (V0.4 of the vision)
+## Phase 6 — Fiscal Policy Memory (v0.6.0)
 
 - [ ] Versioned rules with temporal vigencia
 - [ ] Jurisdiction dimension (Perú → LATAM)
 - [ ] Regulatory-change impact reconstruction
 - [ ] Rule used in a historical decision, reconstructible
 
-## Phase 7 — Institutional Accounting Brain (V1)
+## Phase 7 — Institutional Accounting Brain (v1.0.0)
 
 - [ ] Accounting firms: shared memory with controlled sync
 - [ ] Authorized anonymized cross-company learning

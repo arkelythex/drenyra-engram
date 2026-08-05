@@ -22,12 +22,13 @@
 > is contractual, never public. See the Drenyra
 > [Private Product Policy](https://github.com/arkelythex/Drenyra/blob/main/docs/products/private-product-policy.md).
 >
-> **v0.3.0 (next)** — the AccountingMemory v2 kernel: 8 accounting kinds, the
+> **v0.3.0 — Accounting Memory Kernel** (released): 8 accounting kinds, the
 > human-approval gate for memories with fiscal effect, triple timestamps
-> (effectiveAt/recordedAt/observedAt), structured source, canonical content
-> hashes, 17 relations, the `accounting_*` MCP surface (10 tools) and the
-> explainable period summary (killer demo: why did account 4011 end with this
-> balance). v0.2.0 released 2026-08-03. See the [ROADMAP](ROADMAP.md).
+> (effectiveAt/recordedAt/observedAt), structured source, canonical hashes
+> (content/identity/envelope), 17 relations, the `accounting_*` MCP surface
+> (10 tools) and the explainable period summary (killer demo: why did account
+> 4011 end with this balance). Next: `v0.4.0` Evidence, Conflict and Judgment.
+> v0.2.0 released 2026-08-03. See the [ROADMAP](ROADMAP.md).
 
 Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
 
