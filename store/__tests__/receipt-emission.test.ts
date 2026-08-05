@@ -148,7 +148,9 @@ function expectVerified(
 	signer: NodeSeedSigner,
 ): void {
 	expect(receipt.payloadHash).toBe(receiptPayloadHash(expectedPayload));
-	expect(() => verifyReceipt(receipt, expectedPayload, signer.publicKey)).not.toThrow();
+	expect(() =>
+		verifyReceipt(receipt, expectedPayload, signer.publicKey),
+	).not.toThrow();
 	expect(receipt.keyId).toBe(signer.keyId);
 	expect(receipt.algorithm).toBe("Ed25519");
 }
@@ -250,7 +252,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("approveMemory emits memory_approved with H1/H2, the reason and the verified snapshot", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const saved = await store.save(gatedInput("receipt.approve", "needs review"));
+		const saved = await store.save(
+			gatedInput("receipt.approve", "needs review"),
+		);
 		const id = saved.memory.identity.id;
 		const expected = saved.memory.envelopeHash!;
 
@@ -266,7 +270,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(2);
-		const r = receipts.find((candidate) => candidate.action === "memory_approved")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "memory_approved",
+		)!;
 		expect(r.subjectType).toBe("memory");
 		expect(r.subjectId).toBe(id);
 		expect(r.issuedAt).toBe(result.approvedAt); // the decision's captured now
@@ -299,7 +305,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("an idempotent approval retry emits NO duplicate receipt", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const saved = await store.save(gatedInput("receipt.approve-idem", "idempotent approval"));
+		const saved = await store.save(
+			gatedInput("receipt.approve-idem", "idempotent approval"),
+		);
 		const id = saved.memory.identity.id;
 		const expected = saved.memory.envelopeHash!;
 		const command = {
@@ -325,15 +333,24 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 		const store = new InMemoryMemoryStore(signer);
 		const saved = await store.save(gatedInput("receipt.reject", "to reject"));
 		const id = saved.memory.identity.id;
-		const meta = { actor: "reviewer-9", actorKind: "human" as const, timestamp: "2026-08-05T14:00:00Z" };
+		const meta = {
+			actor: "reviewer-9",
+			actorKind: "human" as const,
+			timestamp: "2026-08-05T14:00:00Z",
+		};
 
 		store.applyStatusTransition(id, "rejected", meta);
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(2);
-		const r = receipts.find((candidate) => candidate.action === "memory_rejected")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "memory_rejected",
+		)!;
 		const expectedFrom = await computeEnvelopeHash(saved.memory);
-		const expectedTo = await computeEnvelopeHash({ ...saved.memory, status: "rejected" });
+		const expectedTo = await computeEnvelopeHash({
+			...saved.memory,
+			status: "rejected",
+		});
 		expectVerified(
 			r,
 			payload({
@@ -360,15 +377,24 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 		const store = new InMemoryMemoryStore(signer);
 		const saved = await store.save(input("receipt.void", "to void"));
 		const id = saved.memory.identity.id;
-		const meta = { actor: "auditor-4", actorKind: "human" as const, timestamp: "2026-08-05T14:30:00Z" };
+		const meta = {
+			actor: "auditor-4",
+			actorKind: "human" as const,
+			timestamp: "2026-08-05T14:30:00Z",
+		};
 
 		store.applyStatusTransition(id, "voided", meta);
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(2);
-		const r = receipts.find((candidate) => candidate.action === "memory_voided")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "memory_voided",
+		)!;
 		const expectedFrom = await computeEnvelopeHash(saved.memory);
-		const expectedTo = await computeEnvelopeHash({ ...saved.memory, status: "voided" });
+		const expectedTo = await computeEnvelopeHash({
+			...saved.memory,
+			status: "voided",
+		});
 		expectVerified(
 			r,
 			payload({
@@ -391,8 +417,10 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("confirmJudgment emits relation_confirmed with both hashes, envelopes and the snapshot", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const fromId = (await store.save(input("receipt.from", "from observation"))).memory.identity.id;
-		const toId = (await store.save(input("receipt.to", "to observation"))).memory.identity.id;
+		const fromId = (await store.save(input("receipt.from", "from observation")))
+			.memory.identity.id;
+		const toId = (await store.save(input("receipt.to", "to observation")))
+			.memory.identity.id;
 		const proposed = await store.proposeJudgment(
 			{
 				fromId,
@@ -416,7 +444,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(3); // recorded from, recorded to, confirmed
-		const r = receipts.find((candidate) => candidate.action === "relation_confirmed")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "relation_confirmed",
+		)!;
 		expect(r.subjectType).toBe("judgment");
 		expect(r.subjectId).toBe(proposed.judgmentId);
 		expect(r.issuedAt).toBe(confirmed.judgment.decidedAt);
@@ -455,8 +485,10 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("rejectJudgment emits relation_rejected with the human reason", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const fromId = (await store.save(input("receipt.from", "from observation"))).memory.identity.id;
-		const toId = (await store.save(input("receipt.to", "to observation"))).memory.identity.id;
+		const fromId = (await store.save(input("receipt.from", "from observation")))
+			.memory.identity.id;
+		const toId = (await store.save(input("receipt.to", "to observation")))
+			.memory.identity.id;
 		const proposed = await store.proposeJudgment(
 			{
 				fromId,
@@ -480,7 +512,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(3);
-		const r = receipts.find((candidate) => candidate.action === "relation_rejected")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "relation_rejected",
+		)!;
 		expect(r.subjectType).toBe("judgment");
 		expect(r.subjectId).toBe(proposed.judgmentId);
 
@@ -518,8 +552,10 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("a judgment correction covers the predecessor supersession inside relation_confirmed", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const fromId = (await store.save(input("receipt.from", "from observation"))).memory.identity.id;
-		const toId = (await store.save(input("receipt.to", "to observation"))).memory.identity.id;
+		const fromId = (await store.save(input("receipt.from", "from observation")))
+			.memory.identity.id;
+		const toId = (await store.save(input("receipt.to", "to observation")))
+			.memory.identity.id;
 
 		const first = await store.proposeJudgment(
 			{
@@ -593,8 +629,12 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 
 		const receipts = store.receipts();
 		expect(receipts).toHaveLength(2);
-		const r = receipts.find((candidate) => candidate.action === "evidence_linked")!;
-		const recorded = receipts.find((candidate) => candidate.action === "memory_recorded")!;
+		const r = receipts.find(
+			(candidate) => candidate.action === "evidence_linked",
+		)!;
+		const recorded = receipts.find(
+			(candidate) => candidate.action === "memory_recorded",
+		)!;
 		expect(recorded.subjectId).toBe(id);
 		expect(r.previousReceiptHash).toBe(receiptHash(recorded));
 
@@ -638,7 +678,9 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("rule links emit NO receipt (the closed action set has no rule action)", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const saved = await store.save(input("receipt.rule-link", "rule-linked memory"));
+		const saved = await store.save(
+			input("receipt.rule-link", "rule-linked memory"),
+		);
 
 		store.addRuleLink(saved.memory.identity.id, "rule://tax-2024-008", "cli");
 
@@ -648,14 +690,16 @@ describe("atomic receipt emission (v0.4.0 Step 3)", () => {
 	it("receipts() returns immutable copies", async () => {
 		const signer = new NodeSeedSigner(PARITY_SEED);
 		const store = new InMemoryMemoryStore(signer);
-		const saved = await store.save(input("receipt.immutable", "immutable copies"));
+		const saved = await store.save(
+			input("receipt.immutable", "immutable copies"),
+		);
 		const id = saved.memory.identity.id;
-    
+
 		// Mutating a returned array or receipt must never reach the store.
 		const leaked = store.receipts();
 		leaked.push({ ...leaked[0]! });
 		leaked[0]!.subjectId = "tampered";
-    
+
 		expect(store.receipts()).toHaveLength(1);
 		expect(store.receipts()[0]!.subjectId).toBe(id);
 	});

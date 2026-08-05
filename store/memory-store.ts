@@ -248,23 +248,23 @@ export class InMemoryMemoryStore implements MemoryStore {
 			completedAt?: string;
 		}
 	>();
-    	private readonly judgmentRelations: {
-    		fromJudgmentId: string;
-    		toJudgmentId: string;
-    		relation: "supersedes";
-    		actor?: string;
-    		timestamp: string;
-    	}[] = [];
+	private readonly judgmentRelations: {
+		fromJudgmentId: string;
+		toJudgmentId: string;
+		relation: "supersedes";
+		actor?: string;
+		timestamp: string;
+	}[] = [];
 
-    	/**
-    	 * Constructs the in-memory store. The optional ReceiptSigner (v0.4.0
-    	 * Step 3) is the store-facing signing surface: default Node construction
-    	 * loads or creates the keyring, and tests inject a caller-provided
-    	 * seed-based signer. When a signer is present, every covered mutation
-    	 * emits an immutable receipt inside its critical section; NO signer →
-    	 * no receipts.
-    	 */
-    	constructor(readonly receiptSigner?: ReceiptSigner) {}
+	/**
+	 * Constructs the in-memory store. The optional ReceiptSigner (v0.4.0
+	 * Step 3) is the store-facing signing surface: default Node construction
+	 * loads or creates the keyring, and tests inject a caller-provided
+	 * seed-based signer. When a signer is present, every covered mutation
+	 * emits an immutable receipt inside its critical section; NO signer →
+	 * no receipts.
+	 */
+	constructor(readonly receiptSigner?: ReceiptSigner) {}
 
 	async save(input: SaveMemoryInput): Promise<MemoryWriteResult> {
 		if (input.topicKey.trim().length === 0) {
@@ -637,17 +637,17 @@ export class InMemoryMemoryStore implements MemoryStore {
 		fields: Partial<
 			Pick<
 				ReceiptPayload,
-				|"reviewedEnvelopeHash"
-				|"resultingEnvelopeHash"
-				|"reviewedJudgmentHash"
-				|"resultingJudgmentHash"
-				|"fromMemoryId"
-				|"fromEnvelopeHash"
-				|"toMemoryId"
-				|"toEnvelopeHash"
-				|"successorId"
-				|"evidenceRef"
-				|"reason"
+				| "reviewedEnvelopeHash"
+				| "resultingEnvelopeHash"
+				| "reviewedJudgmentHash"
+				| "resultingJudgmentHash"
+				| "fromMemoryId"
+				| "fromEnvelopeHash"
+				| "toMemoryId"
+				| "toEnvelopeHash"
+				| "successorId"
+				| "evidenceRef"
+				| "reason"
 			>
 		> = {},
 	): ReceiptPayload {

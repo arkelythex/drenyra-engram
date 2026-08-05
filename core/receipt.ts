@@ -241,87 +241,90 @@ function rawPublicKey(privateKey: KeyObject): Uint8Array {
 	return Buffer.from(jwk.x, "base64url");
 }
 
-    /** A public KeyObject for the raw 32-byte RFC 8032 public key. */
-    function publicKeyObject(publicKey: Uint8Array): KeyObject {
-    	return createPublicKey({
-    		key: {
-    			kty: "OKP",
-    			crv: "Ed25519",
-    			x: Buffer.from(publicKey).toString("base64url"),
-    		},
-    		format: "jwk",
-    	});
-    }
+/** A public KeyObject for the raw 32-byte RFC 8032 public key. */
+function publicKeyObject(publicKey: Uint8Array): KeyObject {
+	return createPublicKey({
+		key: {
+			kty: "OKP",
+			crv: "Ed25519",
+			x: Buffer.from(publicKey).toString("base64url"),
+		},
+		format: "jwk",
+	});
+}
 
-    // ──────────────────────────────────────────────
-    // Signer surface (the store receives one; Go: internal/receipts.Signer)
-    // ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// Signer surface (the store receives one; Go: internal/receipts.Signer)
+// ──────────────────────────────────────────────
 
-    /**
-     * ReceiptSigner is the store-facing signing surface of the v0.4.0 Step 3
-     * protocol (the Go counterpart is internal/receipts.Signer). The in-memory
-     * store receives one at construction; the default Node construction loads
-     * or creates the keyring. Signing with a revoked key fails closed; the
-     * caller passes the subject's latest receipt hash to chain (genesis = "").
-     */
-    export interface ReceiptSigner {
-    	/** Canonical key id: "ed25519:" + SHA-256 hex of the raw public key. */
-    	readonly keyId: string;
-    	/** The raw RFC 8032 public key (32 bytes) — what keyId derives from. */
-    	readonly publicKey: Uint8Array;
-    	/** True once this key may no longer sign (revocation is one-way). */
-    	readonly revoked: boolean;
-    	/**
-    	 * Signs a covered-act payload with this key. previousReceiptHash chains
-    	 * the new receipt on the subject's latest one (genesis = ""). Throws
-    	 * ReceiptError when the key is revoked.
-    	 */
-    	sign(payload: ReceiptPayload, previousReceiptHash?: string): SignedReceiptResult;
-    }
+/**
+ * ReceiptSigner is the store-facing signing surface of the v0.4.0 Step 3
+ * protocol (the Go counterpart is internal/receipts.Signer). The in-memory
+ * store receives one at construction; the default Node construction loads
+ * or creates the keyring. Signing with a revoked key fails closed; the
+ * caller passes the subject's latest receipt hash to chain (genesis = "").
+ */
+export interface ReceiptSigner {
+	/** Canonical key id: "ed25519:" + SHA-256 hex of the raw public key. */
+	readonly keyId: string;
+	/** The raw RFC 8032 public key (32 bytes) — what keyId derives from. */
+	readonly publicKey: Uint8Array;
+	/** True once this key may no longer sign (revocation is one-way). */
+	readonly revoked: boolean;
+	/**
+	 * Signs a covered-act payload with this key. previousReceiptHash chains
+	 * the new receipt on the subject's latest one (genesis = ""). Throws
+	 * ReceiptError when the key is revoked.
+	 */
+	sign(
+		payload: ReceiptPayload,
+		previousReceiptHash?: string,
+	): SignedReceiptResult;
+}
 
-    /** Options for NodeSeedSigner. */
-    export interface NodeSeedSignerOptions {
-    	/** Mark the key revoked: sign() then fails closed. */
-    	revoked?: boolean;
-    }
+/** Options for NodeSeedSigner. */
+export interface NodeSeedSignerOptions {
+	/** Mark the key revoked: sign() then fails closed. */
+	revoked?: boolean;
+}
 
-    /**
-     * The default seed-based signer: derives the RFC 8032 keypair from a
-     * 32-byte seed (JWK `d` import — byte-identical with Go's
-     * ed25519.NewKeyFromSeed) and signs via node:crypto. No file keyring lives
-     * in the in-memory mirror — callers and tests supply the seed; the keyring
-     * file belongs to the Go CLI (internal/receipts).
-     */
-    export class NodeSeedSigner implements ReceiptSigner {
-    	readonly keyId: string;
-    	readonly publicKey: Uint8Array;
-    	readonly revoked: boolean;
-    	private readonly seed: Uint8Array;
+/**
+ * The default seed-based signer: derives the RFC 8032 keypair from a
+ * 32-byte seed (JWK `d` import — byte-identical with Go's
+ * ed25519.NewKeyFromSeed) and signs via node:crypto. No file keyring lives
+ * in the in-memory mirror — callers and tests supply the seed; the keyring
+ * file belongs to the Go CLI (internal/receipts).
+ */
+export class NodeSeedSigner implements ReceiptSigner {
+	readonly keyId: string;
+	readonly publicKey: Uint8Array;
+	readonly revoked: boolean;
+	private readonly seed: Uint8Array;
 
-    	constructor(seed: Uint8Array, options: NodeSeedSignerOptions = {}) {
-    		if (seed.length !== 32) {
-    			throw new ReceiptError(
-    				"RECEIPT_INVALID",
-    				`ed25519 seed must be exactly 32 bytes, got ${seed.length}`,
-    			);
-    		}
-    		this.seed = Uint8Array.from(seed);
-    		this.publicKey = rawPublicKey(privateKeyFromSeed(this.seed));
-    		this.keyId = receiptKeyId(this.publicKey);
-    		this.revoked = options.revoked ?? false;
-    	}
+	constructor(seed: Uint8Array, options: NodeSeedSignerOptions = {}) {
+		if (seed.length !== 32) {
+			throw new ReceiptError(
+				"RECEIPT_INVALID",
+				`ed25519 seed must be exactly 32 bytes, got ${seed.length}`,
+			);
+		}
+		this.seed = Uint8Array.from(seed);
+		this.publicKey = rawPublicKey(privateKeyFromSeed(this.seed));
+		this.keyId = receiptKeyId(this.publicKey);
+		this.revoked = options.revoked ?? false;
+	}
 
-    	/** Signs via signReceipt; a revoked key fails closed. */
-    	sign(payload: ReceiptPayload, previousReceiptHash = ""): SignedReceiptResult {
-    		if (this.revoked) {
-    			throw new ReceiptError(
-    				"RECEIPT_INVALID",
-    				`key ${this.keyId} is revoked — a revoked key is never selected for new signatures`,
-    			);
-    		}
-    		return signReceipt(payload, this.seed, previousReceiptHash);
-    	}
-    }
+	/** Signs via signReceipt; a revoked key fails closed. */
+	sign(payload: ReceiptPayload, previousReceiptHash = ""): SignedReceiptResult {
+		if (this.revoked) {
+			throw new ReceiptError(
+				"RECEIPT_INVALID",
+				`key ${this.keyId} is revoked — a revoked key is never selected for new signatures`,
+			);
+		}
+		return signReceipt(payload, this.seed, previousReceiptHash);
+	}
+}
 
 /** Result of signReceipt: the signed envelope plus the raw public key. */
 export interface SignedReceiptResult {

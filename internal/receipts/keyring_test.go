@@ -165,7 +165,7 @@ func TestLoadKeyringFailsClosedOnCorruption(t *testing.T) {
 			t.Fatalf("ensure: %v", err)
 		}
 		var file struct {
-			ActiveKeyID string            `json:"activeKeyId"`
+			ActiveKeyID string                       `json:"activeKeyId"`
 			Keys        map[string]receipts.KeyEntry `json:"keys"`
 		}
 		data, err := os.ReadFile(path)
@@ -217,7 +217,7 @@ func TestLoadKeyringFailsClosedOnCorruption(t *testing.T) {
 			t.Fatalf("ensure: %v", err)
 		}
 		var file struct {
-			ActiveKeyID string            `json:"activeKeyId"`
+			ActiveKeyID string                       `json:"activeKeyId"`
 			Keys        map[string]receipts.KeyEntry `json:"keys"`
 		}
 		data, err := os.ReadFile(path)

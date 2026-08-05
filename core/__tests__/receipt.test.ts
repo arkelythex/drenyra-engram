@@ -113,7 +113,10 @@ function signParity(): {
 	publicKey: Uint8Array;
 	signatureHex: string;
 } {
-	const { receipt, publicKey } = signReceipt(baseReceiptPayload(), paritySeed());
+	const { receipt, publicKey } = signReceipt(
+		baseReceiptPayload(),
+		paritySeed(),
+	);
 	return {
 		receipt,
 		publicKey,
@@ -165,9 +168,7 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 		expect(canonical).toContain(
 			'"reason":"approved & verified \\"controller\\" review"',
 		);
-		expect(canonical).toContain(
-			'"principalRoles":["accountant","controller"]',
-		);
+		expect(canonical).toContain('"principalRoles":["accountant","controller"]');
 	});
 
 	it("keeps every key present when empty and never marshals null roles", () => {
@@ -193,17 +194,21 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 
 	it("pins the unsigned envelope and complete receipt bytes shared with Go", () => {
 		const { receipt } = signParity();
-		expect(Buffer.from(canonicalUnsignedEnvelope(receipt), "utf8").toString("hex")).toBe(
-			PARITY_UNSIGNED_ENVELOPE_HEX,
-		);
+		expect(
+			Buffer.from(canonicalUnsignedEnvelope(receipt), "utf8").toString("hex"),
+		).toBe(PARITY_UNSIGNED_ENVELOPE_HEX);
 		expect(canonicalUnsignedEnvelope(receipt)).not.toContain("signature");
-		expect(Buffer.from(completeReceiptBytes(receipt), "utf8").toString("hex")).toBe(
-			PARITY_COMPLETE_BYTES_HEX,
-		);
+		expect(
+			Buffer.from(completeReceiptBytes(receipt), "utf8").toString("hex"),
+		).toBe(PARITY_COMPLETE_BYTES_HEX);
 		// signature sits between keyId and issuedAt in the complete bytes
 		const complete = completeReceiptBytes(receipt);
-		expect(complete.indexOf('"keyId"')).toBeLessThan(complete.indexOf('"signature"'));
-		expect(complete.indexOf('"signature"')).toBeLessThan(complete.indexOf('"issuedAt"'));
+		expect(complete.indexOf('"keyId"')).toBeLessThan(
+			complete.indexOf('"signature"'),
+		);
+		expect(complete.indexOf('"signature"')).toBeLessThan(
+			complete.indexOf('"issuedAt"'),
+		);
 	});
 
 	it("pins the receipt hash and the key id derivation shared with Go", () => {
@@ -221,7 +226,9 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 
 	it("sign then verify round trip", () => {
 		const { receipt, publicKey } = signParity();
-		expect(() => verifyReceipt(receipt, baseReceiptPayload(), publicKey)).not.toThrow();
+		expect(() =>
+			verifyReceipt(receipt, baseReceiptPayload(), publicKey),
+		).not.toThrow();
 	});
 
 	it("rejects a modified payload with RECEIPT_PAYLOAD_HASH_MISMATCH", () => {
@@ -238,9 +245,9 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 			...receipt,
 			signature: flipFirstByte(receipt.signature),
 		};
-		expect(codeOf(() => verifyReceipt(mutated, baseReceiptPayload(), publicKey))).toBe(
-			"RECEIPT_SIGNATURE_INVALID",
-		);
+		expect(
+			codeOf(() => verifyReceipt(mutated, baseReceiptPayload(), publicKey)),
+		).toBe("RECEIPT_SIGNATURE_INVALID");
 	});
 
 	it("rejects modified envelope fields", () => {
@@ -250,21 +257,33 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 		// issuedAt differs from the payload → equality check fails closed.
 		expect(
 			codeOf(() =>
-				verifyReceipt({ ...receipt, issuedAt: "2026-08-05T14:00:00Z" }, payload, publicKey),
+				verifyReceipt(
+					{ ...receipt, issuedAt: "2026-08-05T14:00:00Z" },
+					payload,
+					publicKey,
+				),
 			),
 		).toBe("RECEIPT_INVALID");
 
 		// previousReceiptHash is signed → signature fails.
 		expect(
 			codeOf(() =>
-				verifyReceipt({ ...receipt, previousReceiptHash: "deadbeef" }, payload, publicKey),
+				verifyReceipt(
+					{ ...receipt, previousReceiptHash: "deadbeef" },
+					payload,
+					publicKey,
+				),
 			),
 		).toBe("RECEIPT_SIGNATURE_INVALID");
 
 		// the payloadHash field itself → digest check fails.
 		expect(
 			codeOf(() =>
-				verifyReceipt({ ...receipt, payloadHash: "deadbeef" }, payload, publicKey),
+				verifyReceipt(
+					{ ...receipt, payloadHash: "deadbeef" },
+					payload,
+					publicKey,
+				),
 			),
 		).toBe("RECEIPT_PAYLOAD_HASH_MISMATCH");
 	});
@@ -276,9 +295,11 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 			baseReceiptPayload(),
 			wrongSeed,
 		);
-		expect(codeOf(() => verifyReceipt(receipt, baseReceiptPayload(), wrongPublicKey))).toBe(
-			"RECEIPT_KEY_MISMATCH",
-		);
+		expect(
+			codeOf(() =>
+				verifyReceipt(receipt, baseReceiptPayload(), wrongPublicKey),
+			),
+		).toBe("RECEIPT_KEY_MISMATCH");
 	});
 
 	it("fails closed on unknown enums with RECEIPT_INVALID", () => {
@@ -297,7 +318,10 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 		expect(
 			codeOf(() =>
 				verifyReceipt(
-					{ ...receipt, subjectType: "envelope" as ReceiptPayload["subjectType"] },
+					{
+						...receipt,
+						subjectType: "envelope" as ReceiptPayload["subjectType"],
+					},
 					payload,
 					publicKey,
 				),
@@ -316,13 +340,20 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 
 		expect(
 			codeOf(() =>
-				verifyReceipt({ ...receipt, signature: "!!!not-base64!!!" }, payload, publicKey),
+				verifyReceipt(
+					{ ...receipt, signature: "!!!not-base64!!!" },
+					payload,
+					publicKey,
+				),
 			),
 		).toBe("RECEIPT_INVALID");
 		expect(
 			codeOf(() =>
 				verifyReceipt(
-					{ ...receipt, signature: Buffer.from("too short").toString("base64") },
+					{
+						...receipt,
+						signature: Buffer.from("too short").toString("base64"),
+					},
 					payload,
 					publicKey,
 				),
