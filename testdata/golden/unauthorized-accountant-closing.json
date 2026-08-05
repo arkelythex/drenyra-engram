@@ -1,0 +1,52 @@
+{
+  "name": "unauthorized-accountant-closing",
+  "contract": "approval-policy",
+  "principal": {
+    "subjectId": "sub-accountant-1",
+    "tenantId": "tenant-1",
+    "membershipId": "membership-1",
+    "companyScopes": [
+      "cmp-01"
+    ],
+    "roles": [
+      "accountant"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "standard",
+    "authenticatedAt": "2026-08-01T09:00:00Z"
+  },
+  "memory": {
+    "id": "mem-close-1",
+    "topicKey": "closing/CIERRE-2026-07",
+    "title": "Cierre contable julio 2026",
+    "kind": "summary",
+    "scope": {
+      "kind": "company",
+      "organizationId": "tenant-1",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202607"
+    },
+    "content": {
+      "what": "Cierre contable mensual julio 2026",
+      "why": "cierre de periodo",
+      "where": "Peru",
+      "learned": "periodo 202607 cerrado y conciliado"
+    },
+    "source": {
+      "system": "drenyra-core",
+      "actorId": "agent-close-1",
+      "actorKind": "agent"
+    },
+    "fiscalEffect": "closing",
+    "status": "pending_review",
+    "effectiveAt": "2026-07-31T23:59:59Z",
+    "recordedAt": "2026-08-01T08:30:00Z",
+    "materialityLevel": "normal"
+  },
+  "expected": {
+    "allowed": false,
+    "reasonCode": "ROLE_NOT_AUTHORIZED",
+    "policyVersion": "approval-policy/v0.4.0"
+  }
+}

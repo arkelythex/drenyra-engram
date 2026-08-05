@@ -1,0 +1,29 @@
+{
+  "name": "canonical-principal-role-order",
+  "contract": "principal-snapshot",
+  "principal": {
+    "subjectId": "sub-roles-1",
+    "tenantId": "tenant-1",
+    "membershipId": "membership-1",
+    "companyScopes": [
+      "cmp-01"
+    ],
+    "roles": [
+      "controller",
+      "accountant",
+      "controller",
+      "senior_accountant",
+      "accountant"
+    ],
+    "authenticationMethod": "session",
+    "assuranceLevel": "standard",
+    "authenticatedAt": "2026-08-01T09:00:00Z"
+  },
+  "expected": {
+    "canonicalRoles": [
+      "accountant",
+      "controller",
+      "senior_accountant"
+    ]
+  }
+}

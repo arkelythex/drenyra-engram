@@ -1,0 +1,47 @@
+{
+  "name": "stale-envelope",
+  "contract": "approval-envelope",
+  "memory": {
+    "id": "mem-gated",
+    "topicKey": "adjustment/AJ-2026-07-001",
+    "title": "Tasa IGV",
+    "kind": "decision",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    },
+    "fiscalEffect": "adjustment",
+    "status": "pending_review",
+    "effectiveAt": "2026-07-31T12:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "evidenceRefs": [
+      "xml:F001"
+    ],
+    "ruleRefs": [
+      "policy/igv/late-document-v3"
+    ],
+    "materialityLevel": "normal"
+  },
+  "linkedAfterReviewRefs": [
+    "extracto:BCP-191"
+  ],
+  "expected": {
+    "reviewedEnvelopeHash": "ba8edc2ccadf8fff0bd04f5a25eca264a30bfb60b430b85782eaabb798716130",
+    "resultingEnvelopeHash": "688236fd4d04cd906dc36344f88f44b6b9c1d66bee6734f4bf1dc3939d5e84fc",
+    "actualEnvelopeHash": "d34ab3c469ebaff71dcf4154ec3969afab8f686cc7033dd45a35ea05386b136e"
+  }
+}
