@@ -95,11 +95,11 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 		t.Fatalf("save A failed (exit %d): %s", code, stderr)
 	}
 	var saveResult struct {
-		Observation struct {
+		Memory struct {
 			Scope struct {
 				RUC string `json:"ruc"`
 			} `json:"scope"`
-		} `json:"observation"`
+		} `json:"memory"`
 		Outcome string `json:"outcome"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &saveResult); err != nil {
@@ -108,8 +108,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if saveResult.Outcome != "created" {
 		t.Fatalf("outcome = %s, want created", saveResult.Outcome)
 	}
-	if saveResult.Observation.Scope.RUC != cliRucA {
-		t.Fatalf("saved scope ruc = %s, want %s", saveResult.Observation.Scope.RUC, cliRucA)
+	if saveResult.Memory.Scope.RUC != cliRucA {
+		t.Fatalf("saved scope ruc = %s, want %s", saveResult.Memory.Scope.RUC, cliRucA)
 	}
 
 	// search from the same company finds the observation.
@@ -124,8 +124,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if len(fromA) != 1 {
 		t.Fatalf("search from A returned %d results, want 1", len(fromA))
 	}
-	if fromA[0].Observation.Scope.RUC != cliRucA {
-		t.Fatalf("search from A returned ruc %s, want %s", fromA[0].Observation.Scope.RUC, cliRucA)
+	if fromA[0].Memory.Scope.RUC != cliRucA {
+		t.Fatalf("search from A returned ruc %s, want %s", fromA[0].Memory.Scope.RUC, cliRucA)
 	}
 
 	// search from company B returns NOTHING before B has any memory
@@ -169,7 +169,7 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &fromA); err != nil {
 			t.Fatalf("search A (%s) output not JSON: %v\n%s", mode, err, stdout)
 		}
-		if len(fromA) != 1 || fromA[0].Observation.Scope.RUC != cliRucA {
+		if len(fromA) != 1 || fromA[0].Memory.Scope.RUC != cliRucA {
 			t.Fatalf("search from A (%s) = %+v, want exactly A's own observation", mode, fromA)
 		}
 
@@ -185,7 +185,7 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &fromB); err != nil {
 			t.Fatalf("search B (%s) output not JSON: %v\n%s", mode, err, stdout)
 		}
-		if len(fromB) != 1 || fromB[0].Observation.Scope.RUC != cliRucB {
+		if len(fromB) != 1 || fromB[0].Memory.Scope.RUC != cliRucB {
 			t.Fatalf("search from B (%s) = %+v, want exactly B's own observation, never A's", mode, fromB)
 		}
 	}
@@ -219,8 +219,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 1 || report.Observations != 2 || report.RevisionChains != 2 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 1, 2 observations, 2 chains", report)
+	if report.SchemaVersion != 2 || report.Observations != 2 || report.RevisionChains != 2 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 2, 2 observations, 2 chains", report)
 	}
 }
 
@@ -295,11 +295,11 @@ func saveViaCLI(t *testing.T, db, path string) string {
 		t.Fatalf("save %s failed (exit %d): %s", path, code, stderr)
 	}
 	var result struct {
-		Observation struct {
+		Memory struct {
 			Identity struct {
 				ID string `json:"id"`
 			} `json:"identity"`
-		} `json:"observation"`
+		} `json:"memory"`
 		Outcome string `json:"outcome"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
@@ -308,10 +308,10 @@ func saveViaCLI(t *testing.T, db, path string) string {
 	if result.Outcome != "created" && result.Outcome != "updated" {
 		t.Fatalf("save outcome = %s, want created/updated", result.Outcome)
 	}
-	if result.Observation.Identity.ID == "" {
+	if result.Memory.Identity.ID == "" {
 		t.Fatal("save returned an empty id")
 	}
-	return result.Observation.Identity.ID
+	return result.Memory.Identity.ID
 }
 
 // cliSaveInput builds a save payload for the CLI's fixed company scope shape.
@@ -319,7 +319,7 @@ func cliSaveInput(topicKey, ruc, period, what, session string) core.SaveInput {
 	return core.SaveInput{
 		TopicKey: topicKey,
 		Title:    "base rate",
-		Type:     "policy",
+		Kind:     core.KindRule,
 		Scope: core.Scope{
 			Kind:           core.ScopeKindCompany,
 			OrganizationID: cliOrganizationID,
@@ -333,11 +333,11 @@ func cliSaveInput(topicKey, ruc, period, what, session string) core.SaveInput {
 			Where:   "Peru",
 			Learned: "applies to all",
 		},
-		AuthorityStatus: core.StatusDraft,
-		Provenance: core.Provenance{
-			Actor:     "cli-user",
-			Timestamp: "2026-01-15T12:00:00.000Z",
-			Source:    "cli",
+		FiscalEffect: core.FiscalEffectNone,
+		Source: core.Source{
+			System:    "cli",
+			ActorID:   "cli-user",
+			ActorKind: core.ActorKindAgent,
 			Session:   session,
 		},
 	}
@@ -369,40 +369,38 @@ func runTransition(t *testing.T, db string, args ...string) (string, string, int
 	return stdout, stderr, code
 }
 
-// TestCLILifecycleRoundTrip drives the full lifecycle through the built binary:
-// save → review → promote → supersede (with target), asserting each command's
-// JSON shape and exit code against a fresh temp database.
+// TestCLILifecycleRoundTrip drives the v2 lifecycle through the built binary:
+// save (gated → pending_review) → approve (human gate) → supersede (with
+// target), asserting each command's JSON shape and exit code against a fresh
+// temp database.
 func TestCLILifecycleRoundTrip(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
 
-	idA := saveViaCLI(t, db, fixturePath(t, "a.json"))
+	// A gated fixture (fiscalEffect adjustment) lands pending_review.
+	gated := `{"topicKey":"adjust/aj-001","title":"Ajuste AJ-001","kind":"decision","scope":{"kind":"company","organizationId":"cli","companyId":"20100039201","ruc":"20100039201","period":"202401"},"content":{"what":"ajuste de periodo","why":"comprobante tardio","where":"cli","learned":"n/a"},"fiscalEffect":"adjustment","effectiveAt":"2024-01-31T00:00:00.000Z","source":{"system":"cli","actorId":"cli-user","actorKind":"agent"}}`
+	gatedPath := filepath.Join(t.TempDir(), "gated.json")
+	if err := os.WriteFile(gatedPath, []byte(gated), 0o600); err != nil {
+		t.Fatalf("write gated fixture: %v", err)
+	}
+	idA := saveViaCLI(t, db, gatedPath)
 
-	stdout, _, code := runTransition(t, db, "review", idA, "--actor", "test-actor")
-	var reviewed transitionOutput
-	if err := json.Unmarshal([]byte(stdout), &reviewed); err != nil {
-		t.Fatalf("review output not JSON: %v\n%s", err, stdout)
+	stdout, _, code := runTransition(t, db, "approve", idA, "--actor", "maria.torres")
+	var approved transitionOutput
+	if err := json.Unmarshal([]byte(stdout), &approved); err != nil {
+		t.Fatalf("approve output not JSON: %v\n%s", err, stdout)
 	}
-	if reviewed.ID != idA || reviewed.From != core.StatusDraft || reviewed.To != core.StatusReviewed || reviewed.Revision != 1 {
-		t.Fatalf("review output = %+v, want id %s, draft → reviewed, revision 1", reviewed, idA)
-	}
-
-	stdout, _, code = runTransition(t, db, "promote", idA, "--actor", "test-actor")
-	var promoted transitionOutput
-	if err := json.Unmarshal([]byte(stdout), &promoted); err != nil {
-		t.Fatalf("promote output not JSON: %v\n%s", err, stdout)
-	}
-	if promoted.ID != idA || promoted.From != core.StatusReviewed || promoted.To != core.StatusPromoted {
-		t.Fatalf("promote output = %+v, want id %s, reviewed → promoted", promoted, idA)
+	if approved.ID != idA || approved.To != core.StatusApproved {
+		t.Fatalf("approve output = %+v, want id %s approved", approved, idA)
 	}
 
 	idB := saveViaCLI(t, db, fixturePath(t, "b.json"))
-	stdout, _, code = runTransition(t, db, "supersede", idA, "--target", idB, "--actor", "test-actor")
+	stdout, _, code = runTransition(t, db, "supersede", idA, "--target", idB, "--actor", "maria.torres")
 	var superseded supersedeOutput
 	if err := json.Unmarshal([]byte(stdout), &superseded); err != nil {
 		t.Fatalf("supersede output not JSON: %v\n%s", err, stdout)
 	}
-	if superseded.ID != idA || superseded.From != core.StatusPromoted || superseded.To != core.StatusSuperseded || superseded.TargetID != idB {
-		t.Fatalf("supersede output = %+v, want id %s, promoted → superseded, target %s", superseded, idA, idB)
+	if superseded.ID != idA || superseded.From != core.StatusApproved || superseded.To != core.StatusSuperseded || superseded.TargetID != idB {
+		t.Fatalf("supersede output = %+v, want id %s, approved → superseded, target %s", superseded, idA, idB)
 	}
 
 	// The supersedes relation is recorded; with idB still draft the verdict
@@ -416,9 +414,10 @@ func TestCLILifecycleRoundTrip(t *testing.T) {
 		t.Fatalf("compare output not JSON: %v\n%s", err, stdout)
 	}
 	// idA was superseded by idB in this round trip → the verdict is
-	// "supersedes" (source check: A is superseded, B is the successor).
-	if cmp.RelationVerdict != "supersedes" || !cmp.IdentityMatch || cmp.ScopeMatch != "none" {
-		t.Fatalf("compare(idA, idB) = %+v, want supersedes + identityMatch + scopeMatch none", cmp)
+	// "supersedes" (source check: A is superseded, B is the successor). The two
+	// fixtures have DIFFERENT topic keys, so identityMatch is false.
+	if cmp.RelationVerdict != "supersedes" || cmp.IdentityMatch || cmp.ScopeMatch != "none" {
+		t.Fatalf("compare(idA, idB) = %+v, want supersedes + identityMatch false + scopeMatch none", cmp)
 	}
 }
 
@@ -458,8 +457,11 @@ func TestCLICompareScenarios(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
 		t.Fatalf("compare A/A2 output not JSON: %v\n%s", err, stdout)
 	}
-	if !cmp.IdentityMatch || cmp.RelationVerdict != "related" || cmp.ScopeMatch != "exact" {
-		t.Fatalf("compare(A, A2) = %+v, want related + identityMatch + scopeMatch exact", cmp)
+	// v2: two saves of the same (topicKey, scope) chain — the first was
+	// superseded automatically by the second; the verdict is supersedes with the
+	// identical content unchanged.
+	if !cmp.IdentityMatch || cmp.RelationVerdict != "supersedes" || cmp.ScopeMatch != "exact" {
+		t.Fatalf("compare(A, A2) = %+v, want supersedes + identityMatch + scopeMatch exact", cmp)
 	}
 	if cmp.ContentDeltas.What || cmp.ContentDeltas.Why || cmp.ContentDeltas.Where || cmp.ContentDeltas.Learned {
 		t.Fatalf("compare(A, A2) contentDeltas = %+v, want all false for identical content", cmp.ContentDeltas)
@@ -490,24 +492,13 @@ func TestCLICompareScenarios(t *testing.T) {
 		t.Fatalf("compare(A, P) scopeMatch = %q, want partial", cmp.ScopeMatch)
 	}
 
-	// Promote all three, then supersede C → A2 and A → C: the relations table
-	// records A→C as supersedes with C superseded → verdict supersedes.
-	for _, id := range []string{idA, idC, idA2} {
-		if _, _, code := runCLI(t, "review", id, "--actor", "test-actor", "--db", db); code != 0 {
-			t.Fatalf("review %s failed (exit %d)", id, code)
-		}
-		if _, _, code := runCLI(t, "promote", id, "--actor", "test-actor", "--db", db); code != 0 {
-			t.Fatalf("promote %s failed (exit %d)", id, code)
-		}
-	}
-	if _, _, code := runCLI(t, "supersede", idC, "--target", idA2, "--db", db); code != 0 {
-		t.Fatalf("supersede C→A2 failed (exit %d)", code)
-	}
-	if _, _, code := runCLI(t, "supersede", idA, "--target", idC, "--db", db); code != 0 {
-		t.Fatalf("supersede A→C failed (exit %d)", code)
+	// v2: active (informative) memories are directly supersedeable — no review/
+	// promote step exists. Supersede C → B (distinct chains) records the pair.
+	if _, _, code := runCLI(t, "supersede", idC, "--target", idB, "--db", db); code != 0 {
+		t.Fatalf("supersede C→B failed (exit %d)", code)
 	}
 
-	stdout, _, code = runCLI(t, "compare", idA, idC, "--db", db)
+	stdout, _, code = runCLI(t, "compare", idC, idB, "--db", db)
 	if code != 0 {
 		t.Fatalf("compare superseded pair failed (exit %d)", code)
 	}
@@ -515,42 +506,42 @@ func TestCLICompareScenarios(t *testing.T) {
 		t.Fatalf("compare superseded output not JSON: %v\n%s", err, stdout)
 	}
 	if cmp.RelationVerdict != "supersedes" {
-		t.Fatalf("compare(A, C) after supersede = %+v, want verdict supersedes", cmp)
+		t.Fatalf("compare(C, B) after supersede = %+v, want verdict supersedes", cmp)
 	}
-	if cmp.StatusA != core.StatusSuperseded || cmp.StatusB != core.StatusSuperseded {
-		t.Fatalf("compare(A, C) statuses = %s/%s, want superseded/superseded", cmp.StatusA, cmp.StatusB)
+	if cmp.StatusA != core.StatusSuperseded || cmp.StatusB == core.StatusSuperseded {
+		t.Fatalf("compare(C, B) statuses = %s/%s, want C superseded, B current", cmp.StatusA, cmp.StatusB)
 	}
 }
 
-// TestCLIIllegalPromoteFromDraftFailsClosed asserts the fail-closed lifecycle
-// boundary: a non-adjacent transition exits 1, writes nothing to stdout and
-// leaves the observation unchanged.
-func TestCLIIllegalPromoteFromDraftFailsClosed(t *testing.T) {
+// TestCLIIllegalApproveOfActiveFailsClosed asserts the fail-closed gate
+// boundary: approving an ACTIVE (informative, never-gated) memory exits 1,
+// writes nothing to stdout and leaves the memory unchanged.
+func TestCLIIllegalApproveOfActiveFailsClosed(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
 	id := saveViaCLI(t, db, fixturePath(t, "a.json"))
 
-	stdout, stderr, code := runCLI(t, "promote", id, "--db", db)
+	stdout, stderr, code := runCLI(t, "approve", id, "--actor", "maria.torres", "--db", db)
 	if code != 1 {
-		t.Fatalf("promote draft exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+		t.Fatalf("approve active exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
 	if stdout != "" {
-		t.Fatalf("illegal promote must not write stdout: %q", stdout)
+		t.Fatalf("illegal approve must not write stdout: %q", stdout)
 	}
-	if !strings.Contains(stderr, core.ErrInvalidTransition) {
+	if !strings.Contains(stderr, "INVALID_TRANSITION") {
 		t.Fatalf("stderr must name INVALID_TRANSITION: %q", stderr)
 	}
 
-	// The observation is still draft.
+	// The memory is still active.
 	stdout, _, code = runCLI(t, "compare", id, id, "--db", db)
 	if code != 0 {
-		t.Fatalf("compare after illegal promote failed (exit %d): %s", code, stderr)
+		t.Fatalf("compare after illegal approve failed (exit %d): %s", code, stderr)
 	}
 	var cmp compareOutput
 	if err := json.Unmarshal([]byte(stdout), &cmp); err != nil {
 		t.Fatalf("compare output not JSON: %v\n%s", err, stdout)
 	}
-	if cmp.StatusA != core.StatusDraft {
-		t.Fatalf("observation changed after illegal promote: status = %s, want draft", cmp.StatusA)
+	if cmp.StatusA != core.StatusActive {
+		t.Fatalf("memory changed after illegal approve: status = %s, want active", cmp.StatusA)
 	}
 }
 
@@ -594,19 +585,19 @@ func TestCLIUsageErrorsForNewCommands(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("compare missing ids exit = %d, want 1; stderr=%q", code, stderr)
 		}
-		if !strings.Contains(stderr, "OBSERVATION_NOT_FOUND") {
+		if !strings.Contains(stderr, "MEMORY_NOT_FOUND") {
 			t.Fatalf("stderr must name OBSERVATION_NOT_FOUND: %q", stderr)
 		}
 	})
 
-	t.Run("review with missing observation", func(t *testing.T) {
+	t.Run("approve with missing observation", func(t *testing.T) {
 		db := filepath.Join(t.TempDir(), "engram.db")
-		_, stderr, code := runCLI(t, "review", "missing-id", "--db", db)
+		_, stderr, code := runCLI(t, "approve", "missing-id", "--db", db)
 		if code != 1 {
-			t.Fatalf("review missing id exit = %d, want 1; stderr=%q", code, stderr)
+			t.Fatalf("approve missing id exit = %d, want 1; stderr=%q", code, stderr)
 		}
-		if !strings.Contains(stderr, "OBSERVATION_NOT_FOUND") {
-			t.Fatalf("stderr must name OBSERVATION_NOT_FOUND: %q", stderr)
+		if !strings.Contains(stderr, "MEMORY_NOT_FOUND") {
+			t.Fatalf("stderr must name MEMORY_NOT_FOUND: %q", stderr)
 		}
 	})
 
@@ -615,7 +606,7 @@ func TestCLIUsageErrorsForNewCommands(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("help exit = %d, want 0", code)
 		}
-		for _, cmd := range []string{"compare", "review", "promote", "supersede"} {
+		for _, cmd := range []string{"compare", "approve", "reject", "void", "supersede", "period-summary"} {
 			if !strings.Contains(stdout, cmd) {
 				t.Fatalf("help output missing %q: %s", cmd, stdout)
 			}
@@ -740,7 +731,7 @@ func TestCLIMCPSurfacesHelp(t *testing.T) {
 		// it must never list an authorization command as invocable.
 		for _, line := range strings.Split(stdout, "\n") {
 			trimmed := strings.TrimSpace(line)
-			for _, forbidden := range []string{"authorize", "approve", "allow"} {
+			for _, forbidden := range []string{"authorize", "allow", "execute", "declare", "file", "pay"} {
 				if strings.HasPrefix(trimmed, "drenyra-engram "+forbidden) {
 					t.Fatalf("help lists forbidden command line %q", trimmed)
 				}

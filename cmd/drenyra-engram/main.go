@@ -67,10 +67,18 @@ func run(args []string) int {
 		return cmdDoctor(args[1:])
 	case "compare":
 		return cmdCompare(args[1:])
-	case "review":
-		return cmdReview(args[1:])
-	case "promote":
-		return cmdPromote(args[1:])
+	case "approve":
+		return cmdApprove(args[1:])
+	case "reject":
+		return cmdReject(args[1:])
+	case "void":
+		return cmdVoid(args[1:])
+	case "link-evidence":
+		return cmdLinkEvidence(args[1:])
+	case "period-summary":
+		return cmdPeriodSummary(args[1:])
+	case "timeline":
+		return cmdTimeline(args[1:])
 	case "supersede":
 		return cmdSupersede(args[1:])
 	case "mcp":
@@ -217,7 +225,7 @@ func cmdContext(args []string) int {
 	// (topicKey, exact scope) chain, never the full revision history.
 	current := search.LatestPerChain(observations)
 	if current == nil {
-		current = []core.Observation{}
+		current = []core.AccountingMemory{}
 	}
 	return emit(current)
 }
@@ -296,22 +304,57 @@ func cmdCompare(args []string) int {
 // transitionOutput mirrors server.TransitionOutput on the CLI surface.
 type transitionOutput = server.TransitionOutput
 
-func cmdReview(args []string) int {
-	return cmdStatusTransition("review", core.StatusReviewed, args)
+// cliSource builds a HUMAN actor source for the CLI lifecycle commands: the
+// CLI is the professional's surface — approvals from the terminal are human
+// approvals (the gate demands it).
+func cliSource(actor string) core.Source {
+	if actor == "" {
+		actor = "cli"
+	}
+	return core.Source{System: "cli", ActorID: actor, ActorKind: core.ActorKindHuman}
 }
 
-func cmdPromote(args []string) int {
-	return cmdStatusTransition("promote", core.StatusPromoted, args)
+func cmdApprove(args []string) int {
+	return cmdGatedTransition("approve", args, func(api *server.API, id string, src core.Source) (transitionOutput, error) {
+		m, err := api.Approve(id, src)
+		if err != nil {
+			return transitionOutput{}, err
+		}
+		return transitionOutput{ID: m.Identity.ID, From: core.StatusPendingReview, To: m.Status, Revision: m.Revision}, nil
+	})
 }
 
-// cmdStatusTransition implements review/promote: a single adjacent-forward
-// status transition via the shared domain services. The transition is atomic
-// and fails closed on illegal moves (internal/core/lifecycle.go), leaving the
-// observation unchanged.
-func cmdStatusTransition(name string, to core.AuthorityStatus, args []string) int {
+func cmdReject(args []string) int {
+	return cmdGatedTransition("reject", args, func(api *server.API, id string, src core.Source) (transitionOutput, error) {
+		m, err := api.Reject(id, src)
+		if err != nil {
+			return transitionOutput{}, err
+		}
+		return transitionOutput{ID: m.Identity.ID, From: core.StatusPendingReview, To: m.Status, Revision: m.Revision}, nil
+	})
+}
+
+func cmdVoid(args []string) int {
+	return cmdGatedTransition("void", args, func(api *server.API, id string, src core.Source) (transitionOutput, error) {
+		before, err := api.Get(id)
+		if err != nil {
+			return transitionOutput{}, err
+		}
+		m, err := api.Void(id, src)
+		if err != nil {
+			return transitionOutput{}, err
+		}
+		return transitionOutput{ID: m.Identity.ID, From: before.Status, To: m.Status, Revision: m.Revision}, nil
+	})
+}
+
+// cmdGatedTransition implements approve/reject/void: the human-gated lifecycle
+// commands via the shared domain services. The gate fails closed on machine
+// actors and illegal transitions, leaving the memory unchanged.
+func cmdGatedTransition(name string, args []string, run func(*server.API, string, core.Source) (transitionOutput, error)) int {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
-	actor := fs.String("actor", "cli", "actor name recorded in the audit trail (default cli)")
+	actor := fs.String("actor", "cli", "human actor id recorded in the audit trail (default cli)")
 	fs.Usage = func() {
 		fmt.Fprintf(fs.Output(), "usage: drenyra-engram %s <id> [--actor <name>] [--db <path>]\n", name)
 	}
@@ -334,12 +377,7 @@ func cmdStatusTransition(name string, to core.AuthorityStatus, args []string) in
 	defer func() { _ = st.Close() }()
 
 	api := server.New(st, "cli")
-	var output transitionOutput
-	if to == core.StatusReviewed {
-		output, err = api.Review(rest[0], *actor)
-	} else {
-		output, err = api.Promote(rest[0], *actor)
-	}
+	output, err := run(api, rest[0], cliSource(*actor))
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -380,7 +418,7 @@ func cmdSupersede(args []string) int {
 	defer func() { _ = st.Close() }()
 
 	api := server.New(st, "cli")
-	output, err := api.Supersede(rest[0], *target, *actor)
+	output, err := api.Supersede(rest[0], *target, cliSource(*actor))
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -599,18 +637,165 @@ func fail(format string, args ...any) int {
 	return 1
 }
 
+// ──────────────────────────────────────────────
+// link-evidence — attach evidence references to a memory (immutable memory,
+// growing links)
+// ──────────────────────────────────────────────
+
+func cmdLinkEvidence(args []string) int {
+	fs := flag.NewFlagSet("link-evidence", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	actor := fs.String("actor", "cli", "actor id recorded on the link (default cli)")
+	var refs multiFlag
+	fs.Var(&refs, "ref", "evidence reference (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--actor <name>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--actor": true, "--ref": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	if len(refs) == 0 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	out, err := api.LinkEvidence(rest[0], refs, *actor)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(out)
+}
+
+// ──────────────────────────────────────────────
+// period-summary — the explainable period narrative (killer demo)
+// ──────────────────────────────────────────────
+
+func cmdPeriodSummary(args []string) int {
+	fs := flag.NewFlagSet("period-summary", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--period": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(rest[0], *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	summary, err := api.PeriodSummary(scope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	if summary.NarrativeText != "" {
+		fmt.Fprintln(os.Stdout, summary.NarrativeText)
+	}
+	return emit(summary)
+}
+
+// ──────────────────────────────────────────────
+// timeline — full revision history of a (topicKey, scope) chain
+// ──────────────────────────────────────────────
+
+func cmdTimeline(args []string) int {
+	fs := flag.NewFlagSet("timeline", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	topic := fs.String("topic", "", "topic key of the chain (REQUIRED)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram timeline <ruc> --topic <topicKey> [--period <YYYYMM>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--topic": true, "--period": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || *topic == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(rest[0], *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	chain, err := api.Chain(*topic, scope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(chain)
+}
+
+// multiFlag collects repeated string flags (e.g. --ref a --ref b).
+type multiFlag []string
+
+func (m *multiFlag) String() string { return strings.Join(*m, ",") }
+
+func (m *multiFlag) Set(value string) error {
+	*m = append(*m, value)
+	return nil
+}
+
 func printUsage(w *os.File) {
 	fmt.Fprintln(w, `drenyra-engram — institutional accounting memory engine (v0.2 Go foundation)
 
 Usage:
   drenyra-engram save <json-file> [--db <path>]
+  drenyra-engram record <json-file> [--db <path>]
   drenyra-engram search <query> --company <ruc> [--period <YYYYMM>] [--any] [--db <path>]
   drenyra-engram context <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram doctor [--db <path>]
   drenyra-engram compare <idA> <idB> [--db <path>]
-  drenyra-engram review <id> [--actor <name>] [--db <path>]
-  drenyra-engram promote <id> [--actor <name>] [--db <path>]
+  drenyra-engram approve <id> [--actor <name>] [--db <path>]   (human gate)
+  drenyra-engram reject <id> [--actor <name>] [--db <path>]    (human gate)
+  drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
+  drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
+  drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
+  drenyra-engram timeline <ruc> --topic <topicKey> [--period <YYYYMM>] [--db <path>]
   drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
   drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
   drenyra-engram sync --from <src-db> --to <dst-db> [--actor <name>]
@@ -631,13 +816,14 @@ delimited JSON-RPC) for agent clients; serve runs the local HTTP API (REST
 speak the same domain services as the CLI — compare verdicts and lifecycle
 semantics are identical everywhere.
 
-Lifecycle: review/promote/supersede move an observation along the only legal
-chain draft → reviewed → promoted → superseded; supersede records a
-supersedes relation to --target. compare reports identity/scope/content
-deltas and a relation verdict for two stored observations.
+Lifecycle (v2): memories with fiscal effect are saved pending_review and only
+approve (HUMAN gate) moves them to approved; reject ends the review, void
+annuls without successor, supersede routes readers to --target. compare
+reports identity/scope/content deltas and a relation verdict.
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
-authorize/approve/allow command. Memory guides; it never authorizes.
+authorize/allow/execute command. Approve/Reject are the PROFESSIONAL review
+of a memory (human gate), never authorization of business actions.
 
 Exit codes: 0 ok, 1 runtime error, 2 usage error.`)
 }

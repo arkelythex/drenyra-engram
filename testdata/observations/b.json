@@ -1,7 +1,7 @@
 {
   "topicKey": "tax.igv.rate",
   "title": "IGV base rate",
-  "type": "policy",
+  "kind": "rule",
   "scope": {
     "kind": "company",
     "organizationId": "cli",
@@ -15,11 +15,12 @@
     "where": "Peru",
     "learned": "applies to all invoices"
   },
-  "authorityStatus": "draft",
-  "provenance": {
-    "actor": "cli-user",
-    "timestamp": "2026-01-15T12:00:00.000Z",
-    "source": "cli",
+  "fiscalEffect": "none",
+  "effectiveAt": "2024-01-01T00:00:00.000Z",
+  "source": {
+    "system": "cli",
+    "actorId": "cli-user",
+    "actorKind": "agent",
     "session": "smoke-002"
   }
 }
