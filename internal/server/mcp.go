@@ -29,6 +29,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 )
@@ -45,7 +46,7 @@ const latestProtocolVersion = "2025-06-18"
 
 // engineVersion is the semantic version of the Go engine reported in the MCP
 // serverInfo and the HTTP surface.
-const engineVersion = "0.2.0"
+const engineVersion = "0.3.0"
 
 // ──────────────────────────────────────────────
 // JSON-RPC 2.0 wire shapes
@@ -356,15 +357,6 @@ func ToolCatalog() []map[string]any {
 			"inputSchema": objectSchema(nil),
 		},
 		{
-			"name":        "engram_approve",
-			"description": "Approve a pending_review memory. REQUIRES a human actor; machine approval fails with GATE_REQUIRES_HUMAN. Approval is recorded in the audit trail with actor and actor kind.",
-			"inputSchema": objectSchema(map[string]any{
-				"id":        stringSchema("memory id"),
-				"actorId":   stringSchema("human professional id (required for approval)"),
-				"actorKind": stringSchema("actor kind: human|agent|system (approval requires human)"),
-			}, "id", "actorId"),
-		},
-		{
 			"name":        "engram_reject",
 			"description": "Reject a pending_review memory (terminal). REQUIRES a human actor.",
 			"inputSchema": objectSchema(map[string]any{
@@ -443,6 +435,16 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_compare",
 			"description": "Compare two accounting memories: identity/scope/kind/status deltas and the relation verdict (supersedes/related/not_conflict).",
 			"inputSchema": objectSchema(map[string]any{"idA": stringSchema("memory id"), "idB": stringSchema("memory id")}, "idA", "idB"),
+		},
+		{
+			"name":        "accounting_approve",
+			"description": "Approve a pending_review memory against the envelope hash the reviewer actually saw (v0.4.0 Step 1, ADR-003). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"memoryId":             stringSchema("memory id"),
+				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":               stringSchema("human-readable justification (required)"),
+				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
 		},
 		{
 			"name":        "accounting_judge",
@@ -654,7 +656,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(report)), nil
 
-	case "engram_approve", "engram_reject", "engram_void":
+	case "engram_reject", "engram_void":
 		var args struct {
 			ID        string `json:"id"`
 			ActorID   string `json:"actorId"`
@@ -679,8 +681,6 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			err    error
 		)
 		switch call.Name {
-		case "engram_approve":
-			output, err = m.api.Approve(args.ID, source)
 		case "engram_reject":
 			output, err = m.api.Reject(args.ID, source)
 		case "engram_void":
@@ -876,6 +876,38 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(output)), nil
 
+	case "accounting_approve":
+		var args struct {
+			MemoryID             string `json:"memory_id"`
+			ExpectedEnvelopeHash string `json:"expected_envelope_hash"`
+			Reason               string `json:"reason"`
+			RequestID            string `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority (actorId/actorKind/subjectId/roles) — is a malformed
+		// argument shape (JSON-RPC -32602), never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("memory_id", args.MemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_envelope_hash", args.ExpectedEnvelopeHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may approve only when the HTTP middleware supplies a bound
+		// principal to the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_approve requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
 	case "accounting_judge":
 		var args struct {
 			ConflictID string `json:"conflictId"`
@@ -1044,6 +1076,22 @@ func decodeArguments(raw json.RawMessage, dst any) error {
 		return &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: missing arguments"}
 	}
 	if err := json.Unmarshal(raw, dst); err != nil {
+		return &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}
+	}
+	return nil
+}
+
+// decodeArgumentsStrict unmarshals tool arguments REJECTING any unknown field —
+// the strict shape for surfaces where caller-declared authority (or any extra
+// field) must never be silently ignored (design §6: accounting_approve accepts
+// exactly its four command arguments).
+func decodeArgumentsStrict(raw json.RawMessage, dst any) error {
+	if len(raw) == 0 {
+		return &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: missing arguments"}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
 		return &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}
 	}
 	return nil

@@ -27,3 +27,6 @@ coverage/
 *.log
 # Local Pi runtime state
 .atl/
+
+# Local build artifact
+/drenyra-engram

@@ -181,7 +181,7 @@ func TestMCPToolsList(t *testing.T) {
 		t.Fatalf("decode tools/list: %v", err)
 	}
 	if len(result.Tools) != 24 {
-		t.Fatalf("tool count = %d, want 24 (14 engram_* + 10 accounting_*)", len(result.Tools))
+		t.Fatalf("tool count = %d, want 24 (13 engram_* + 11 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)
@@ -200,10 +200,11 @@ func TestMCPToolCatalogNonAuthorization(t *testing.T) {
 	for _, tool := range ToolCatalog() {
 		name, _ := tool["name"].(string)
 		lower := strings.ToLower(name)
-		// v2: engram_approve/engram_reject are the HUMAN review gate of a memory
-		// (a professional approving a pending_review memory) — part of the model,
-		// not authorization of business actions. The boundary bans authorization
-		// of business actions.
+		// v2: engram_reject is the HUMAN review gate of a memory (a professional
+		// rejecting a pending_review memory) — part of the model, not authorization
+		// of business actions. The boundary bans authorization of business actions.
+		// accounting_approve is the AUTHENTICATED approval tool (v0.4.0 Step 1);
+		// it also never authorizes a business action — it approves a memory review.
 		for _, forbidden := range []string{"authorize", "allow", "execute", "declare", "file", "pay"} {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("tool %q violates the non-authorization boundary", name)
@@ -297,38 +298,92 @@ func TestMCPToolsCallLifecycle(t *testing.T) {
 	}
 }
 
-// TestMCPToolsCallDomainError: a domain failure (illegal transition) is a tool
-// result with isError=true and the engine's stable error code as text — not a
-// JSON-RPC error, so agents receive the failure in-band.
-func TestMCPToolsCallDomainError(t *testing.T) {
+// TestMCPAccountingApproveFailsClosedWithoutSession: accounting_approve accepts
+// exactly its four command arguments but the stdio MCP server has NO authenticated
+// session binding (design §3), so the tool FAILS CLOSED with the frozen
+// AUTHENTICATION_REQUIRED as an in-band tool result (isError=true) — never a
+// JSON-RPC error, never a silent identity from the arguments.
+func TestMCPAccountingApproveFailsClosedWithoutSession(t *testing.T) {
 	m, _ := newTestMCP(t)
-	scope := testScope(testRucA)
-
-	saved := call(t, m, 1, "tools/call", map[string]any{
-		"name": "engram_save", "arguments": validInput("topic/err", "Err", "x", scope),
-	})
-	var result core.WriteResult
-	if err := json.Unmarshal([]byte(toolResultText(t, saved)), &result); err != nil {
-		t.Fatalf("decode save: %v", err)
-	}
-
-	approve := call(t, m, 2, "tools/call", map[string]any{
-		"name": "engram_approve", "arguments": map[string]any{
-			"id": result.Memory.Identity.ID, "actorId": "maria.torres", "actorKind": "human",
+	response := call(t, m, 1, "tools/call", map[string]any{
+		"name": "accounting_approve",
+		"arguments": map[string]any{
+			"memory_id":              "m-1",
+			"expected_envelope_hash": "abc",
+			"reason":                 "revisado y conforme",
+			"request_id":             "req-1",
 		},
 	})
-	if approve.Error != nil {
-		t.Fatalf("domain failure must be a tool result, not a JSON-RPC error: %+v", approve.Error)
+	if response.Error != nil {
+		t.Fatalf("domain failure must be a tool result, not a JSON-RPC error: %+v", response.Error)
 	}
 	var output toolCallOutput
-	if err := json.Unmarshal(approve.Result, &output); err != nil {
+	if err := json.Unmarshal(response.Result, &output); err != nil {
 		t.Fatalf("decode tool result: %v", err)
 	}
 	if !output.IsError {
-		t.Fatal("isError = false, want true for INVALID_TRANSITION")
+		t.Fatal("isError = false, want true (fail closed without a session binding)")
 	}
-	if len(output.Content) == 0 || !strings.Contains(output.Content[0]["text"], "INVALID_TRANSITION") {
-		t.Fatalf("error text must carry INVALID_TRANSITION: %v", output.Content)
+	if len(output.Content) == 0 || !strings.Contains(output.Content[0]["text"], "AUTHENTICATION_REQUIRED") {
+		t.Fatalf("error text must carry AUTHENTICATION_REQUIRED: %v", output.Content)
+	}
+}
+
+// TestMCPAccountingApproveRejectsExtraArgs: accounting_approve parses its args
+// STRICTLY (design §6): ANY unknown field — including any caller-supplied
+// authority (actorId/actorKind/subjectId/roles) — is a malformed argument shape
+// (JSON-RPC -32602), never silently ignored.
+func TestMCPAccountingApproveRejectsExtraArgs(t *testing.T) {
+	m, _ := newTestMCP(t)
+	base := map[string]any{
+		"memory_id": "m-1", "expected_envelope_hash": "abc", "reason": "r", "request_id": "q-1",
+	}
+	cases := []struct {
+		name   string
+		extras map[string]any
+	}{
+		{"actorId", map[string]any{"actorId": "maria.torres"}},
+		{"actorKind", map[string]any{"actorKind": "human"}},
+		{"roles", map[string]any{"roles": []string{"controller"}}},
+		{"subjectId", map[string]any{"subjectId": "maria.torres"}},
+		{"unrelated extra", map[string]any{"bogus": 1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args := make(map[string]any, len(base)+len(tc.extras))
+			for k, v := range base {
+				args[k] = v
+			}
+			for k, v := range tc.extras {
+				args[k] = v
+			}
+			response := call(t, m, 1, "tools/call", map[string]any{
+				"name": "accounting_approve", "arguments": args,
+			})
+			if response.Error == nil || response.Error.Code != codeInvalidParams {
+				t.Fatalf("extra args %v: want JSON-RPC -32602, got %+v", tc.extras, response.Error)
+			}
+		})
+	}
+}
+
+// TestMCPLegacyApproveToolRemoved: the actor-supplying approve tool is GONE from
+// the surface — absent from the catalog and unknown to the dispatcher (-32601).
+// Caller-supplied authority has no MCP tool.
+func TestMCPLegacyApproveToolRemoved(t *testing.T) {
+	m, _ := newTestMCP(t)
+	for _, tool := range ToolCatalog() {
+		if name, _ := tool["name"].(string); name == "engram_approve" {
+			t.Fatal("legacy engram_approve must be removed from the catalog")
+		}
+	}
+	response := call(t, m, 1, "tools/call", map[string]any{
+		"name": "engram_approve", "arguments": map[string]any{
+			"id": "m-1", "actorId": "maria.torres", "actorKind": "human",
+		},
+	})
+	if response.Error == nil || response.Error.Code != codeMethodNotFound {
+		t.Fatalf("engram_approve must be unknown (-32601), got %+v", response.Error)
 	}
 }
 
