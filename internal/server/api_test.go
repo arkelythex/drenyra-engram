@@ -366,8 +366,8 @@ func TestDoctorFailsClosedOnMissingTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if report.SchemaVersion != 3 {
-		t.Fatalf("schemaVersion = %d, want 3", report.SchemaVersion)
+	if report.SchemaVersion != 4 {
+		t.Fatalf("schemaVersion = %d, want 4", report.SchemaVersion)
 	}
 }
 

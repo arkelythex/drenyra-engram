@@ -76,7 +76,12 @@ import (
 // approval tables (companies, memberships, membership_roles, sessions,
 // approval_events, idempotency_keys) with their indexes and the two
 // approval_events immutability triggers.
-const schemaVersion = 3
+//
+// v4 (v0.4.0 Step 2): adds the four accounting-judgment persistence tables
+// (judgments, judgment_events, judgment_idempotency_keys,
+// judgment_relations) with their indexes and the judgment immutability
+// triggers (docs/architecture/conflict-judgment-step2.md section 4).
+const schemaVersion = 4
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -152,11 +157,11 @@ type SQLiteStore struct {
 
 // Open opens (creating if needed) the SQLite database at path and applies the
 // versioned schema. Fresh stores bootstrap to the v2 layout exactly, then run
-// the SAME v2→v3 migration used for existing stores — one tested migration
-// path. A v1 store is migrated additively (single transaction), then the v2→v3
-// migration runs in its own single transaction. A corrupt or unsupported store
-// fails closed: it never fabricates data (contracts/provenance.md frozen
-// policy).
+// the SAME additive migration chain used for existing stores (v2→v3→v4) — one
+// tested migration path. A v1 store is migrated additively (single
+// transaction), then the v2→v3 and v3→v4 migrations each run in their own
+// single transaction. A corrupt or unsupported store fails closed: it never
+// fabricates data (contracts/provenance.md frozen policy).
 func Open(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -182,8 +187,8 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
-	// store is migrated additively in ONE transaction, then the v2→v3 migration
-	// runs in its own single transaction before use.
+	// store is migrated additively in ONE transaction, then the v2→v3 and v3→v4
+	// migrations each run in their own single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -198,6 +203,13 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 	if version == 2 {
 		if err := migrateV2ToV3(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 3
+	}
+	if version == 3 {
+		if err := migrateV3ToV4(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -653,6 +665,247 @@ func migrateV2ToV3(db *sql.DB) error {
 	committed = true
 	return nil
 }
+
+// ──────────────────────────────────────────────
+// v3 → v4 additive migration (single transaction, fail closed)
+// ──────────────────────────────────────────────
+
+// migrateV3ToV4 upgrades a schema_version=3 store to v4 IN ONE TRANSACTION:
+// the four accounting-judgment persistence tables (judgments,
+// judgment_events, judgment_idempotency_keys, judgment_relations), the four
+// supporting indexes and the judgment immutability triggers are created with
+// the CREATE statements of docs/architecture/conflict-judgment-step2.md
+// section 4 (the judgments table verbatim, including every CHECK, FK and the
+// open-tuple partial unique index), and schema_version=4 is set ONLY after
+// the whole migration succeeded. On any failure the transaction rolls back
+// and the store stays v3. No IF NOT EXISTS is used: a pre-existing table or
+// trigger with a conflicting shape is a corruption signal and fails the
+// migration closed.
+func migrateV3ToV4(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v3→v4: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// (a) The four v4 tables — CREATE statements verbatim from the design.
+	for _, ddl := range []string{
+		judgmentsDDL, judgmentEventsDDL, judgmentIdempotencyKeysDDL, judgmentRelationsDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v3→v4: create table: %w", err)
+		}
+	}
+
+	// (b) The four supporting indexes (incl. the open-tuple partial unique
+	// index, which only constrains open proposals).
+	for _, ddl := range []string{
+		judgmentOpenTupleIndexDDL, judgmentsPairIndexDDL,
+		judgmentsPredecessorIndexDDL, judgmentsSuccessorIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v3→v4: create index: %w", err)
+		}
+	}
+
+	// (c) The judgment immutability triggers (events frozen; deletes frozen;
+	// confirmed rows only supersede with routing-only changes; terminal rows
+	// never re-open).
+	for _, ddl := range []string{
+		judgmentEventsNoUpdateDDL, judgmentEventsNoDeleteDDL,
+		judgmentsNoDeleteDDL, judgmentsImmutableUpdateDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v3→v4: create judgment trigger: %w", err)
+		}
+	}
+
+	// (d) schema_version = 4 ONLY after the whole migration succeeded — same
+	// transaction, so a failure above rolls everything back.
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v3→v4: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v3→v4: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// v4 tables and supporting objects — CREATE statements verbatim from
+// docs/architecture/conflict-judgment-step2.md section 4.
+
+const judgmentsDDL = `
+    CREATE TABLE judgments (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL, company_id TEXT NOT NULL, fiscal_period_id TEXT,
+      from_id TEXT NOT NULL REFERENCES observations(id),
+      to_id TEXT NOT NULL REFERENCES observations(id),
+      relation TEXT NOT NULL CHECK(relation IN
+        ('supports','contradicts','explains','reconciles','reverses','supersedes')),
+      status TEXT NOT NULL CHECK(status IN
+        ('proposed','confirmed','rejected','withdrawn','superseded')),
+      proposer_system TEXT NOT NULL, proposer_actor_id TEXT NOT NULL DEFAULT '',
+      proposer_actor_kind TEXT NOT NULL CHECK(proposer_actor_kind IN ('agent','system')),
+      proposer_session TEXT NOT NULL DEFAULT '', proposal_reason TEXT NOT NULL,
+      resolution TEXT, policy_version TEXT,
+      adjudicator_subject_id TEXT, adjudicator_membership_id TEXT REFERENCES memberships(id),
+      adjudicator_roles_json TEXT, authentication_method TEXT, assurance_level TEXT,
+      principal_authenticated_at TEXT,
+      predecessor_id TEXT REFERENCES judgments(id), supersedes_id TEXT REFERENCES judgments(id),
+      proposed_at TEXT NOT NULL, updated_at TEXT NOT NULL, decided_at TEXT,
+      CHECK(from_id <> to_id),
+      CHECK((status='proposed') = (decided_at IS NULL)),
+      CHECK(status NOT IN ('confirmed','rejected') OR adjudicator_subject_id IS NOT NULL),
+      CHECK(adjudicator_subject_id IS NULL OR status IN ('confirmed','rejected','superseded')),
+      CHECK(status NOT IN ('confirmed','rejected') OR
+        (length(trim(resolution))>0 AND length(policy_version)>0))
+    );
+    `
+
+const judgmentOpenTupleIndexDDL = `CREATE UNIQUE INDEX uq_judgment_open_tuple
+      ON judgments(tenant_id,company_id,from_id,to_id,relation) WHERE status='proposed';`
+
+const judgmentsPairIndexDDL = `CREATE INDEX idx_judgments_pair ON judgments(tenant_id,company_id,from_id,to_id,status);`
+
+const judgmentsPredecessorIndexDDL = `CREATE INDEX idx_judgments_predecessor ON judgments(predecessor_id);`
+
+const judgmentsSuccessorIndexDDL = `CREATE INDEX idx_judgments_successor ON judgments(supersedes_id);`
+
+// judgment_events is the immutable transition log of the judgment machine.
+// Every legal transition writes exactly one event; confirm/reject events carry
+// the principal snapshot and the frozen policy version. The action/status
+// CHECKs mirror the judgment transition table: confirm/reject/withdraw leave
+// proposed, supersede leaves proposed or confirmed; all land in the design's
+// target statuses.
+const judgmentEventsDDL = `
+    CREATE TABLE judgment_events (
+      id TEXT PRIMARY KEY, judgment_id TEXT NOT NULL REFERENCES judgments(id),
+      request_id TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('confirm','reject','withdraw','supersede')),
+      from_status TEXT NOT NULL CHECK(from_status IN ('proposed','confirmed')),
+      to_status TEXT NOT NULL CHECK(to_status IN ('confirmed','rejected','withdrawn','superseded')),
+      judgment_hash TEXT NOT NULL,
+      principal_snapshot_json TEXT, policy_version TEXT,
+      reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+      CHECK((action IN ('confirm','reject')) = (principal_snapshot_json IS NOT NULL)),
+      CHECK((action IN ('confirm','reject')) = (policy_version IS NOT NULL)),
+      CHECK(
+        (action='confirm' AND from_status='proposed' AND to_status='confirmed') OR
+        (action='reject' AND from_status='proposed' AND to_status='rejected') OR
+        (action='withdraw' AND from_status='proposed' AND to_status='withdrawn') OR
+        (action='supersede' AND from_status IN ('proposed','confirmed') AND to_status='superseded')
+      )
+    );
+    `
+
+const judgmentEventsNoUpdateDDL = `
+    CREATE TRIGGER judgment_events_no_update BEFORE UPDATE ON judgment_events BEGIN
+      SELECT RAISE(ABORT,'IMMUTABLE_JUDGMENT_EVENT'); END;
+    `
+
+const judgmentEventsNoDeleteDDL = `
+    CREATE TRIGGER judgment_events_no_delete BEFORE DELETE ON judgment_events BEGIN
+      SELECT RAISE(ABORT,'IMMUTABLE_JUDGMENT_EVENT'); END;
+    `
+
+// judgment_idempotency_keys mirrors idempotency_keys for the judgment
+// commands: a command is keyed by (tenant_id, request_id) and bound to the
+// exact actor identity that issued it (proposer for propose/withdraw, verified
+// principal for confirm/reject). actor_binding is the canonical identity
+// string of that actor; result_json and judgment_event_id are set together
+// when the command completed.
+const judgmentIdempotencyKeysDDL = `
+    CREATE TABLE judgment_idempotency_keys (
+      tenant_id TEXT NOT NULL, request_id TEXT NOT NULL,
+      command_hash TEXT NOT NULL, actor_binding TEXT NOT NULL,
+      result_json TEXT, judgment_event_id TEXT REFERENCES judgment_events(id),
+      created_at TEXT NOT NULL, completed_at TEXT,
+      PRIMARY KEY(tenant_id,request_id),
+      CHECK((judgment_event_id IS NULL) = (result_json IS NULL))
+    );
+    `
+
+// judgment_relations routes judgment supersession ONLY: judgment ids never
+// enter the observation relations table. JudgmentSuccessorOf reads this
+// table; the pair is the primary key and the relation is frozen to
+// 'supersedes' (a correction routes readers from the superseded predecessor
+// to the successor).
+const judgmentRelationsDDL = `
+    CREATE TABLE judgment_relations (
+      from_judgment_id TEXT NOT NULL REFERENCES judgments(id),
+      to_judgment_id TEXT NOT NULL REFERENCES judgments(id),
+      relation TEXT NOT NULL CHECK(relation='supersedes'),
+      actor TEXT NOT NULL DEFAULT '',
+      timestamp TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY(from_judgment_id, to_judgment_id)
+    );
+    `
+
+// judgments_no_delete freezes the adjudication history: a judgment is never
+// deleted (IMMUTABLE_JUDGMENT).
+const judgmentsNoDeleteDDL = `
+    CREATE TRIGGER judgments_no_delete BEFORE DELETE ON judgments BEGIN
+      SELECT RAISE(ABORT,'IMMUTABLE_JUDGMENT'); END;
+    `
+
+// judgments_immutable_update enforces the design §4 update rules:
+//   - rejected | withdrawn | superseded rows are terminal and never re-open;
+//   - a confirmed row may ONLY be superseded: status confirmed->superseded
+//     while setting a previously-empty supersedes_id, with every proposal and
+//     adjudication field byte-equal (NULL-safe IS) — only the routing fields
+//     (status, supersedes_id, updated_at) may change;
+//   - proposed rows are the machine's work area (transitions and withdrawal
+//     are legitimate state-machine updates) and stay writable.
+//
+// COALESCE keeps the supersedes_id comparisons definitive (a freshly
+// confirmed row stores NULL, never the empty string): NULL and the empty
+// string are both "empty", and the NOT(...) legality check must not collapse
+// to NULL (NULL would be falsy and silently let an illegal update through).
+const judgmentsImmutableUpdateDDL = `
+    CREATE TRIGGER judgments_immutable_update
+    BEFORE UPDATE ON judgments
+    BEGIN
+      SELECT RAISE(ABORT,'IMMUTABLE_JUDGMENT: terminal judgments never re-open')
+        WHERE OLD.status IN ('rejected','withdrawn','superseded');
+      SELECT RAISE(ABORT,'IMMUTABLE_JUDGMENT: confirmed judgments may only be superseded with routing-only changes')
+        WHERE OLD.status = 'confirmed' AND NOT (
+          NEW.status = 'superseded'
+          AND COALESCE(OLD.supersedes_id, '') = ''
+          AND COALESCE(NEW.supersedes_id, '') <> ''
+          AND OLD.id IS NEW.id
+          AND OLD.tenant_id IS NEW.tenant_id
+          AND OLD.company_id IS NEW.company_id
+          AND OLD.fiscal_period_id IS NEW.fiscal_period_id
+          AND OLD.from_id IS NEW.from_id
+          AND OLD.to_id IS NEW.to_id
+          AND OLD.relation IS NEW.relation
+          AND OLD.proposer_system IS NEW.proposer_system
+          AND OLD.proposer_actor_id IS NEW.proposer_actor_id
+          AND OLD.proposer_actor_kind IS NEW.proposer_actor_kind
+          AND OLD.proposer_session IS NEW.proposer_session
+          AND OLD.proposal_reason IS NEW.proposal_reason
+          AND OLD.resolution IS NEW.resolution
+          AND OLD.policy_version IS NEW.policy_version
+          AND OLD.adjudicator_subject_id IS NEW.adjudicator_subject_id
+          AND OLD.adjudicator_membership_id IS NEW.adjudicator_membership_id
+          AND OLD.adjudicator_roles_json IS NEW.adjudicator_roles_json
+          AND OLD.authentication_method IS NEW.authentication_method
+          AND OLD.assurance_level IS NEW.assurance_level
+          AND OLD.principal_authenticated_at IS NEW.principal_authenticated_at
+          AND OLD.predecessor_id IS NEW.predecessor_id
+          AND OLD.proposed_at IS NEW.proposed_at
+          AND OLD.decided_at IS NEW.decided_at
+        );
+    END;
+    `
 
 // v3 tables and supporting objects — CREATE statements verbatim from
 // docs/architecture/approval-principal-step1.md section 4.

@@ -1,8 +1,10 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module verifies the v2→v3 additive
-// migration (v0.4.0 Step 1): fresh stores bootstrap to v2 and then run the SAME
-// v2→v3 migration as existing stores, existing v2 data survives untouched, a
-// failing migration rolls back leaving schema_version=2, and the two
+// migration step (v0.4.0 Step 1) inside the current additive chain: fresh
+// stores bootstrap to v2 and then run the SAME v2→v3 migration as existing
+// stores (the chain continues v3→v4 — full-layout assertions live in
+// migration_v4_test.go), existing v2 data survives untouched, a failing
+// migration rolls back leaving schema_version=2, and the two
 // approval_events immutability triggers reject UPDATE and DELETE.
 
 package store
@@ -101,15 +103,15 @@ func v3Triggers() []string {
 	return []string{"approval_events_no_update", "approval_events_no_delete"}
 }
 
-func TestFreshStoreBootstrapsToSchemaV3(t *testing.T) {
+func TestFreshStoreBootstrapsToSchemaV4(t *testing.T) {
 	s := newTestStore(t)
 
 	version, err := readSchemaVersion(s.db)
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 3 {
-		t.Fatalf("schema_version = %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("schema_version = %d, want 4", version)
 	}
 
 	for _, table := range v3Tables() {
@@ -146,7 +148,7 @@ func TestFreshStoreBootstrapsToSchemaV3(t *testing.T) {
 	}
 }
 
-func TestV2StoreMigratesToV3AdditivelyPreservingRows(t *testing.T) {
+func TestV2StoreMigratesToV4AdditivelyPreservingRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v2.db")
 	db := openV2Schema(t, path)
 
@@ -167,8 +169,8 @@ func TestV2StoreMigratesToV3AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 3 {
-		t.Fatalf("schema_version after migration = %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("schema_version after migration = %d, want 4 (the chain continues v3→v4)", version)
 	}
 
 	// Rows survive additively with EXACTLY the envelope bytes written at v2.
