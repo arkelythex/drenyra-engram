@@ -1,0 +1,768 @@
+{
+  "name": "v05-parity",
+  "seed": "0101010101010101010101010101010101010101010101010101010101010101",
+  "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+  "vectors": {
+    "close_receipts": {
+      "subjectId": "closing/CIERRE-202601",
+      "receipts": [
+        {
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_approved",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "payloadHash": "437358756f69c8dff076137b29c343b72ac68bdeddfb073cc0a5de85e9961434",
+          "previousReceiptHash": "",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "policyVersion": "approval-policy/v0.4.0",
+          "algorithm": "Ed25519",
+          "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+          "signature": "GIq507qHluXvEg/XvaxoYwPFnDIUjPxzWkOsQLtY0jY+LgrtVuWrxqRce9Fk+HcoRmPmGaSOxWj6SRs3CKUQAg==",
+          "issuedAt": "2026-08-05T13:00:00Z"
+        },
+        {
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_closed",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "payloadHash": "1fb6d677d31a19870b03b3e59536fc2acde3fd43358f6e23ed89f700d599b70c",
+          "previousReceiptHash": "e0f1d2e48b767a24fe40e4460d18a8290371366b09ebae8c7c10a88cdafdc785",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "policyVersion": "approval-policy/v0.4.0",
+          "algorithm": "Ed25519",
+          "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+          "signature": "aX1q4HhNDTv7C5VrTnGDPb479xYD8Jg83qvCK0OjF843eDlzPTAKEzaFcHpRG1QWSBWel5jmcnx7DNs27W4tDg==",
+          "issuedAt": "2026-08-05T13:00:01Z"
+        },
+        {
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_reopened",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "payloadHash": "572e43c1bd911bb612b71657005c83235797e8b87c4c07a287019a30ec0840ce",
+          "previousReceiptHash": "3119d129a9bc5b43b3ff25343a5421b61457b1ef795fbd4fa94ef525c638faa6",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "policyVersion": "approval-policy/v0.4.0",
+          "algorithm": "Ed25519",
+          "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+          "signature": "bx814HwAFUibth95p9mduoB3KTavNhULFkyLVXmpTVvNzhnA0d9ttZkhW4DvXparlufVEbg+ikNQZs+euwWdDA==",
+          "issuedAt": "2026-08-05T14:00:00Z"
+        }
+      ],
+      "payloads": [
+        {
+          "version": "receipt-payload/v0.4.0",
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_approved",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "reviewedEnvelopeHash": "h1-close-reviewed",
+          "resultingEnvelopeHash": "h2-close-approved",
+          "reviewedJudgmentHash": "",
+          "resultingJudgmentHash": "",
+          "fromMemoryId": "",
+          "fromEnvelopeHash": "",
+          "toMemoryId": "",
+          "toEnvelopeHash": "",
+          "successorId": "",
+          "evidenceRef": "",
+          "reason": "approved \u0026 verified monthly close 202601",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "principalRoles": [
+            "accountant",
+            "controller"
+          ],
+          "authenticationMethod": "session",
+          "assuranceLevel": "standard",
+          "principalAuthenticatedAt": "2026-08-05T12:00:00Z",
+          "policyVersion": "approval-policy/v0.4.0",
+          "issuedAt": "2026-08-05T13:00:00Z"
+        },
+        {
+          "version": "receipt-payload/v0.5.0",
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_closed",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "reviewedEnvelopeHash": "h2-close-approved",
+          "resultingEnvelopeHash": "h3-close-closed",
+          "reviewedJudgmentHash": "",
+          "resultingJudgmentHash": "",
+          "fromMemoryId": "",
+          "fromEnvelopeHash": "",
+          "toMemoryId": "",
+          "toEnvelopeHash": "",
+          "successorId": "",
+          "evidenceRef": "",
+          "reason": "monthly close approved — period 202601 closed",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "principalRoles": [
+            "accountant",
+            "controller"
+          ],
+          "authenticationMethod": "session",
+          "assuranceLevel": "standard",
+          "principalAuthenticatedAt": "2026-08-05T12:00:00Z",
+          "policyVersion": "approval-policy/v0.4.0",
+          "issuedAt": "2026-08-05T13:00:01Z"
+        },
+        {
+          "version": "receipt-payload/v0.5.0",
+          "subjectType": "memory",
+          "subjectId": "closing/CIERRE-202601",
+          "action": "memory_reopened",
+          "tenantId": "tenant-1",
+          "companyId": "acme",
+          "fiscalPeriodId": "202601",
+          "reviewedEnvelopeHash": "h3-close-closed",
+          "resultingEnvelopeHash": "h3-close-closed",
+          "reviewedJudgmentHash": "",
+          "resultingJudgmentHash": "",
+          "fromMemoryId": "",
+          "fromEnvelopeHash": "",
+          "toMemoryId": "",
+          "toEnvelopeHash": "",
+          "successorId": "",
+          "evidenceRef": "",
+          "reason": "reopened for reconciliation correction",
+          "principalId": "subject-1",
+          "membershipId": "membership-1",
+          "principalRoles": [
+            "accountant",
+            "controller"
+          ],
+          "authenticationMethod": "session",
+          "assuranceLevel": "standard",
+          "principalAuthenticatedAt": "2026-08-05T14:00:00Z",
+          "policyVersion": "approval-policy/v0.4.0",
+          "issuedAt": "2026-08-05T14:00:00Z"
+        }
+      ],
+      "expected": {
+        "receiptHashes": [
+          "e0f1d2e48b767a24fe40e4460d18a8290371366b09ebae8c7c10a88cdafdc785",
+          "3119d129a9bc5b43b3ff25343a5421b61457b1ef795fbd4fa94ef525c638faa6",
+          "e8ae41b6285f90b4f8fa5aa0402a5c67c12fc6f45a01748bf6bc16eb96a72060"
+        ],
+        "actions": [
+          "memory_approved",
+          "memory_closed",
+          "memory_reopened"
+        ],
+        "payloadVersions": [
+          "receipt-payload/v0.4.0",
+          "receipt-payload/v0.5.0",
+          "receipt-payload/v0.5.0"
+        ]
+      }
+    },
+    "blocked_write": {
+      "scenario": {
+        "operation": "save",
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601",
+        "ruc": "20601234567",
+        "closureState": "closed",
+        "closeMemoryId": "closing/CIERRE-202601"
+      },
+      "expected": {
+        "errorCode": "PERIOD_CLOSED",
+        "rowsWritten": 0,
+        "eventsWritten": 0,
+        "receiptsWritten": 0
+      }
+    },
+    "reconciliation": {
+      "proposed": {
+        "id": "reconciliation-1",
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601",
+        "leftMemoryId": "obs-1",
+        "rightMemoryId": "obs-2",
+        "method": "trial-balance",
+        "currency": "PEN",
+        "leftAmountCents": 150000,
+        "rightAmountCents": 149500,
+        "varianceCents": 500,
+        "toleranceCents": 1000,
+        "status": "proposed",
+        "proposer": {
+          "system": "sire",
+          "actorId": "agent-7",
+          "actorKind": "agent"
+        },
+        "proposalReason": "bank statement matches ledger within tolerance",
+        "proposedAt": "2026-08-05T12:00:00Z"
+      },
+      "confirmed": {
+        "id": "reconciliation-1",
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601",
+        "leftMemoryId": "obs-1",
+        "rightMemoryId": "obs-2",
+        "method": "trial-balance",
+        "currency": "PEN",
+        "leftAmountCents": 150000,
+        "rightAmountCents": 149500,
+        "varianceCents": 500,
+        "toleranceCents": 1000,
+        "status": "confirmed",
+        "proposer": {
+          "system": "sire",
+          "actorId": "agent-7",
+          "actorKind": "agent"
+        },
+        "proposalReason": "bank statement matches ledger within tolerance",
+        "resolution": "ledger matches bank statement; variance within tolerance",
+        "adjudicator": {
+          "subjectId": "subject-1",
+          "membershipId": "membership-1",
+          "roles": [
+            "controller"
+          ],
+          "authenticationMethod": "session",
+          "assuranceLevel": "standard",
+          "authenticatedAt": "2026-08-05T13:00:00Z"
+        },
+        "policyVersion": "reconciliation-policy/v0.5.0",
+        "proposedAt": "2026-08-05T12:00:00Z",
+        "decidedAt": "2026-08-05T13:00:00Z"
+      },
+      "receipt": {
+        "subjectType": "reconciliation",
+        "subjectId": "reconciliation-1",
+        "action": "reconciliation_confirmed",
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601",
+        "payloadHash": "efbb298d5793fc5b13eb1007e5961cb910a3fda1b69a6b4e4ceadc190d7cc709",
+        "previousReceiptHash": "",
+        "principalId": "subject-1",
+        "membershipId": "membership-1",
+        "policyVersion": "reconciliation-policy/v0.5.0",
+        "algorithm": "Ed25519",
+        "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+        "signature": "hMTo8k9oRmCYFZXSL71btYbj7o6EYTirTrX/noJdFEElDuS0/7avPqgN7vJ8/e0Qyu5xLRJRa3fmLamVacKTAQ==",
+        "issuedAt": "2026-08-05T13:30:00Z"
+      },
+      "payload": {
+        "version": "receipt-payload/v0.5.0",
+        "subjectType": "reconciliation",
+        "subjectId": "reconciliation-1",
+        "action": "reconciliation_confirmed",
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601",
+        "reviewedEnvelopeHash": "",
+        "resultingEnvelopeHash": "",
+        "reviewedJudgmentHash": "3f57f9ac0457ad9d391cdd188fecc581bd77805c196041908459a3e850307000",
+        "resultingJudgmentHash": "0c163b541c86acfea21bd50ceb19212ae7e60a11518add4ebcd1868e47d4b0ed",
+        "fromMemoryId": "obs-1",
+        "fromEnvelopeHash": "h1-left-envelope",
+        "toMemoryId": "obs-2",
+        "toEnvelopeHash": "h2-right-envelope",
+        "successorId": "",
+        "evidenceRef": "",
+        "reason": "ledger matches bank statement; variance within tolerance",
+        "principalId": "subject-1",
+        "membershipId": "membership-1",
+        "principalRoles": [
+          "controller"
+        ],
+        "authenticationMethod": "session",
+        "assuranceLevel": "standard",
+        "principalAuthenticatedAt": "2026-08-05T13:00:00Z",
+        "policyVersion": "reconciliation-policy/v0.5.0",
+        "issuedAt": "2026-08-05T13:30:00Z"
+      },
+      "expected": {
+        "proposedHash": "3f57f9ac0457ad9d391cdd188fecc581bd77805c196041908459a3e850307000",
+        "confirmedHash": "0c163b541c86acfea21bd50ceb19212ae7e60a11518add4ebcd1868e47d4b0ed",
+        "projectedRelation": {
+          "fromId": "obs-1",
+          "toId": "obs-2",
+          "relation": "reconciles"
+        }
+      }
+    },
+    "period_comparison": {
+      "inputs": {
+        "fromPeriod": "202607",
+        "toPeriod": "202608",
+        "from": [
+          {
+            "id": "j1",
+            "topicKey": "account/4011",
+            "kind": "fact",
+            "status": "active",
+            "title": "Ventas julio",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202607"
+            },
+            "content": {
+              "what": "ventas del periodo",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-07-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "j2",
+            "topicKey": "fact/igv-tasa",
+            "kind": "fact",
+            "status": "active",
+            "title": "Tasa IGV",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202607"
+            },
+            "content": {
+              "what": "tasa vigente 18%",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-07-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "j3",
+            "topicKey": "obligation/igv-621",
+            "kind": "obligation",
+            "status": "active",
+            "title": "Obligacion PDT 621",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202607"
+            },
+            "content": {
+              "what": "declarar IGV julio",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-07-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "j4",
+            "topicKey": "exception/banco-001",
+            "kind": "exception",
+            "status": "active",
+            "title": "Diferencia banco",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202607"
+            },
+            "content": {
+              "what": "extracto vs libro",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-07-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "j5",
+            "topicKey": "adjust/aj-001",
+            "kind": "decision",
+            "status": "pending_review",
+            "title": "Ajuste AJ-001",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202607"
+            },
+            "content": {
+              "what": "ajuste por comprobante tardio",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-07-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          }
+        ],
+        "to": [
+          {
+            "id": "a1",
+            "topicKey": "account/4011",
+            "kind": "fact",
+            "status": "active",
+            "title": "Ventas julio",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202608"
+            },
+            "content": {
+              "what": "ventas del periodo CORREGIDAS",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-08-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "a2",
+            "topicKey": "fact/igv-tasa",
+            "kind": "fact",
+            "status": "active",
+            "title": "Tasa IGV",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202608"
+            },
+            "content": {
+              "what": "tasa vigente 18%",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-08-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "a3",
+            "topicKey": "account/4011/ventas-agosto",
+            "kind": "fact",
+            "status": "active",
+            "title": "Ventas agosto",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202608"
+            },
+            "content": {
+              "what": "ventas de agosto",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-08-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          },
+          {
+            "id": "a4",
+            "topicKey": "adjust/aj-001",
+            "kind": "decision",
+            "status": "approved",
+            "title": "Ajuste AJ-001",
+            "scope": {
+              "kind": "company",
+              "organizationId": "cmp_org",
+              "companyId": "cmp_01",
+              "ruc": "20601234567",
+              "period": "202608"
+            },
+            "content": {
+              "what": "ajuste por comprobante tardio",
+              "why": "fixture",
+              "where": "core",
+              "learned": "n/a"
+            },
+            "fiscalEffect": "none",
+            "effectiveAt": "2026-07-01T00:00:00Z",
+            "source": {
+              "system": "sire",
+              "actorKind": "agent"
+            },
+            "recordedAt": "2026-08-05T00:00:00Z",
+            "revision": 1,
+            "supersedesId": "",
+            "evidenceRefs": [],
+            "ruleRefs": []
+          }
+        ],
+        "fromPending": [
+          {
+            "memoryId": "j5",
+            "topicKey": "adjust/aj-001"
+          },
+          {
+            "memoryId": "j3",
+            "topicKey": "obligation/igv-621"
+          },
+          {
+            "memoryId": "j4",
+            "topicKey": "exception/banco-001"
+          }
+        ],
+        "toPending": [
+          {
+            "memoryId": "j3",
+            "topicKey": "obligation/igv-621"
+          }
+        ],
+        "fromCloseState": "closed",
+        "toCloseState": "open"
+      },
+      "expected": {
+        "from": "202607",
+        "to": "202608",
+        "counts": {
+          "fromTotal": 5,
+          "toTotal": 4,
+          "delta": -1,
+          "byKindDelta": {
+            "decision": 0,
+            "exception": -1,
+            "fact": 1,
+            "obligation": -1
+          },
+          "byStatusDelta": {
+            "active": -1,
+            "approved": 1,
+            "pending_review": -1
+          }
+        },
+        "chains": {
+          "new": [
+            {
+              "topicKey": "account/4011/ventas-agosto",
+              "memoryId": "a3",
+              "kind": "fact",
+              "status": "active",
+              "title": "Ventas agosto"
+            }
+          ],
+          "removed": [
+            {
+              "topicKey": "exception/banco-001",
+              "memoryId": "j4",
+              "kind": "exception",
+              "status": "active",
+              "title": "Diferencia banco"
+            },
+            {
+              "topicKey": "obligation/igv-621",
+              "memoryId": "j3",
+              "kind": "obligation",
+              "status": "active",
+              "title": "Obligacion PDT 621"
+            }
+          ],
+          "changed": [
+            {
+              "topicKey": "account/4011",
+              "fromId": "j1",
+              "toId": "a1",
+              "kind": "fact",
+              "title": "Ventas julio"
+            },
+            {
+              "topicKey": "adjust/aj-001",
+              "fromId": "j5",
+              "toId": "a4",
+              "kind": "decision",
+              "title": "Ajuste AJ-001"
+            }
+          ],
+          "unchangedCount": 1
+        },
+        "statusChanges": [
+          {
+            "topicKey": "adjust/aj-001",
+            "fromId": "j5",
+            "toId": "a4",
+            "fromStatus": "pending_review",
+            "toStatus": "approved"
+          }
+        ],
+        "pendingItems": {
+          "from": 3,
+          "to": 1,
+          "delta": -2,
+          "addedIds": [],
+          "resolvedIds": [
+            "j4",
+            "j5"
+          ]
+        },
+        "closeState": {
+          "from": "closed",
+          "to": "open"
+        },
+        "narrative": "Comparacion 202607 → 202608: 5 memorias en el periodo de origen, 4 en el de destino (delta -1); cadenas nuevas: 1, removidas: 2, cambiadas: 2, sin cambios: 1; cambios de estado: 1; items pendientes: 3 → 1 (delta -2); estado de cierre: closed → open."
+      }
+    },
+    "current_context": {
+      "configured": {
+        "scope": {
+          "kind": "company",
+          "organizationId": "org-1",
+          "companyId": "acme",
+          "ruc": "20601234567",
+          "period": "202608"
+        },
+        "periodSummary": {
+          "total": 4,
+          "byKind": {
+            "decision": 1,
+            "fact": 3
+          },
+          "byStatus": {
+            "active": 3,
+            "approved": 1
+          },
+          "closureState": "open",
+          "latestClose": ""
+        },
+        "pendingItems": [
+          {
+            "memoryId": "j3",
+            "topicKey": "obligation/igv-621",
+            "kind": "obligation",
+            "status": "active",
+            "title": "Obligacion PDT 621",
+            "effectiveAt": "2026-07-31T23:59:59Z"
+          }
+        ],
+        "recentChains": [
+          {
+            "topicKey": "fact/igv-tasa",
+            "memoryId": "a2",
+            "kind": "fact",
+            "status": "active",
+            "effectiveAt": "2026-08-01T00:00:00Z",
+            "title": "Tasa IGV"
+          },
+          {
+            "topicKey": "adjust/aj-001",
+            "memoryId": "a4",
+            "kind": "decision",
+            "status": "approved",
+            "effectiveAt": "2026-08-01T00:00:00Z",
+            "title": "Ajuste AJ-001"
+          }
+        ],
+        "generatedAt": "2026-08-05T15:00:00Z"
+      },
+      "missing": {
+        "outcome": "null",
+        "instruction": "use accounting_current_context"
+      },
+      "invalid": {
+        "outcome": "null",
+        "failClosed": true,
+        "partialData": false
+      }
+    }
+  }
+}
