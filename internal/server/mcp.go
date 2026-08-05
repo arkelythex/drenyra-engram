@@ -96,6 +96,12 @@ type MCPServer struct {
 	// Step 2 design §2). The SQLiteStore satisfies it; a store without the
 	// judgment surface makes the adjudication tools fail closed.
 	judgmentStore JudgmentStore
+	// reconciliationStore is the atomic first-class reconciliation surface the
+	// accounting_reconciliation_* tools delegate to (one BEGIN IMMEDIATE store
+	// operation per transition, v0.5.0 design §3.2). The SQLiteStore satisfies
+	// it; a store without the reconciliation surface makes the tools fail
+	// closed.
+	reconciliationStore ReconciliationStore
 }
 
 // NewMCPServer returns an MCP server over the shared API.
@@ -103,6 +109,9 @@ func NewMCPServer(api *API) *MCPServer {
 	m := &MCPServer{api: api}
 	if judgments, ok := api.Store.(JudgmentStore); ok {
 		m.judgmentStore = judgments
+	}
+	if reconciliations, ok := api.Store.(ReconciliationStore); ok {
+		m.reconciliationStore = reconciliations
 	}
 	return m
 }
@@ -548,6 +557,68 @@ func ToolCatalog() []map[string]any {
 					"session":    stringSchema("optional session id"),
 				}, "system", "actor_kind"),
 			}, "judgment_id", "request_id", "source"),
+		},
+		// ── accounting_reconciliation_* (v0.5.0, design §3.2/§6): the
+		// first-class reconciliation surface mirrors judgments 1:1 — proposals and
+		// withdrawals carry a provenance-only source (agent|system — NEVER
+		// authority); confirm/reject require an authenticated session binding and
+		// tool arguments NEVER supply identity. Domain amounts are integer cents
+		// (int64; never floats — the fiscal transport contract).
+		{
+			"name":        "accounting_reconciliation_propose",
+			"description": "Propose a first-class reconciliation over two observations (v0.5.0, design §3.2): the endpoint pair, method/currency, the domain amounts and tolerance as INTEGER cents (int64; never float), the proposer's reason, and a provenance-only source. The proposer source is provenance ONLY (agent|system; a human source is rejected PROPOSAL_UNAUTHORIZED) — it never authorizes. Confirmation/rejection happen through the authenticated confirm/reject tools.",
+			"inputSchema": objectSchema(map[string]any{
+				"left_memory_id":     stringSchema("left observation id (required)"),
+				"right_memory_id":    stringSchema("right observation id (required)"),
+				"method":             stringSchema("reconciliation method (e.g. extracto_contable; required)"),
+				"currency":           stringSchema("ISO 4217 currency code (e.g. PEN; required)"),
+				"left_amount_cents":  intSchema("left endpoint amount in int64 cents (required; never float)"),
+				"right_amount_cents": intSchema("right endpoint amount in int64 cents (required; never float)"),
+				"tolerance_cents":    intSchema("accepted variance band in int64 cents (required, non-negative)"),
+				"reason":             stringSchema("the proposer's justification (required)"),
+				"request_id":         stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+				"predecessor_id":     stringSchema("id of an existing reconciliation this proposal corrects (optional)"),
+				"source": objectSchema(map[string]any{
+					"system":     stringSchema("which system produced the proposal (required)"),
+					"actor_id":   stringSchema("actor id (provenance, never authority)"),
+					"actor_kind": enumSchema("agent|system only — a human source is rejected PROPOSAL_UNAUTHORIZED", "agent", "system"),
+					"session":    stringSchema("optional session id"),
+				}, "system", "actor_kind"),
+			}, "left_memory_id", "right_memory_id", "method", "currency", "left_amount_cents", "right_amount_cents", "tolerance_cents", "reason", "request_id", "source"),
+		},
+		{
+			"name":        "accounting_reconciliation_confirm",
+			"description": "Confirm a proposed reconciliation with the professional human resolution (v0.5.0, design §3.2). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"reconciliation_id":            stringSchema("reconciliation id"),
+				"resolution":                   stringSchema("the professional human resolution (required)"),
+				"expected_reconciliation_hash": stringSchema("the proposed reconciliation hash the adjudicator actually saw (required)"),
+				"request_id":                   stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "reconciliation_id", "resolution", "expected_reconciliation_hash", "request_id"),
+		},
+		{
+			"name":        "accounting_reconciliation_reject",
+			"description": "Reject a proposed reconciliation with a human reason (v0.5.0, design §3.2). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"reconciliation_id":            stringSchema("reconciliation id"),
+				"reason":                       stringSchema("the human rejection reason (required)"),
+				"expected_reconciliation_hash": stringSchema("the proposed reconciliation hash the adjudicator actually saw (required)"),
+				"request_id":                   stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "reconciliation_id", "reason", "expected_reconciliation_hash", "request_id"),
+		},
+		{
+			"name":        "accounting_reconciliation_withdraw",
+			"description": "Withdraw the caller's OWN proposed reconciliation (v0.5.0, design §3.2). The provenance source must match the original proposer exactly (PROPOSAL_UNAUTHORIZED otherwise) — provenance continuity, never professional authorization.",
+			"inputSchema": objectSchema(map[string]any{
+				"reconciliation_id": stringSchema("reconciliation id"),
+				"request_id":        stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+				"source": objectSchema(map[string]any{
+					"system":     stringSchema("which system produced the withdrawal (required)"),
+					"actor_id":   stringSchema("actor id (provenance, never authority)"),
+					"actor_kind": enumSchema("agent|system only", "agent", "system"),
+					"session":    stringSchema("optional session id"),
+				}, "system", "actor_kind"),
+			}, "reconciliation_id", "request_id", "source"),
 		},
 		{
 			"name":        "accounting_link_evidence",
@@ -1243,6 +1314,171 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(result)), nil
 
+	// ── first-class reconciliation tools (v0.5.0, design §3.2/§6): mirror the
+	// judgment surface 1:1 — proposals and withdrawals carry a provenance-only
+	// source; confirm/reject accept NO identity arguments and fail closed with
+	// AUTHENTICATION_REQUIRED on this session-less stdio server. Domain amounts
+	// are integer cents (int64; never floats).
+	case "accounting_reconciliation_propose":
+		var args struct {
+			LeftMemoryID     string `json:"left_memory_id"`
+			RightMemoryID    string `json:"right_memory_id"`
+			Method           string `json:"method"`
+			Currency         string `json:"currency"`
+			LeftAmountCents  int64  `json:"left_amount_cents"`
+			RightAmountCents int64  `json:"right_amount_cents"`
+			ToleranceCents   int64  `json:"tolerance_cents"`
+			Reason           string `json:"reason"`
+			RequestID        string `json:"request_id"`
+			PredecessorID    string `json:"predecessor_id"`
+			Source           struct {
+				System    string `json:"system"`
+				ActorID   string `json:"actor_id"`
+				ActorKind string `json:"actor_kind"`
+				Session   string `json:"session"`
+			} `json:"source"`
+		}
+		// Strict shape: ANY unknown field — including any caller-supplied
+		// authority (subjectId/roles/assurance) at top level or inside source —
+		// is a malformed argument shape (JSON-RPC -32602), never ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("left_memory_id", args.LeftMemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("right_memory_id", args.RightMemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("method", args.Method); err != nil {
+			return nil, err
+		}
+		if err := requireParams("currency", args.Currency); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		caller, err := reconciliationMCPSource(args.Source.System, args.Source.ActorID, args.Source.ActorKind, args.Source.Session)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		if m.reconciliationStore == nil {
+			return errTextContent(auth.New(auth.CodeReconciliationNotFound, "reconciliation store is not available")), nil
+		}
+		result, err := ProposeReconciliation(context.Background(), m.reconciliationStore, core.ProposeReconciliationCommand{
+			LeftMemoryID:     args.LeftMemoryID,
+			RightMemoryID:    args.RightMemoryID,
+			Method:           args.Method,
+			Currency:         args.Currency,
+			LeftAmountCents:  args.LeftAmountCents,
+			RightAmountCents: args.RightAmountCents,
+			ToleranceCents:   args.ToleranceCents,
+			Reason:           args.Reason,
+			RequestID:        args.RequestID,
+			PredecessorID:    args.PredecessorID,
+		}, caller)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
+	case "accounting_reconciliation_confirm":
+		var args struct {
+			ReconciliationID           string `json:"reconciliation_id"`
+			Resolution                 string `json:"resolution"`
+			ExpectedReconciliationHash string `json:"expected_reconciliation_hash"`
+			RequestID                  string `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority (actorId/actorKind/subjectId/roles) — is a malformed
+		// argument shape (JSON-RPC -32602), never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reconciliation_id", args.ReconciliationID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("resolution", args.Resolution); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_reconciliation_hash", args.ExpectedReconciliationHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may confirm only when the HTTP middleware supplies a bound
+		// principal to the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_reconciliation_confirm requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_reconciliation_reject":
+		var args struct {
+			ReconciliationID           string `json:"reconciliation_id"`
+			Reason                     string `json:"reason"`
+			ExpectedReconciliationHash string `json:"expected_reconciliation_hash"`
+			RequestID                  string `json:"request_id"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reconciliation_id", args.ReconciliationID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_reconciliation_hash", args.ExpectedReconciliationHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_reconciliation_reject requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_reconciliation_withdraw":
+		var args struct {
+			ReconciliationID string `json:"reconciliation_id"`
+			RequestID        string `json:"request_id"`
+			Source           struct {
+				System    string `json:"system"`
+				ActorID   string `json:"actor_id"`
+				ActorKind string `json:"actor_kind"`
+				Session   string `json:"session"`
+			} `json:"source"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reconciliation_id", args.ReconciliationID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		caller, err := reconciliationMCPSource(args.Source.System, args.Source.ActorID, args.Source.ActorKind, args.Source.Session)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		if m.reconciliationStore == nil {
+			return errTextContent(auth.New(auth.CodeReconciliationNotFound, "reconciliation store is not available")), nil
+		}
+		result, err := WithdrawReconciliation(context.Background(), m.reconciliationStore, core.WithdrawReconciliationCommand{
+			ReconciliationID: args.ReconciliationID,
+			RequestID:        args.RequestID,
+		}, caller)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
 	case "accounting_link_evidence":
 		var args struct {
 			ID    string `json:"id"`
@@ -1379,6 +1615,24 @@ func judgmentMCPSource(system, actorID, actorKind, session string) (core.Source,
 	kind := core.ActorKind(actorKind)
 	if kind != "" && !core.IsValidActorKind(kind) {
 		return core.Source{}, errors.New("INVALID_SOURCE: judgment source actor_kind must be human|agent|system")
+	}
+	return core.Source{System: system, ActorID: actorID, ActorKind: kind, Session: session}, nil
+}
+
+// reconciliationMCPSource validates the provenance-only source object of a
+// reconciliation proposal or withdrawal tool call — the same fail-closed shape
+// as judgmentMCPSource: a system is required and, when present, the actor kind
+// must be a KNOWN kind. The agent|system-only gate is deliberately NOT enforced
+// here: the service rejects a human (or unknown) proposer with the frozen
+// PROPOSAL_UNAUTHORIZED, the same domain decision the HTTP surface produces
+// (design §3.2/§7).
+func reconciliationMCPSource(system, actorID, actorKind, session string) (core.Source, error) {
+	if strings.TrimSpace(system) == "" {
+		return core.Source{}, errors.New("INVALID_SOURCE: reconciliation source requires a system")
+	}
+	kind := core.ActorKind(actorKind)
+	if kind != "" && !core.IsValidActorKind(kind) {
+		return core.Source{}, errors.New("INVALID_SOURCE: reconciliation source actor_kind must be human|agent|system")
 	}
 	return core.Source{System: system, ActorID: actorID, ActorKind: kind, Session: session}, nil
 }

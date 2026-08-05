@@ -85,6 +85,8 @@ func run(args []string) int {
 		return cmdKeys(args[1:])
 	case "judge":
 		return cmdJudge(args[1:])
+	case "reconcile":
+		return cmdReconcile(args[1:])
 	case "reject":
 		return cmdReject(args[1:])
 	case "void":
@@ -1178,6 +1180,336 @@ func cmdJudgeShow(args []string) int {
 }
 
 // ──────────────────────────────────────────────
+// reconcile — authenticated reconciliation commands (v0.5.0, design §3.2/§6)
+// ──────────────────────────────────────────────
+
+// cmdReconcile dispatches the first-class reconciliation surface mirroring the
+// judgment surface 1:1: propose/withdraw carry the agent provenance source of
+// the CLI caller (never authority); confirm/reject derive the principal ONLY
+// from the stored 0600 CLI session — there is deliberately NO
+// --actor/--subject/--role flag on them (caller-supplied authority is gone, the
+// ADR-003 closure for adjudication); show is read-only. Monetary amounts are
+// int64 cents parsed from the CLI flags; floats are never used for money.
+func cmdReconcile(args []string) int {
+	if len(args) == 0 {
+		printReconcileUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "propose":
+		return cmdReconcilePropose(args[1:])
+	case "confirm":
+		return cmdReconcileConfirm(args[1:])
+	case "reject":
+		return cmdReconcileReject(args[1:])
+	case "withdraw":
+		return cmdReconcileWithdraw(args[1:])
+	case "show":
+		return cmdReconcileShow(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown reconcile subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+// cliReconciliationSource is the provenance-only source of the agent CLI
+// reconciliation caller: {system: "cli", actorId: "cli", actorKind: "agent"}.
+// It is provenance, never authority — confirm/reject derive the principal from
+// the stored session, and only that verified principal may adjudicate (design
+// §3.2/§7).
+func cliReconciliationSource() core.Source {
+	return core.Source{System: "cli", ActorID: "cli", ActorKind: core.ActorKindAgent}
+}
+
+func printReconcileUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: drenyra-engram reconcile propose <left-id> <right-id> --method <m> --currency <c> --left-amount-cents <int> --right-amount-cents <int> [--tolerance-cents <int>] [--predecessor <id>] --reason <text> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram reconcile confirm <reconciliation-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram reconcile reject <reconciliation-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram reconcile withdraw <reconciliation-id> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram reconcile show <reconciliation-id> [--db <path>]")
+}
+
+// cliAmountCents parses a CLI monetary flag as int64 cents — the only legal
+// money transport; a non-integer value is a usage error (exit 2), never a
+// silent float conversion.
+func cliAmountCents(name, value string) (int64, error) {
+	amount, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("reconcile propose: %s must be an integer amount in cents (int64, never float)", name)
+	}
+	return amount, nil
+}
+
+// cmdReconcilePropose proposes a first-class reconciliation over two existing
+// observations with the agent provenance source of the CLI caller. The method,
+// currency, the left/right amounts (int64 cents) and the reason are required;
+// the tolerance defaults to zero; a fresh UUID requestId is generated when the
+// caller omits --request-id.
+func cmdReconcilePropose(args []string) int {
+	fs := flag.NewFlagSet("reconcile propose", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	method := fs.String("method", "", "REQUIRED reconciliation method (e.g. extracto_contable)")
+	currency := fs.String("currency", "", "REQUIRED ISO 4217 currency code (e.g. PEN)")
+	leftAmountCents := fs.String("left-amount-cents", "", "REQUIRED left endpoint amount in int64 cents (never float)")
+	rightAmountCents := fs.String("right-amount-cents", "", "REQUIRED right endpoint amount in int64 cents (never float)")
+	toleranceCents := fs.String("tolerance-cents", "0", "accepted variance band in int64 cents (optional, default 0)")
+	reason := fs.String("reason", "", "REQUIRED proposer justification")
+	predecessor := fs.String("predecessor", "", "id of an existing reconciliation this proposal corrects (optional)")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram reconcile propose <left-id> <right-id> --method <m> --currency <c> --left-amount-cents <int> --right-amount-cents <int> [--tolerance-cents <int>] [--predecessor <id>] --reason <text> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--method": true, "--currency": true, "--left-amount-cents": true, "--right-amount-cents": true, "--tolerance-cents": true, "--predecessor": true, "--reason": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 2 || strings.TrimSpace(*method) == "" || strings.TrimSpace(*currency) == "" ||
+		strings.TrimSpace(*leftAmountCents) == "" || strings.TrimSpace(*rightAmountCents) == "" ||
+		strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+	leftAmount, err := cliAmountCents("left-amount-cents", *leftAmountCents)
+	if err != nil {
+		return fail("%v", err)
+	}
+	rightAmount, err := cliAmountCents("right-amount-cents", *rightAmountCents)
+	if err != nil {
+		return fail("%v", err)
+	}
+	tolerance, err := cliAmountCents("tolerance-cents", *toleranceCents)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("reconcile propose: %v", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	result, err := server.ProposeReconciliation(context.Background(), st, core.ProposeReconciliationCommand{
+		LeftMemoryID:     rest[0],
+		RightMemoryID:    rest[1],
+		Method:           *method,
+		Currency:         *currency,
+		LeftAmountCents:  leftAmount,
+		RightAmountCents: rightAmount,
+		ToleranceCents:   tolerance,
+		Reason:           *reason,
+		RequestID:        key,
+		PredecessorID:    *predecessor,
+	}, cliReconciliationSource())
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdReconcileConfirm confirms a proposed reconciliation with the professional
+// human resolution. The principal is DERIVED from the stored CLI session (auth
+// login), never declared by the caller; each invocation generates a fresh
+// requestId when --request-id is absent.
+func cmdReconcileConfirm(args []string) int {
+	fs := flag.NewFlagSet("reconcile confirm", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	resolution := fs.String("resolution", "", "REQUIRED professional human resolution")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED proposed reconciliation hash the adjudicator actually saw")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram reconcile confirm <reconciliation-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--resolution": true, "--expected-hash": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*resolution) == "" || strings.TrimSpace(*expectedHash) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("reconcile confirm: %v", err)
+	}
+	result, err := server.ConfirmReconciliation(context.Background(), st, authz.NewReconciliationPolicy(), core.ConfirmReconciliationCommand{
+		ReconciliationID:           rest[0],
+		Resolution:                 *resolution,
+		ExpectedReconciliationHash: *expectedHash,
+		RequestID:                  key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdReconcileReject rejects a proposed reconciliation with a human reason — the
+// same authenticated pattern as confirm (principal from the stored CLI session
+// only; no caller-supplied authority flags).
+func cmdReconcileReject(args []string) int {
+	fs := flag.NewFlagSet("reconcile reject", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	reason := fs.String("reason", "", "REQUIRED human rejection reason")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED proposed reconciliation hash the adjudicator actually saw")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram reconcile reject <reconciliation-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--reason": true, "--expected-hash": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*reason) == "" || strings.TrimSpace(*expectedHash) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("reconcile reject: %v", err)
+	}
+	result, err := server.RejectReconciliation(context.Background(), st, authz.NewReconciliationPolicy(), core.RejectReconciliationCommand{
+		ReconciliationID:           rest[0],
+		Reason:                     *reason,
+		ExpectedReconciliationHash: *expectedHash,
+		RequestID:                  key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdReconcileWithdraw withdraws the caller's OWN proposal with the same agent
+// provenance source that proposed it (provenance continuity — never
+// professional authorization; the store enforces the identity match).
+func cmdReconcileWithdraw(args []string) int {
+	fs := flag.NewFlagSet("reconcile withdraw", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram reconcile withdraw <reconciliation-id> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("reconcile withdraw: %v", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	result, err := server.WithdrawReconciliation(context.Background(), st, core.WithdrawReconciliationCommand{
+		ReconciliationID: rest[0],
+		RequestID:        key,
+	}, cliReconciliationSource())
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdReconcileShow is the read-only surface of the reconciliation store: it
+// prints the reconciliation JSON (any status) without any transition.
+func cmdReconcileShow(args []string) int {
+	fs := flag.NewFlagSet("reconcile show", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram reconcile show <reconciliation-id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	reconciliation, ok := st.GetReconciliation(context.Background(), rest[0])
+	if !ok {
+		return fail("RECONCILIATION_NOT_FOUND: no reconciliation %q", rest[0])
+	}
+	return emit(reconciliation)
+}
+
+// ──────────────────────────────────────────────
 // supersede — promoted → superseded with a REQUIRED target
 // ──────────────────────────────────────────────
 
@@ -2036,6 +2368,11 @@ Usage:
   drenyra-engram judge reject <judgment-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
   drenyra-engram judge withdraw <judgment-id> [--request-id <id>] [--db <path>]
   drenyra-engram judge show <judgment-id> [--db <path>]
+  drenyra-engram reconcile propose <left-id> <right-id> --method <m> --currency <c> --left-amount-cents <int> --right-amount-cents <int> [--tolerance-cents <int>] [--predecessor <id>] --reason <text> [--request-id <id>] [--db <path>]   (agent provenance)
+  drenyra-engram reconcile confirm <reconciliation-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
+  drenyra-engram reconcile reject <reconciliation-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
+  drenyra-engram reconcile withdraw <reconciliation-id> [--request-id <id>] [--db <path>]
+  drenyra-engram reconcile show <reconciliation-id> [--db <path>]
   drenyra-engram reject <id> [--actor <name>] [--db <path>]    (human gate)
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
@@ -2063,7 +2400,12 @@ Flags:
   --resolution <text>        professional human resolution (judge confirm, REQUIRED)
   --expected-hash <hash>     proposed judgment hash the adjudicator actually saw (judge confirm/reject, REQUIRED)
   --predecessor <id>         id of an existing judgment the proposal corrects (judge propose, optional)
-  --request-id <id>          idempotency key for judge commands (optional; a UUID is generated when absent)
+  --request-id <id>          idempotency key for judge/reconcile commands (optional; a UUID is generated when absent)
+  --method <m>               reconciliation method (reconcile propose, REQUIRED)
+  --currency <c>             ISO 4217 currency code (reconcile propose, REQUIRED)
+  --left-amount-cents <int>  left endpoint amount in int64 cents (reconcile propose, REQUIRED; never float)
+  --right-amount-cents <int> right endpoint amount in int64 cents (reconcile propose, REQUIRED; never float)
+  --tolerance-cents <int>    accepted variance band in int64 cents (reconcile propose, optional, default 0)
   --total <spec>   close monetary total code=currency=amountCents[=memoryId] (close create, repeatable; signed int64 cents, never float)
   --expected-close <id> close memory id that closed the period (close reopen, REQUIRED)
   --actor <name>   actor recorded in the audit trail (default cli)

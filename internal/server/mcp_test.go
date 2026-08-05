@@ -180,8 +180,8 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 29 {
-		t.Fatalf("tool count = %d, want 29 (13 engram_* + 16 accounting_*)", len(result.Tools))
+	if len(result.Tools) != 33 {
+		t.Fatalf("tool count = %d, want 33 (13 engram_* + 20 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)

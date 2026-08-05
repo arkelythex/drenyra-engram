@@ -112,6 +112,10 @@ type HTTPServer struct {
 	// delegate to (one BEGIN IMMEDIATE store operation per transition —
 	// propose/confirm/reject/withdraw, v0.4.0 Step 2).
 	judgmentStore JudgmentStore
+	// reconciliationStore is the atomic first-class reconciliation surface the
+	// reconciliation routes delegate to (one BEGIN IMMEDIATE store operation per
+	// transition — propose/confirm/reject/withdraw, v0.5.0 design §3.2).
+	reconciliationStore ReconciliationStore
 	// reopenStore is the atomic reopen surface the authenticated period-reopen
 	// route delegates to (one BEGIN IMMEDIATE store operation, v0.5.0 close
 	// foundation, design §2.3).
@@ -136,6 +140,9 @@ func NewHTTPServer(api *API, token string) *HTTPServer {
 	}
 	if judgments, ok := api.Store.(JudgmentStore); ok {
 		h.judgmentStore = judgments
+	}
+	if reconciliations, ok := api.Store.(ReconciliationStore); ok {
+		h.reconciliationStore = reconciliations
 	}
 	if reopen, ok := api.Store.(ReopenStore); ok {
 		h.reopenStore = reopen
@@ -186,6 +193,16 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/confirm", h.authenticate(h.handleJudgmentConfirm))
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/reject", h.authenticate(h.handleJudgmentReject))
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/withdraw", h.requireToken(h.handleJudgmentWithdraw))
+	// First-class reconciliation (v0.5.0, design §6): the SAME authority shape as
+	// judgments — proposal and withdrawal bodies carry a provenance-only source
+	// (agent|system — NEVER authority); confirm and reject derive the principal
+	// ONLY from the Authorization credential and their STRICT bodies reject any
+	// authority field (actor/actorKind/subjectId/roles → 400). Monetary amounts
+	// travel as JSON integers (int64 cents; never floats — the domain contract).
+	mux.HandleFunc("POST /accounting/reconciliations", h.requireToken(h.handleReconciliationPropose))
+	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/confirm", h.authenticate(h.handleReconciliationConfirm))
+	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/reject", h.authenticate(h.handleReconciliationReject))
+	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/withdraw", h.requireToken(h.handleReconciliationWithdraw))
 	// Monthly close surfaces (v0.5.0 close foundation, design §6): creation is a
 	// NORMAL SAVE by an agent with a provenance-only source claim (shared token
 	// guard; the APPROVAL is the authenticated controller act); reopening is the
@@ -1060,6 +1077,320 @@ func writeJudgmentError(w http.ResponseWriter, err error) {
 			Error:                httpErrorDetail{Code: e.Code, Message: e.Message},
 			ExpectedJudgmentHash: e.ExpectedJudgmentHash,
 			ActualJudgmentHash:   e.ActualJudgmentHash,
+		})
+		return
+	}
+	writeHTTPError(w, status, e.Code, e.Message)
+}
+
+// ──────────────────────────────────────────────
+// First-class reconciliation (v0.5.0 — design §3.2/§6)
+// ──────────────────────────────────────────────
+
+// reconciliationSourceInput is the provenance-only source shape of a proposal or
+// withdrawal body: system/actorId/actorKind/session. It is NEVER authority — an
+// agent|system Source can propose and withdraw, but only the verified principal
+// from the Authorization credential may confirm or reject.
+type reconciliationSourceInput struct {
+	System    string `json:"system"`
+	ActorID   string `json:"actorId"`
+	ActorKind string `json:"actorKind"`
+	Session   string `json:"session"`
+}
+
+// reconciliationProposeInput is the STRICT proposal body (design §7): the
+// endpoint pair, the method/currency, the domain amounts and tolerance as JSON
+// INTEGERS (int64 cents — the fiscal transport contract; floats are never used
+// for money), the proposer's reason, an optional predecessorId and the
+// provenance-only source. Any authority field in the body is REJECTED with 400
+// (DisallowUnknownFields), never ignored.
+type reconciliationProposeInput struct {
+	LeftMemoryID     string                     `json:"leftMemoryId"`
+	RightMemoryID    string                     `json:"rightMemoryId"`
+	Method           string                     `json:"method"`
+	Currency         string                     `json:"currency"`
+	LeftAmountCents  int64                      `json:"leftAmountCents"`
+	RightAmountCents int64                      `json:"rightAmountCents"`
+	ToleranceCents   int64                      `json:"toleranceCents"`
+	Reason           string                     `json:"reason"`
+	PredecessorID    string                     `json:"predecessorId"`
+	Source           reconciliationSourceInput  `json:"source"`
+}
+
+// reconciliationConfirmInput is the STRICT authenticated body of the confirm
+// route: exactly the professional resolution plus the reviewed reconciliation
+// hash. It carries NO authority fields (actor/actorKind/subjectId/roles are
+// REJECTED with 400 — the ADR-003 gap closure for adjudication).
+type reconciliationConfirmInput struct {
+	Resolution                 string `json:"resolution"`
+	ExpectedReconciliationHash string `json:"expectedReconciliationHash"`
+}
+
+type reconciliationRejectInput struct {
+	Reason                     string `json:"reason"`
+	ExpectedReconciliationHash string `json:"expectedReconciliationHash"`
+}
+
+// reconciliationWithdrawInput is the STRICT withdrawal body: the provenance-only
+// source; no authority fields and no reason/resolution.
+type reconciliationWithdrawInput struct {
+	Source reconciliationSourceInput `json:"source"`
+}
+
+// reconciliationIDFromPath extracts the reconciliation id from POST
+// /accounting/reconciliations/{reconciliationId}/<action>: the single path
+// segment between the fixed prefixes/suffixes (the same TrimPrefix/TrimSuffix
+// pattern as judgmentIDFromPath).
+func reconciliationIDFromPath(path, action string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(path, "/accounting/reconciliations/"), "/"+action)
+}
+
+// handleReconciliationPropose is the provenance-only proposal route: an
+// agent/system Source proposes a first-class reconciliation over two
+// observations with the domain amounts in int64 cents. 201 on success.
+func (h *HTTPServer) handleReconciliationPropose(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input reconciliationProposeInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.reconciliationStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reconciliation store is not available")
+		return
+	}
+	cmd := core.ProposeReconciliationCommand{
+		LeftMemoryID:     input.LeftMemoryID,
+		RightMemoryID:    input.RightMemoryID,
+		Method:           input.Method,
+		Currency:         input.Currency,
+		LeftAmountCents:  input.LeftAmountCents,
+		RightAmountCents: input.RightAmountCents,
+		ToleranceCents:   input.ToleranceCents,
+		Reason:           input.Reason,
+		RequestID:        requestID,
+		PredecessorID:    input.PredecessorID,
+	}
+	caller := core.Source{
+		System:    input.Source.System,
+		ActorID:   input.Source.ActorID,
+		ActorKind: core.ActorKind(input.Source.ActorKind),
+		Session:   input.Source.Session,
+	}
+	result, err := ProposeReconciliation(r.Context(), h.reconciliationStore, cmd, caller)
+	if err != nil {
+		writeReconciliationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// handleReconciliationConfirm is the AUTHENTICATED confirmation route: the
+// principal comes ONLY from the resolved session credential; the strict body can
+// never supply authority. 200 on success.
+func (h *HTTPServer) handleReconciliationConfirm(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeReconciliationError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input reconciliationConfirmInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.reconciliationStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reconciliation store is not available")
+		return
+	}
+	cmd := core.ConfirmReconciliationCommand{
+		ReconciliationID:           reconciliationIDFromPath(r.URL.Path, "confirm"),
+		Resolution:                 input.Resolution,
+		ExpectedReconciliationHash: input.ExpectedReconciliationHash,
+		RequestID:                  requestID,
+	}
+	result, err := ConfirmReconciliation(r.Context(), h.reconciliationStore, authz.NewReconciliationPolicy(), cmd, principal)
+	if err != nil {
+		writeReconciliationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleReconciliationReject is the AUTHENTICATED rejection route: same strict
+// surface as confirm, with the human reason stored as the resolution.
+func (h *HTTPServer) handleReconciliationReject(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeReconciliationError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input reconciliationRejectInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.reconciliationStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reconciliation store is not available")
+		return
+	}
+	cmd := core.RejectReconciliationCommand{
+		ReconciliationID:           reconciliationIDFromPath(r.URL.Path, "reject"),
+		Reason:                     input.Reason,
+		ExpectedReconciliationHash: input.ExpectedReconciliationHash,
+		RequestID:                  requestID,
+	}
+	result, err := RejectReconciliation(r.Context(), h.reconciliationStore, authz.NewReconciliationPolicy(), cmd, principal)
+	if err != nil {
+		writeReconciliationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleReconciliationWithdraw is the provenance-only withdrawal route: the SAME
+// exact proposer identity that proposed may withdraw (provenance continuity,
+// never professional authorization). 200 on success.
+func (h *HTTPServer) handleReconciliationWithdraw(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input reconciliationWithdrawInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.reconciliationStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reconciliation store is not available")
+		return
+	}
+	cmd := core.WithdrawReconciliationCommand{
+		ReconciliationID: reconciliationIDFromPath(r.URL.Path, "withdraw"),
+		RequestID:        requestID,
+	}
+	caller := core.Source{
+		System:    input.Source.System,
+		ActorID:   input.Source.ActorID,
+		ActorKind: core.ActorKind(input.Source.ActorKind),
+		Session:   input.Source.Session,
+	}
+	result, err := WithdrawReconciliation(r.Context(), h.reconciliationStore, cmd, caller)
+	if err != nil {
+		writeReconciliationError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// reconciliationMismatchBody is the ONLY reconciliation error shape with extra
+// fields: the expected and actual reconciliation hashes (design §6 —
+// reconciliation content NEVER appears in errors, and reconciliation hashes are
+// never compared against envelope or judgment hashes).
+type reconciliationMismatchBody struct {
+	Error                      httpErrorDetail `json:"error"`
+	ExpectedReconciliationHash string          `json:"expectedReconciliationHash"`
+	ActualReconciliationHash   string          `json:"actualReconciliationHash"`
+}
+
+// reconciliationErrorStatus maps a frozen reconciliation/adjudication code to
+// its HTTP status (design §6). Auth codes keep the judgment mappings; the
+// reconciliation codes keep their frozen statuses (NOT_FOUND → 404; invalid
+// transition / conflict / hash mismatch → 409; PERIOD_CLOSED → 409). Unmapped
+// codes fail closed (not ok).
+func reconciliationErrorStatus(code string) (int, bool) {
+	switch code {
+	case auth.CodeAuthenticationRequired, auth.CodePrincipalInvalid:
+		return http.StatusUnauthorized, true
+	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
+		auth.CodeRoleNotAuthorized, auth.CodeAssuranceTooLow, auth.CodeProposalUnauthorized:
+		return http.StatusForbidden, true
+	case auth.CodeResolutionRequired:
+		return http.StatusBadRequest, true
+	case auth.CodeReconciliationNotFound, auth.CodeMemoryNotFound:
+		return http.StatusNotFound, true
+	case auth.CodeInvalidReconciliationTransition, auth.CodeReconciliationConflict, auth.CodeReconciliationHashMismatch,
+		auth.CodeIdempotencyConflict, auth.CodeAlreadyDecided, auth.CodePeriodClosed:
+		return http.StatusConflict, true
+	}
+	return 0, false
+}
+
+// writeReconciliationError writes the reconciliation error envelope. Only
+// RECONCILIATION_HASH_MISMATCH adds expectedReconciliationHash/
+// actualReconciliationHash; every other code carries just the frozen code and
+// message. Never include reconciliation content.
+func writeReconciliationError(w http.ResponseWriter, err error) {
+	var e *auth.Error
+	if !errors.As(err, &e) {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reconciliation operation failed")
+		return
+	}
+	status, ok := reconciliationErrorStatus(e.Code)
+	if !ok {
+		// Fail closed: an unmapped frozen code is a server defect, never a guess.
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL",
+			"reconciliation error code "+e.Code+" is not mapped to a transport status")
+		return
+	}
+	if e.Code == auth.CodeReconciliationHashMismatch {
+		writeJSON(w, status, reconciliationMismatchBody{
+			Error:                      httpErrorDetail{Code: e.Code, Message: e.Message},
+			ExpectedReconciliationHash: e.ExpectedJudgmentHash,
+			ActualReconciliationHash:   e.ActualJudgmentHash,
 		})
 		return
 	}
