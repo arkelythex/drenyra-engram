@@ -962,23 +962,23 @@ func migrateV4ToV5(db *sql.DB) error {
 // migrateV5ToV6 upgrades a schema_version=5 store to v6 IN ONE TRANSACTION
 // (docs/architecture/close-intelligence-v0.5.md §7):
 //
-//   (a) observations gains the optional close_snapshot_json column (NULL for
-//       non-close memories; immutable with the memory) and the observations
-//       immutability guard is reinstalled to protect it;
-//   (b) the receipts table is REBUILT with the action CHECK extended to the two
-//       v0.5.0 close actions (memory_closed, memory_reopened). SQLite cannot
-//       alter a CHECK constraint, so the migration creates a byte-identical
-//       table with the extended CHECK, copies every row, swaps the old table
-//       out (its implicit removal fires no triggers; the table's
-//       indexes/triggers go with it) and renames the new table into place,
-//       then recreates the receipts indexes and triggers. Existing receipts
-//       stay byte-valid; the DDL-level closed-action set stays in parity with
-//       core.ReceiptAction;
-//   (c) the period_closures projection (the close write gate's authoritative
-//       source: one row per exact (tenant, company, fiscal period), close
-//       memory UNIQUE, status closed|reopened) and the immutable
-//       period_closure_events ledger with its no-update/no-delete triggers;
-//   (d) schema_version = 6 ONLY after the whole migration succeeded.
+//	(a) observations gains the optional close_snapshot_json column (NULL for
+//	    non-close memories; immutable with the memory) and the observations
+//	    immutability guard is reinstalled to protect it;
+//	(b) the receipts table is REBUILT with the action CHECK extended to the two
+//	    v0.5.0 close actions (memory_closed, memory_reopened). SQLite cannot
+//	    alter a CHECK constraint, so the migration creates a byte-identical
+//	    table with the extended CHECK, copies every row, swaps the old table
+//	    out (its implicit removal fires no triggers; the table's
+//	    indexes/triggers go with it) and renames the new table into place,
+//	    then recreates the receipts indexes and triggers. Existing receipts
+//	    stay byte-valid; the DDL-level closed-action set stays in parity with
+//	    core.ReceiptAction;
+//	(c) the period_closures projection (the close write gate's authoritative
+//	    source: one row per exact (tenant, company, fiscal period), close
+//	    memory UNIQUE, status closed|reopened) and the immutable
+//	    period_closure_events ledger with its no-update/no-delete triggers;
+//	(d) schema_version = 6 ONLY after the whole migration succeeded.
 //
 // On any failure the transaction rolls back and the store stays v5. No IF NOT
 // EXISTS is used: a pre-existing table or trigger with a conflicting shape is a
@@ -2050,7 +2050,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	var (
 		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
 		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
-		supersedesID, receiptID, materialityLevelVal, closeSnapshotJSON                          sql.NullString
+		supersedesID, receiptID, materialityLevelVal, closeSnapshotJSON                           sql.NullString
 		confidence                                                                                sql.NullFloat64
 		materiality                                                                               sql.NullInt64
 	)

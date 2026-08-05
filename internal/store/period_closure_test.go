@@ -563,5 +563,3 @@ func TestConcurrentCloseApprovalsSingleProjection(t *testing.T) {
 		t.Fatalf("close status = %v, want approved", mem.Status)
 	}
 }
-
-

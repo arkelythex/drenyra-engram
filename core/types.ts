@@ -264,7 +264,9 @@ export type ApprovalErrorCode =
 	| "PROPOSAL_UNAUTHORIZED"
 	| "INVALID_JUDGMENT_TRANSITION"
 	| "JUDGMENT_CONFLICT"
-	| "JUDGMENT_HASH_MISMATCH";
+	| "JUDGMENT_HASH_MISMATCH"
+	| "PERIOD_CLOSED"
+	| "PERIOD_ALREADY_CLOSED";
 
 export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"AUTHENTICATION_REQUIRED",
@@ -288,6 +290,8 @@ export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"INVALID_JUDGMENT_TRANSITION",
 	"JUDGMENT_CONFLICT",
 	"JUDGMENT_HASH_MISMATCH",
+	"PERIOD_CLOSED",
+	"PERIOD_ALREADY_CLOSED",
 ];
 
 /**
@@ -1203,104 +1207,209 @@ export async function computeJudgmentHash(
 	return sha256Hex(JSON.stringify(payload));
 }
 
+// ──────────────────────────────────────────────
+// v0.4.0 Step 3 — Ed25519 action receipts
+// ──────────────────────────────────────────────
 
-    // ──────────────────────────────────────────────
-    // v0.4.0 Step 3 — Ed25519 action receipts
-    // ──────────────────────────────────────────────
+/**
+ * Subject kind of an Ed25519 action receipt (v0.4.0 Step 3): an immutable
+ * memory observation or an accounting judgment. Mirrors core.SubjectType.
+ */
+export const RECEIPT_SUBJECT_TYPES = ["memory", "judgment"] as const;
 
-    /**
-     * Subject kind of an Ed25519 action receipt (v0.4.0 Step 3): an immutable
-     * memory observation or an accounting judgment. Mirrors core.SubjectType.
-     */
-    export const RECEIPT_SUBJECT_TYPES = ["memory", "judgment"] as const;
+export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
 
-    export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
+/**
+ * The CLOSED set of covered acts (v0.4.0 Step 3; extended with the two
+ * v0.5.0 close actions memory_closed / memory_reopened) — an unknown
+ * action fails closed. Mirrors core.ReceiptAction.
+ */
+export const RECEIPT_ACTIONS = [
+	"memory_recorded",
+	"memory_approved",
+	"memory_rejected",
+	"memory_voided",
+	"relation_confirmed",
+	"relation_rejected",
+	"evidence_linked",
+	"memory_superseded",
+	"memory_closed",
+	"memory_reopened",
+] as const;
 
-    /**
-     * The CLOSED set of covered acts (v0.4.0 Step 3; extended with the two
-     * v0.5.0 close actions memory_closed / memory_reopened) — an unknown
-     * action fails closed. Mirrors core.ReceiptAction.
-     */
-    export const RECEIPT_ACTIONS = [
-    	"memory_recorded",
-    	"memory_approved",
-    	"memory_rejected",
-    	"memory_voided",
-    	"relation_confirmed",
-    	"relation_rejected",
-    	"evidence_linked",
-    	"memory_superseded",
-    	"memory_closed",
-    	"memory_reopened",
-    ] as const;
+export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];
 
-    export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];
+/** Frozen receipt payload version (v0.4.0 Step 3). */
+export const RECEIPT_PAYLOAD_VERSION = "receipt-payload/v0.4.0";
 
-    /** Frozen receipt payload version (v0.4.0 Step 3). */
-    export const RECEIPT_PAYLOAD_VERSION = "receipt-payload/v0.4.0";
+/** Frozen receipt signing algorithm (v0.4.0 Step 3). */
+export const RECEIPT_ALGORITHM = "Ed25519";
 
-    /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
-    export const RECEIPT_ALGORITHM = "Ed25519";
+/**
+ * The frozen signed envelope of an Ed25519 action receipt (v0.4.0 Step 3).
+ * Field ORDER is part of the byte contract (see canonicalUnsignedEnvelope /
+ * completeReceiptBytes in receipt.ts). signature is PADDED base64 in the
+ * model (raw bytes in SQLite); previousReceiptHash is the digest of the
+ * prior complete canonical signed receipt for the same subject (genesis is
+ * empty). algorithm is exactly "Ed25519". Mirrors core.SignedReceipt.
+ */
+export interface SignedReceipt {
+	subjectType: ReceiptSubjectType;
+	subjectId: string;
+	action: ReceiptAction;
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId: string;
+	payloadHash: string;
+	previousReceiptHash: string;
+	principalId: string;
+	membershipId: string;
+	policyVersion: string;
+	algorithm: string;
+	keyId: string;
+	signature: string;
+	issuedAt: string;
+}
 
-    /**
-     * The frozen signed envelope of an Ed25519 action receipt (v0.4.0 Step 3).
-     * Field ORDER is part of the byte contract (see canonicalUnsignedEnvelope /
-     * completeReceiptBytes in receipt.ts). signature is PADDED base64 in the
-     * model (raw bytes in SQLite); previousReceiptHash is the digest of the
-     * prior complete canonical signed receipt for the same subject (genesis is
-     * empty). algorithm is exactly "Ed25519". Mirrors core.SignedReceipt.
-     */
-    export interface SignedReceipt {
-    	subjectType: ReceiptSubjectType;
-    	subjectId: string;
-    	action: ReceiptAction;
-    	tenantId: string;
-    	companyId: string;
-    	fiscalPeriodId: string;
-    	payloadHash: string;
-    	previousReceiptHash: string;
-    	principalId: string;
-    	membershipId: string;
-    	policyVersion: string;
-    	algorithm: string;
-    	keyId: string;
-    	signature: string;
-    	issuedAt: string;
-    }
+/**
+ * The canonical payload of an Ed25519 action receipt (v0.4.0 Step 3). EVERY
+ * key is present in this exact order — inapplicable fields are empty, never
+ * omitted; there are no optional fields, maps or nulls. Payload scope,
+ * principal, policy, timestamp, subject and action equal the envelope
+ * (verifyReceipt enforces it). Roles are canonicalized (sorted +
+ * deduplicated). Mirrors core.ReceiptPayload.
+ */
+export interface ReceiptPayload {
+	version: string;
+	subjectType: ReceiptSubjectType;
+	subjectId: string;
+	action: ReceiptAction;
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId: string;
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	reviewedJudgmentHash: string;
+	resultingJudgmentHash: string;
+	fromMemoryId: string;
+	fromEnvelopeHash: string;
+	toMemoryId: string;
+	toEnvelopeHash: string;
+	successorId: string;
+	evidenceRef: string;
+	reason: string;
+	principalId: string;
+	membershipId: string;
+	principalRoles: string[];
+	authenticationMethod: string;
+	assuranceLevel: string;
+	principalAuthenticatedAt: string;
+	policyVersion: string;
+	issuedAt: string;
+}
 
-    /**
-     * The canonical payload of an Ed25519 action receipt (v0.4.0 Step 3). EVERY
-     * key is present in this exact order — inapplicable fields are empty, never
-     * omitted; there are no optional fields, maps or nulls. Payload scope,
-     * principal, policy, timestamp, subject and action equal the envelope
-     * (verifyReceipt enforces it). Roles are canonicalized (sorted +
-     * deduplicated). Mirrors core.ReceiptPayload.
-     */
-    export interface ReceiptPayload {
-    	version: string;
-    	subjectType: ReceiptSubjectType;
-    	subjectId: string;
-    	action: ReceiptAction;
-    	tenantId: string;
-    	companyId: string;
-    	fiscalPeriodId: string;
-    	reviewedEnvelopeHash: string;
-    	resultingEnvelopeHash: string;
-    	reviewedJudgmentHash: string;
-    	resultingJudgmentHash: string;
-    	fromMemoryId: string;
-    	fromEnvelopeHash: string;
-    	toMemoryId: string;
-    	toEnvelopeHash: string;
-    	successorId: string;
-    	evidenceRef: string;
-    	reason: string;
-    	principalId: string;
-    	membershipId: string;
-    	principalRoles: string[];
-    	authenticationMethod: string;
-    	assuranceLevel: string;
-    	principalAuthenticatedAt: string;
-    	policyVersion: string;
-    	issuedAt: string;
-    }
+// ──────────────────────────────────────────────
+// v0.5.0 — Close Intelligence (monthly close)
+// ──────────────────────────────────────────────
+
+/** Canonical topic-key prefix of a monthly close: closing/CIERRE-<YYYYMM>. */
+export const CLOSE_TOPIC_PREFIX = "closing/CIERRE-";
+
+/** Closure states of the period_closures projection. */
+export type ClosureState = "open" | "closed" | "reopened";
+
+export const CLOSURE_STATES: readonly ClosureState[] = [
+	"open",
+	"closed",
+	"reopened",
+];
+
+/** Frozen close-time counts of a CloseSnapshot (mirror of core.CloseCounts). */
+export interface CloseCounts {
+	total: number;
+	byKind: Record<string, number>;
+	byStatus: Record<string, number>;
+}
+
+/** One explicit monetary total (signed cents — never a float). */
+export interface CloseTotal {
+	code: string;
+	currency: string;
+	/** Signed total in cents (BigInt transport; negative is legal). */
+	amountCents: bigint;
+	sourceMemoryIds: string[];
+}
+
+/** One frozen pending item of a CloseSnapshot. */
+export interface ClosePendingItem {
+	memoryId: string;
+	topicKey: string;
+	kind: string;
+	status: string;
+	title: string;
+	effectiveAt: string;
+}
+
+/** Period reconciliation lifecycle counts. */
+export interface CloseReconciliation {
+	proposed: number;
+	confirmed: number;
+	rejected: number;
+}
+
+/** The structured truth of a monthly close (mirror of core.CloseSnapshot). */
+export interface CloseSnapshot {
+	period: string;
+	generatedAt: string;
+	/** SHA-256 hex of the canonical snapshot JSON (self-hash). */
+	summaryHash: string;
+	counts: CloseCounts;
+	totals: CloseTotal[];
+	pendingItems: ClosePendingItem[];
+	reconciliation: CloseReconciliation;
+	narrativeMemoryIds: string[];
+}
+
+/** CreateClose input (mirror of core.CreateCloseInput). */
+export interface CreateCloseInput {
+	period: string;
+	totals: CloseTotal[];
+	reason?: string;
+	source: MemorySource;
+}
+
+/** ReopenPeriod command (mirror of core.ReopenPeriodCommand). */
+export interface ReopenPeriodCommand {
+	scope: MemoryScope;
+	expectedCloseMemoryId: string;
+	reason: string;
+	requestId: string;
+}
+
+/** ReopenPeriod outcome (mirror of core.ReopenPeriodResult). */
+export interface ReopenPeriodResult {
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId: string;
+	closeMemoryId: string;
+	eventId: string;
+	status: string;
+	reopenedAt: string;
+	principalSubjectId: string;
+	policyVersion: string;
+	idempotentReplay: boolean;
+}
+
+/**
+ * Month-end UTC stamp of a YYYYMM period (last day 23:59:59Z) — the canonical
+ * effectiveAt of a monthly close. A malformed period fails with INVALID_PERIOD.
+ */
+export function monthEndUTC(period: string): string {
+	if (!isValidPeriod(period)) {
+		throw new Error(`INVALID_PERIOD: expected YYYYMM (six digits, month 01-12), got "${period}"`);
+	}
+	const year = Number(period.slice(0, 4));
+	const month = Number(period.slice(4, 6));
+	const end = new Date(Date.UTC(year, month, 0, 23, 59, 59)); // month is 1-based in Date.UTC
+	return end.toISOString();
+}

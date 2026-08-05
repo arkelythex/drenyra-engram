@@ -151,9 +151,9 @@ func CreateClose(ctx context.Context, store CloseServiceStore, scope core.Scope,
 			ByKind:   kindCounts(summary.ByKind),
 			ByStatus: statusCounts(summary.ByStatus),
 		},
-		Totals:         cloneCloseTotals(input.Totals),
-		PendingItems:   pending,
-		Reconciliation: core.CloseReconciliation{Proposed: 0, Confirmed: 0, Rejected: 0},
+		Totals:             cloneCloseTotals(input.Totals),
+		PendingItems:       pending,
+		Reconciliation:     core.CloseReconciliation{Proposed: 0, Confirmed: 0, Rejected: 0},
 		NarrativeMemoryIDs: narrativeMemoryIDs(summary),
 	}
 	// The snapshot reflects the PERIOD STATE at close-creation time (the
@@ -357,4 +357,3 @@ func closeContent(scope core.Scope, summary PeriodSummaryOutput, input core.Crea
 		len(pending))
 	return core.Content{What: what, Why: why, Where: where, Learned: learned}
 }
-

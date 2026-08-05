@@ -32,7 +32,7 @@ func sampleSnapshot(t *testing.T) *CloseSnapshot {
 		PendingItems: []ClosePendingItem{
 			{MemoryID: "m-3", TopicKey: "tax.igv.rate", Kind: "rule", Status: "pending_review", Title: "IGV rate", EffectiveAt: "2026-07-15T00:00:00Z"},
 		},
-		Reconciliation: CloseReconciliation{Proposed: 1, Confirmed: 1, Rejected: 0},
+		Reconciliation:     CloseReconciliation{Proposed: 1, Confirmed: 1, Rejected: 0},
 		NarrativeMemoryIDs: []string{"m-1", "m-2"},
 	}
 	return &snap
