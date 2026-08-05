@@ -11,8 +11,9 @@
 // arbitrary-input principal constructor. Agents can never confirm/reject: the
 // signatures REQUIRE a verified principal (compile-level contract — an agent
 // Source is provenance only). The exhaustive immutability + two-store
-// concurrency suite lands in the NEXT commit (test(store): enforce immutable
-// and concurrent judgments).
+// concurrency enforcement (test(store): enforce immutable and concurrent
+// judgments) lives in judgment_immutability_test.go and
+// judgment_concurrency_test.go.
 package store
 
 import (

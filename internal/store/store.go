@@ -61,7 +61,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	sqlite "modernc.org/sqlite"
 
 	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/authz"
@@ -2059,6 +2059,18 @@ func decideJudgmentCommandHash(judgmentID, expectedHash, resolution string) stri
 	return hex.EncodeToString(sum[:])
 }
 
+// isOpenTupleConflict reports whether err is the uq_judgment_open_tuple partial
+// unique index violation (SQLite extended result code SQLITE_CONSTRAINT_UNIQUE =
+// 2067). The judgments INSERT can only trip TWO unique constraints — the id
+// primary key and the open-tuple partial index; a generated-UUID id collision is
+// effectively impossible, so the extended code alone identifies the
+// JUDGMENT_CONFLICT case without depending on SQLite's message wording (which
+// lists the TABLE columns, not the index name).
+func isOpenTupleConflict(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == 2067
+}
+
 // withdrawJudgmentCommandHash is the canonical idempotency command hash of a
 // withdrawal: SHA-256 hex of the judgment id (a withdrawal has no payload).
 func withdrawJudgmentCommandHash(judgmentID string) string {
@@ -2250,7 +2262,7 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 		caller.System, caller.ActorID, string(caller.ActorKind), caller.Session, cmd.Reason,
 		predecessorCol, now, now,
 	); err != nil {
-		if strings.Contains(err.Error(), "uq_judgment_open_tuple") {
+		if isOpenTupleConflict(err) {
 			return core.ProposeJudgmentResult{}, auth.New(auth.CodeJudgmentConflict, "an open proposal already exists for this observation pair and relation")
 		}
 		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: insert judgment: %w", err)
