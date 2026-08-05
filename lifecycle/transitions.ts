@@ -3,111 +3,157 @@
  * no float is ever used for money; sequence/revision counters are JSON integers,
  * never floats.
  *
- * Observation lifecycle (contracts/lifecycle.md) and vigencia enforcement.
+ * Memory lifecycle v2 (contracts/lifecycle.md) and vigencia enforcement.
  *
- * Legal state machine for this slice — ONLY adjacent forward transitions:
+ * Legal v2 state machine (approval-gated):
  *
- *   draft ──► reviewed ──► promoted ──► superseded
+ *   save (fiscalEffect == none)  → active             (informative, current)
+ *   save (fiscalEffect != none)  → pending_review     (GATE: human approval)
+ *   pending_review ──approve(human)──► approved
+ *   pending_review ──reject(human)───► rejected       (terminal)
+ *   active|pending_review|approved ──void(human|system)──► voided (terminal)
+ *   active|pending_review|approved ──supersede──► superseded   (terminal)
  *
- * Anything else throws `INVALID_TRANSITION`. Note this is deliberately STRICTER
- * than the 0.1-draft contract table (which also lists promote-from-draft):
- * unknown or non-adjacent transitions fail closed, and re-submission is always a
- * new revision, never an in-place edit.
+ * GATE semantics: a memory with fiscal effect can only reach `approved` through
+ * a HUMAN actor (source.actorKind == human). Agents and systems record; they
+ * never approve. `rejected`, `superseded` and `voided` are terminal.
  *
- * `supersede` requires a target observation id and records a `supersedes`
- * relation on the store (from the superseded observation to its replacement),
- * marking the superseded observation's status. It never auto-promotes the
- * replacement — promotion is explicit (contracts/lifecycle.md rule 1).
+ * "La IA asiste; el sistema valida; el profesional revisa; la evidencia
+ * permanece." Memory informs decisions — it never authorizes business actions.
  */
 
-import type { MemoryAuthorityStatus, MemoryObservation } from "../core/types.js";
+import type {
+	AccountingMemory,
+	ActorKind,
+	FiscalEffect,
+	MemoryStatus,
+} from "../core/types.js";
 import type { MemoryStore } from "../store/memory-store.js";
 
 export const INVALID_TRANSITION_ERROR = "INVALID_TRANSITION";
-export const INVALID_SUPERSEDE_ERROR = "INVALID_SUPERSEDE_TARGET";
+export const GATE_REQUIRES_HUMAN_ERROR = "GATE_REQUIRES_HUMAN";
 
-const LEGAL_TRANSITIONS: ReadonlyMap<MemoryAuthorityStatus, MemoryAuthorityStatus> =
-  new Map<MemoryAuthorityStatus, MemoryAuthorityStatus>([
-    ["draft", "reviewed"],
-    ["reviewed", "promoted"],
-    ["promoted", "superseded"],
-  ]);
-
-/** True only for adjacent forward transitions in the legal chain. */
-export function isLegalTransition(
-  from: MemoryAuthorityStatus,
-  to: MemoryAuthorityStatus,
-): boolean {
-  return LEGAL_TRANSITIONS.get(from) === to;
+/** Save-time status derived from the fiscal effect (the approval gate). */
+export function initialStatus(effect: FiscalEffect): MemoryStatus {
+	return effect === "none" ? "active" : "pending_review";
 }
 
-/** Guard: throws `INVALID_TRANSITION` for anything outside the legal chain. */
-export function transitionAuthority(
-  from: MemoryAuthorityStatus,
-  to: MemoryAuthorityStatus,
-): void {
-  if (!isLegalTransition(from, to)) {
-    throw new Error(
-      `${INVALID_TRANSITION_ERROR}: ${from} → ${to} is not legal — the only legal chain is draft → reviewed → promoted → superseded`,
-    );
-  }
+/** True when the fiscal effect triggers the human-approval gate. */
+export function isGated(effect: FiscalEffect): boolean {
+	return effect !== "none";
+}
+
+/** Only a pending_review memory can be approved. */
+export function canApprove(status: MemoryStatus): boolean {
+	return status === "pending_review";
+}
+
+/** Only a pending_review memory can be rejected. */
+export function canReject(status: MemoryStatus): boolean {
+	return status === "pending_review";
+}
+
+/** active | pending_review | approved can be voided. */
+export function canVoid(status: MemoryStatus): boolean {
+	return (
+		status === "active" || status === "pending_review" || status === "approved"
+	);
+}
+
+/** Fail-closed: approval requires a human actor. */
+export function assertHumanApproval(actorKind: ActorKind): void {
+	if (actorKind !== "human") {
+		throw new Error(
+			`${GATE_REQUIRES_HUMAN_ERROR}: approve/reject requires a human actor (source.actorKind == human)`,
+		);
+	}
 }
 
 export interface TransitionMeta {
-  actor: string;
-  timestamp: string;
+	actor: string;
+	actorKind: ActorKind;
+	timestamp: string;
 }
 
 /**
- * Apply a legal status transition to a stored observation, recording an
- * audit-trail entry (provenance.md rule 3: every state traces to actor+time).
+ * Approve a pending_review memory. REQUIRES a human actor; fails closed with
+ * GATE_REQUIRES_HUMAN otherwise.
  */
-export function applyTransition(
-  store: MemoryStore,
-  observationId: string,
-  to: MemoryAuthorityStatus,
-  meta: TransitionMeta,
-): MemoryObservation {
-  const observation = store.findById(observationId);
-  if (observation === undefined) {
-    throw new Error(`OBSERVATION_NOT_FOUND: ${observationId}`);
-  }
-  transitionAuthority(observation.authorityStatus, to);
-  return store.applyStatusTransition(observationId, to, meta);
-}
-
-export interface SupersedeInput extends TransitionMeta {
-  store: MemoryStore;
-  /** The observation being superseded (must be promoted). */
-  observationId: string;
-  /** REQUIRED target: the replacing observation this one routes readers to. */
-  targetId: string;
+export function approve(memory: AccountingMemory, meta: TransitionMeta): void {
+	if (!canApprove(memory.status)) {
+		throw new Error(
+			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → approved is not legal from status "${memory.status}"`,
+		);
+	}
+	assertHumanApproval(meta.actorKind);
 }
 
 /**
- * Supersede a promoted observation: marks it `superseded` and records a
- * `supersedes` relation to the target. Never edits content in place.
+ * Reject a pending_review memory (terminal). REQUIRES a human actor.
  */
-export function supersede(input: SupersedeInput): MemoryObservation {
-  const { store, observationId, targetId, actor, timestamp } = input;
-  if (observationId === targetId) {
-    throw new Error(
-      `${INVALID_SUPERSEDE_ERROR}: observation ${observationId} cannot supersede itself`,
-    );
-  }
-  const target = store.findById(observationId);
-  if (target === undefined) {
-    throw new Error(`OBSERVATION_NOT_FOUND: ${observationId}`);
-  }
-  const replacement = store.findById(targetId);
-  if (replacement === undefined) {
-    throw new Error(`OBSERVATION_NOT_FOUND: ${targetId}`);
-  }
-  transitionAuthority(target.authorityStatus, "superseded");
-  const updated = store.applyStatusTransition(observationId, "superseded", {
-    actor,
-    timestamp,
-  });
-  store.relate(observationId, targetId, "supersedes", { actor, timestamp });
-  return updated;
+export function reject(memory: AccountingMemory, meta: TransitionMeta): void {
+	if (!canReject(memory.status)) {
+		throw new Error(
+			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → rejected is not legal from status "${memory.status}"`,
+		);
+	}
+	assertHumanApproval(meta.actorKind);
+}
+
+/**
+ * Void an active | pending_review | approved memory (terminal, no successor).
+ * Admits human or system actors (systemic correction), NEVER an agent.
+ */
+export function voidMemory(
+	memory: AccountingMemory,
+	meta: TransitionMeta,
+): void {
+	if (!canVoid(memory.status)) {
+		throw new Error(
+			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → voided is not legal from status "${memory.status}"`,
+		);
+	}
+	if (meta.actorKind === "agent") {
+		throw new Error(
+			"GATE_AGENT_CANNOT_VOID: voiding requires a human or system actor, never an agent",
+		);
+	}
+}
+
+/**
+ * Mark a previously current memory superseded, routing readers to successorId.
+ * Only active | pending_review | approved memories can be superseded. Returns
+ * the superseded state (immutable mirror of core.SupersedePrev mutation).
+ */
+export function supersedePrev(
+	memory: AccountingMemory,
+	successorId: string,
+): AccountingMemory {
+	if (!canVoid(memory.status)) {
+		throw new Error(
+			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → superseded is not legal from status "${memory.status}"`,
+		);
+	}
+	return { ...memory, status: "superseded", supersedesId: successorId };
+}
+
+/**
+ * Apply a gated status transition (approve/reject/void) to a stored memory,
+ * recording an audit-trail entry. The store applies the transition; legality
+ * and the human gate are checked here (mirror of core.Approve/Reject/Void).
+ */
+export function applyGateTransition(
+	store: MemoryStore,
+	memoryId: string,
+	to: MemoryStatus,
+	meta: TransitionMeta,
+): AccountingMemory {
+	const memory = store.findById(memoryId);
+	if (memory === undefined) {
+		throw new Error(`MEMORY_NOT_FOUND: ${memoryId}`);
+	}
+	if (to === "approved") approve(memory, meta);
+	else if (to === "rejected") reject(memory, meta);
+	else if (to === "voided") voidMemory(memory, meta);
+	return store.applyStatusTransition(memoryId, to, meta);
 }

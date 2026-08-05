@@ -3,13 +3,21 @@
  * no float is ever used for money; sequence/revision counters are JSON integers,
  * never floats.
  *
- * `drenyra-engram/lifecycle` — public entry for lifecycle transitions
- * (draft → reviewed → promoted → superseded; unknown states fail closed).
+ * `drenyra-engram/lifecycle` — public entry for the v2 approval-gated lifecycle
+ * (active → pending_review → approved/rejected; voided; superseded; unknown
+ * states fail closed). The human gate is enforced by the transitions module.
  */
 export {
-  applyTransition,
-  isLegalTransition,
-  supersede,
-  transitionAuthority,
+	applyGateTransition,
+	approve,
+	assertHumanApproval,
+	canApprove,
+	canReject,
+	canVoid,
+	initialStatus,
+	isGated,
+	reject,
+	supersedePrev,
+	voidMemory,
 } from "./transitions.js";
-export type { SupersedeInput, TransitionMeta } from "./transitions.js";
+export type { TransitionMeta } from "./transitions.js";

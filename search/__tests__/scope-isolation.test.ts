@@ -24,7 +24,6 @@ const ORG = "org-001";
 const RUC_A = "20100039201";
 const RUC_B = "20600995804";
 const PERIOD = "202401";
-const T = "2026-01-15T12:00:00.000Z";
 
 const companyA = (): MemoryScope => ({
   kind: "company",
@@ -42,7 +41,7 @@ const companyB = (): MemoryScope => ({
   period: PERIOD,
 });
 
-const PROVENANCE = { actor: "test-agent", timestamp: T, source: "vitest" };
+const SOURCE = { system: "vitest", actorId: "test-agent", actorKind: "agent" as const };
 
 const IGV_CONTENT: MemoryContent = {
   what: "IGV base rate is 18 percent",
@@ -66,18 +65,22 @@ describe("cross-tenant scope isolation", () => {
     await store.save({
       topicKey: "tax.igv.rate",
       title: "IGV base rate",
-      type: "policy",
+      kind: "rule" as const,
+          fiscalEffect: "none" as const,
+          effectiveAt: "2024-01-01T00:00:00.000Z",
       scope: companyA(),
       content: IGV_CONTENT,
-      provenance: PROVENANCE,
+      source: SOURCE,
     });
     await store.save({
       topicKey: "tax.igv.rate",
       title: "IGV base rate",
-      type: "policy",
+      kind: "rule" as const,
+          fiscalEffect: "none" as const,
+          effectiveAt: "2024-01-01T00:00:00.000Z",
       scope: companyB(),
       content: IGV_CONTENT,
-      provenance: PROVENANCE,
+      source: SOURCE,
     });
 
     // From company B: exactly one result, and it is B's own observation.
@@ -87,14 +90,14 @@ describe("cross-tenant scope isolation", () => {
       matchMode: "any",
     });
     expect(fromB).toHaveLength(1);
-    if (fromB[0].observation.scope.kind === "company") {
-      expect(fromB[0].observation.scope.ruc).toBe(RUC_B);
+    if (fromB[0].memory.scope.kind === "company") {
+      expect(fromB[0].memory.scope.ruc).toBe(RUC_B);
     }
     expect(
       fromB.some(
         (result) =>
-          result.observation.scope.kind === "company" &&
-          result.observation.scope.ruc === RUC_A,
+          result.memory.scope.kind === "company" &&
+          result.memory.scope.ruc === RUC_A,
       ),
     ).toBe(false);
 
@@ -105,14 +108,14 @@ describe("cross-tenant scope isolation", () => {
       matchMode: "any",
     });
     expect(fromA).toHaveLength(1);
-    if (fromA[0].observation.scope.kind === "company") {
-      expect(fromA[0].observation.scope.ruc).toBe(RUC_A);
+    if (fromA[0].memory.scope.kind === "company") {
+      expect(fromA[0].memory.scope.ruc).toBe(RUC_A);
     }
     expect(
       fromA.some(
         (result) =>
-          result.observation.scope.kind === "company" &&
-          result.observation.scope.ruc === RUC_B,
+          result.memory.scope.kind === "company" &&
+          result.memory.scope.ruc === RUC_B,
       ),
     ).toBe(false);
   });
@@ -123,18 +126,22 @@ describe("cross-tenant scope isolation", () => {
     await store.save({
       topicKey: "tax.igv.rate",
       title: "IGV base rate",
-      type: "policy",
+      kind: "rule" as const,
+          fiscalEffect: "none" as const,
+          effectiveAt: "2024-01-01T00:00:00.000Z",
       scope: companyA(),
       content: IGV_CONTENT,
-      provenance: PROVENANCE,
+      source: SOURCE,
     });
     await store.save({
       topicKey: "policy.banking-rules",
       title: "Banking rules",
-      type: "policy",
+      kind: "rule" as const,
+          fiscalEffect: "none" as const,
+          effectiveAt: "2024-01-01T00:00:00.000Z",
       scope: { kind: "institutional" },
       content: INSTITUTIONAL_CONTENT,
-      provenance: PROVENANCE,
+      source: SOURCE,
     });
 
     // Plain company-A query: institutional observation must NOT appear.
@@ -153,7 +160,7 @@ describe("cross-tenant scope isolation", () => {
       includeInstitutional: true,
     });
     expect(
-      explicitA.some((result) => result.observation.scope.kind === "institutional"),
+      explicitA.some((result) => result.memory.scope.kind === "institutional"),
     ).toBe(true);
 
     // Institutional query scope: institutional observation returned, and A's
@@ -164,9 +171,9 @@ describe("cross-tenant scope isolation", () => {
       matchMode: "any",
     });
     expect(institutionalQuery).toHaveLength(1);
-    expect(institutionalQuery[0].observation.scope).toEqual({ kind: "institutional" });
+    expect(institutionalQuery[0].memory.scope).toEqual({ kind: "institutional" });
     expect(
-      institutionalQuery.some((result) => result.observation.scope.kind === "company"),
+      institutionalQuery.some((result) => result.memory.scope.kind === "company"),
     ).toBe(false);
   });
 
@@ -176,10 +183,12 @@ describe("cross-tenant scope isolation", () => {
     await store.save({
       topicKey: "tax.igv.rate",
       title: "IGV base rate",
-      type: "policy",
+      kind: "rule" as const,
+          fiscalEffect: "none" as const,
+          effectiveAt: "2024-01-01T00:00:00.000Z",
       scope: companyB(),
       content: IGV_CONTENT,
-      provenance: PROVENANCE,
+      source: SOURCE,
     });
 
     // "payroll" is not in B's observation: "all" rejects, "any" accepts.
