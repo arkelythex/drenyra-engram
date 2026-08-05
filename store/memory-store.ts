@@ -26,6 +26,7 @@ import { randomUUID, createHash } from "node:crypto";
 
 import {
 	ApprovalError,
+	RECEIPT_PAYLOAD_VERSION,
 	assertValidContent,
 	assertValidMemory,
 	assertValidScope,
@@ -54,11 +55,16 @@ import {
 	type MemorySource,
 	type MemoryStatus,
 	type MemoryWriteResult,
+	type PrincipalSnapshot,
 	type ProposeJudgmentCommand,
 	type ProposeJudgmentResult,
+	type ReceiptAction,
+	type ReceiptPayload,
+	type ReceiptSubjectType,
 	type RejectJudgmentCommand,
 	type RejectJudgmentResult,
 	type SaveMemoryInput,
+	type SignedReceipt,
 	type StatusTransitionRecord,
 	type VerifiedApprovalPrincipal,
 	type WithdrawJudgmentCommand,
@@ -75,7 +81,14 @@ import {
 	authorizeJudgment,
 	type JudgmentAuthorizationDecision,
 } from "../authz/judgment-policy.js";
-import type { ReceiptSigner } from "../core/receipt.js";
+import { receiptHash, type ReceiptSigner } from "../core/receipt.js";
+
+/**
+ * Non-policy acts (save, supersession, reject/void transitions, evidence
+ * links) stamp `kernel/v0.4.0` — never an ambiguous empty policy version.
+ * Mirrors store.kernelPolicyVersion (Go).
+ */
+const KERNEL_POLICY_VERSION = "kernel/v0.4.0";
 
 /**
  * Pure authorization function passed to the atomic approval (mirror of the
@@ -190,6 +203,14 @@ export interface MemoryStore {
 	transitionLog(): StatusTransitionRecord[];
 	/** Immutable authenticated approval events (v0.4.0 Step 1). */
 	approvalEvents(): ApprovalEvent[];
+	/** Immutable Ed25519 receipts (v0.4.0 Step 3) — insertion order. */
+	receipts(): SignedReceipt[];
+	/** Attaches an evidence reference AFTER write; a duplicate is a no-op.
+	 * A genuinely new evidence ref mints evidence_linked (v0.4.0 Step 3). */
+	addEvidenceLink(memoryId: string, ref: string, actor: string): void;
+	/** Attaches a rule/policy reference AFTER write; a duplicate is a no-op.
+	 * Rule links are NOT covered by the closed receipt action set. */
+	addRuleLink(memoryId: string, ref: string, actor: string): void;
 }
 
 /** In-memory implementation. Data is lost when the process exits. */
@@ -200,6 +221,9 @@ export class InMemoryMemoryStore implements MemoryStore {
 	private readonly relationRecords: MemoryRelationRecord[] = [];
 	private readonly statusTransitions: StatusTransitionRecord[] = [];
 	private readonly approvalEventRecords: ApprovalEvent[] = [];
+	// ── v0.4.0 Step 3 immutable receipts (mirror of the receipts table: no
+	// update/delete paths ever). ──
+	private readonly receiptRecords: SignedReceipt[] = [];
 	private readonly idempotency = new Map<
 		string,
 		{
@@ -236,7 +260,9 @@ export class InMemoryMemoryStore implements MemoryStore {
     	 * Constructs the in-memory store. The optional ReceiptSigner (v0.4.0
     	 * Step 3) is the store-facing signing surface: default Node construction
     	 * loads or creates the keyring, and tests inject a caller-provided
-    	 * seed-based signer. Emission points consume it in batch 2.
+    	 * seed-based signer. When a signer is present, every covered mutation
+    	 * emits an immutable receipt inside its critical section; NO signer →
+    	 * no receipts.
     	 */
     	constructor(readonly receiptSigner?: ReceiptSigner) {}
 
@@ -308,9 +334,24 @@ export class InMemoryMemoryStore implements MemoryStore {
 		// canVoid guard). Terminal heads (rejected, superseded, voided) NEVER
 		// reopen; the new revision does NOT inherit the previous approval (a
 		// fiscal effect lands it pending_review behind the human gate).
+		// Auto-supersession receipt state: when the new revision supersedes the
+		// prior current one, the design emits memory_superseded for the PRIOR
+		// subject FIRST (pre/post envelope hashes + successor id), then
+		// memory_recorded for the new subject — both with the captured
+		// recordedAt. Status and supersession participate in the envelope, so
+		// the hashes are recomputed around the transition, never cached.
+		let supersededRevision:
+			| { id: string; fromEnvelope: string; toEnvelope: string }
+			| undefined;
 		if (latest !== undefined && canVoid(latest.status)) {
+			const fromEnvelope = envelopeHashSync(latest);
 			latest.status = "superseded";
 			latest.supersedesId = memory.identity.id;
+			supersededRevision = {
+				id: latest.identity.id,
+				fromEnvelope,
+				toEnvelope: envelopeHashSync(latest),
+			};
 			this.relationRecords.push({
 				fromId: latest.identity.id,
 				toId: memory.identity.id,
@@ -326,6 +367,45 @@ export class InMemoryMemoryStore implements MemoryStore {
 			chain.push(memory);
 			this.memories.push(memory);
 			this.byId.set(memory.identity.id, memory);
+			// Atomic receipt emission (v0.4.0 Step 3): inside the SAME critical
+			// section, with the captured recordedAt — never a fresh time call. If
+			// auto-supersession changed the prior observation, memory_superseded
+			// for the prior subject is emitted FIRST (it chains on the prior's own
+			// receipts), then memory_recorded for the new subject. NO signer → no
+			// receipts. The claimed act uses the recorded source actor as
+			// principalId (kernel policy).
+			const claimed = claimedPrincipal(input.source.actorId ?? "");
+			const scope = receiptScope(memory);
+			if (supersededRevision !== undefined) {
+				this.emitReceipt(
+					this.basePayload(
+						"memory",
+						supersededRevision.id,
+						"memory_superseded",
+						scope,
+						claimed,
+						KERNEL_POLICY_VERSION,
+						recordedAt,
+						{
+							fromEnvelopeHash: supersededRevision.fromEnvelope,
+							toEnvelopeHash: supersededRevision.toEnvelope,
+							successorId: memory.identity.id,
+						},
+					),
+				);
+			}
+			this.emitReceipt(
+				this.basePayload(
+					"memory",
+					memory.identity.id,
+					"memory_recorded",
+					scope,
+					claimed,
+					KERNEL_POLICY_VERSION,
+					recordedAt,
+					{ resultingEnvelopeHash: envelopeHashSync(memory) },
+				),
+			);
 			return {
 				memory: cloneMemory(memory),
 				outcome: latest === undefined ? "created" : "updated",
@@ -419,8 +499,14 @@ export class InMemoryMemoryStore implements MemoryStore {
 			throw new Error(`MEMORY_NOT_FOUND: ${memoryId}`);
 		}
 		const from = memory.status;
+		// Status participates in the envelope hash: recompute BEFORE and AFTER
+		// the flip and keep the cached envelopeHash fresh (v0.4.0 Step 3 — the
+		// pre/post hashes of the covered transitions must be exact, and a stale
+		// cache would poison the next review's H1).
+		const fromEnvelope = envelopeHashSync(memory);
 		// Status-only mutation: the single field the lifecycle machine may touch.
 		memory.status = to;
+		memory.envelopeHash = envelopeHashSync(memory);
 		this.statusTransitions.push({
 			memoryId,
 			from,
@@ -429,6 +515,29 @@ export class InMemoryMemoryStore implements MemoryStore {
 			actorKind: meta.actorKind as AccountingMemory["source"]["actorKind"],
 			timestamp: meta.timestamp,
 		});
+		// Atomic receipt emission (v0.4.0 Step 3): ONLY the covered terminal
+		// transitions mint receipts — rejected → memory_rejected, voided →
+		// memory_voided (the closed action set has no receipt for any other
+		// transition; approvals are covered by the authenticated approveMemory
+		// path). The claimed act uses the transition actor as principalId
+		// (kernel policy), with the transition's own timestamp.
+		if (to === "rejected" || to === "voided") {
+			this.emitReceipt(
+				this.basePayload(
+					"memory",
+					memoryId,
+					to === "rejected" ? "memory_rejected" : "memory_voided",
+					receiptScope(memory),
+					claimedPrincipal(meta.actor),
+					KERNEL_POLICY_VERSION,
+					meta.timestamp,
+					{
+						reviewedEnvelopeHash: fromEnvelope,
+						resultingEnvelopeHash: memory.envelopeHash,
+					},
+				),
+			);
+		}
 		return cloneMemory(memory);
 	}
 
@@ -442,6 +551,190 @@ export class InMemoryMemoryStore implements MemoryStore {
 
 	approvalEvents(): ApprovalEvent[] {
 		return this.approvalEventRecords.map((event) => ({ ...event }));
+	}
+
+	/**
+	 * Every emitted receipt (insertion order), as IMMUTABLE copies. The receipt
+	 * collection has no update/delete paths, so it never shrinks or rewrites.
+	 * NO signer attached at construction → always empty.
+	 */
+	receipts(): SignedReceipt[] {
+		return this.receiptRecords.map((receipt) => ({ ...receipt }));
+	}
+
+	/**
+	 * Attaches an evidence reference to a memory AFTER write (mirror of
+	 * SQLiteStore.AddEvidenceLink). The immutable memory row is never edited in
+	 * place: the evidenceRefs set grows and the derived envelope cache is
+	 * refreshed atomically (a link added AFTER review produces a NEW actual H1,
+	 * so a stale expected hash then triggers ENVELOPE_MISMATCH). A duplicate
+	 * (memoryId, ref) is a NO-OP: no mutation, no receipt.
+	 */
+	addEvidenceLink(memoryId: string, ref: string, actor: string): void {
+		this.addLink("evidence", memoryId, ref, actor);
+	}
+
+	/**
+	 * Attaches a rule/policy reference to a memory AFTER write (mirror of
+	 * SQLiteStore.AddRuleLink). Rule links are NOT covered by the closed receipt
+	 * action set — they never mint a receipt — but they refresh the envelope
+	 * cache exactly like evidence links.
+	 */
+	addRuleLink(memoryId: string, ref: string, actor: string): void {
+		this.addLink("rule", memoryId, ref, actor);
+	}
+
+	/**
+	 * Atomic receipt emission (v0.4.0 Step 3): reads the subject's chain head
+	 * (the latest receipt for the same subjectType+subjectId), signs the payload
+	 * and records the receipt IMMUTABLY. Never async — the caller's critical
+	 * section stays contiguous (the approveMemory discipline), so there is no
+	 * gap between the act's mutation and the receipt recording. NO signer → no
+	 * receipts.
+	 */
+	private emitReceipt(payload: ReceiptPayload): void {
+		const signer = this.receiptSigner;
+		if (signer === undefined) return;
+		const previousReceiptHash = this.latestReceiptHash(
+			payload.subjectType,
+			payload.subjectId,
+		);
+		const { receipt } = signer.sign(payload, previousReceiptHash);
+		this.receiptRecords.push(receipt);
+	}
+
+	/** The digest of the subject's latest receipt (genesis = ""). */
+	private latestReceiptHash(
+		subjectType: ReceiptSubjectType,
+		subjectId: string,
+	): string {
+		for (let i = this.receiptRecords.length - 1; i >= 0; i--) {
+			const receipt = this.receiptRecords[i]!;
+			if (
+				receipt.subjectType === subjectType &&
+				receipt.subjectId === subjectId
+			) {
+				return receiptHash(receipt);
+			}
+		}
+		return "";
+	}
+
+	/**
+	 * The canonical payload scaffold: every key present in the ReceiptPayload
+	 * order — inapplicable fields empty, never omitted — with the act's own
+	 * scope/principal/policy/timestamp and the covered fields filled in by the
+	 * caller. Mirrors the Go emission-point payload literals field-for-field.
+	 */
+	private basePayload(
+		subjectType: ReceiptSubjectType,
+		subjectId: string,
+		action: ReceiptAction,
+		scope: ReceiptScope,
+		principal: ReceiptPrincipal,
+		policyVersion: string,
+		issuedAt: string,
+		fields: Partial<
+			Pick<
+				ReceiptPayload,
+				|"reviewedEnvelopeHash"
+				|"resultingEnvelopeHash"
+				|"reviewedJudgmentHash"
+				|"resultingJudgmentHash"
+				|"fromMemoryId"
+				|"fromEnvelopeHash"
+				|"toMemoryId"
+				|"toEnvelopeHash"
+				|"successorId"
+				|"evidenceRef"
+				|"reason"
+			>
+		> = {},
+	): ReceiptPayload {
+		return {
+			version: RECEIPT_PAYLOAD_VERSION,
+			subjectType,
+			subjectId,
+			action,
+			tenantId: scope.tenantId,
+			companyId: scope.companyId,
+			fiscalPeriodId: scope.fiscalPeriodId,
+			reviewedEnvelopeHash: fields.reviewedEnvelopeHash ?? "",
+			resultingEnvelopeHash: fields.resultingEnvelopeHash ?? "",
+			reviewedJudgmentHash: fields.reviewedJudgmentHash ?? "",
+			resultingJudgmentHash: fields.resultingJudgmentHash ?? "",
+			fromMemoryId: fields.fromMemoryId ?? "",
+			fromEnvelopeHash: fields.fromEnvelopeHash ?? "",
+			toMemoryId: fields.toMemoryId ?? "",
+			toEnvelopeHash: fields.toEnvelopeHash ?? "",
+			successorId: fields.successorId ?? "",
+			evidenceRef: fields.evidenceRef ?? "",
+			reason: fields.reason ?? "",
+			principalId: principal.principalId,
+			membershipId: principal.membershipId,
+			principalRoles: [...principal.roles],
+			authenticationMethod: principal.authenticationMethod,
+			assuranceLevel: principal.assuranceLevel,
+			principalAuthenticatedAt: principal.authenticatedAt,
+			policyVersion,
+			issuedAt,
+		};
+	}
+
+	private addLink(
+		kind: "evidence" | "rule",
+		memoryId: string,
+		ref: string,
+		actor: string,
+	): void {
+		if (ref.trim().length === 0) {
+			throw new Error("INVALID_REF: ref must be a non-empty string");
+		}
+		const memory = this.byId.get(memoryId);
+		if (memory === undefined) {
+			throw new Error(`OBSERVATION_NOT_FOUND: ${memoryId}`);
+		}
+		const refs =
+			kind === "evidence"
+				? (memory.evidenceRefs ?? [])
+				: (memory.ruleRefs ?? []);
+		if (refs.includes(ref)) {
+			// Duplicate insert is a no-op and stays a no-op: no mutation, no receipt.
+			return;
+		}
+		// ONE captured timestamp for the link act and its receipt. A link changes
+		// the canonical refs → the derived envelope cache changes (pre-link vs
+		// merged post-link), recomputed inside the critical section.
+		const now = new Date().toISOString();
+		const fromEnvelope = envelopeHashSync(memory);
+		if (kind === "evidence") {
+			memory.evidenceRefs = [...refs, ref];
+		} else {
+			memory.ruleRefs = [...refs, ref];
+		}
+		memory.envelopeHash = envelopeHashSync(memory);
+		// Atomic receipt emission (v0.4.0 Step 3): ONLY a genuinely NEW evidence
+		// row mints evidence_linked (the post-link envelope is the merged state;
+		// the claimed act uses the link actor as principalId, kernel policy).
+		// Rule links are NOT covered by the closed action set.
+		if (kind === "evidence") {
+			this.emitReceipt(
+				this.basePayload(
+					"memory",
+					memoryId,
+					"evidence_linked",
+					receiptScope(memory),
+					claimedPrincipal(actor),
+					KERNEL_POLICY_VERSION,
+					now,
+					{
+						fromEnvelopeHash: fromEnvelope,
+						toEnvelopeHash: memory.envelopeHash,
+						evidenceRef: ref,
+					},
+				),
+			);
+		}
 	}
 
 	/**
@@ -593,9 +886,11 @@ export class InMemoryMemoryStore implements MemoryStore {
 				);
 			}
 
-			// ── Atomic final block: mutate + record + complete the reservation. ──
+			// ── Atomic final block: mutate + record + emit + complete the
+			// reservation. ──
 			// No awaits after this point: a throw below cannot happen, and a throw
 			// above already rolled back the reservation in the catch handler.
+			const snapshot = principalSnapshot(principal);
 			const event: ApprovalEvent = {
 				id: randomUUID(),
 				requestId: command.requestId,
@@ -611,7 +906,7 @@ export class InMemoryMemoryStore implements MemoryStore {
 				reviewedEnvelopeHash: h1,
 				resultingEnvelopeHash: h2,
 				reason: command.reason,
-				principalSnapshot: principalSnapshot(principal),
+				principalSnapshot: snapshot,
 				policyVersion: decision.policyVersion,
 				authorizationReasonCode: "AUTHORIZED",
 				createdAt: now,
@@ -627,6 +922,27 @@ export class InMemoryMemoryStore implements MemoryStore {
 				actorKind: "human",
 				timestamp: now,
 			});
+			// Atomic receipt emission (v0.4.0 Step 3): after the event + transition
+			// insertion and BEFORE the idempotency completion, inside the same
+			// critical section with the captured now. memory_approved carries H1,
+			// H2, the reason and the COMPLETE verified principal snapshot — never a
+			// claimed actor — and the decision's own policy version.
+			this.emitReceipt(
+				this.basePayload(
+					"memory",
+					memory.identity.id,
+					"memory_approved",
+					receiptScope(memory),
+					verifiedPrincipal(snapshot),
+					decision.policyVersion,
+					now,
+					{
+						reviewedEnvelopeHash: h1,
+						resultingEnvelopeHash: h2,
+						reason: command.reason,
+					},
+				),
+			);
 			const result: ApprovalResult = {
 				memoryId: memory.identity.id,
 				approvalEventId: event.id,
@@ -1168,6 +1484,39 @@ export class InMemoryMemoryStore implements MemoryStore {
 					timestamp: now,
 				});
 			}
+			// Atomic receipt emission (v0.4.0 Step 3): after the decision event,
+			// the relation projection and the (covered) predecessor supersession,
+			// BEFORE the idempotency completion, with the captured now.
+			// relation_confirmed carries the proposed/resulting judgment hashes,
+			// BOTH current observation envelope hashes, the resolution and the
+			// complete verified principal snapshot. The predecessor supersession
+			// is covered INSIDE this receipt — it never creates another action.
+			const fromObs = this.byId.get(judgment.fromId)!;
+			const toObs = this.byId.get(judgment.toId)!;
+			this.emitReceipt(
+				this.basePayload(
+					"judgment",
+					judgment.id,
+					"relation_confirmed",
+					{
+						tenantId: judgment.tenantId,
+						companyId: judgment.companyId,
+						fiscalPeriodId: judgment.fiscalPeriodId ?? "",
+					},
+					verifiedPrincipal(snapshot),
+					decision.policyVersion,
+					now,
+					{
+						reviewedJudgmentHash: actual,
+						resultingJudgmentHash: confirmedHash,
+						fromMemoryId: judgment.fromId,
+						fromEnvelopeHash: envelopeHashSync(fromObs),
+						toMemoryId: judgment.toId,
+						toEnvelopeHash: envelopeHashSync(toObs),
+						reason: command.resolution,
+					},
+				),
+			);
 			const result: ConfirmJudgmentResult = {
 				judgmentId: judgment.id,
 				judgment: { ...judgment },
@@ -1327,6 +1676,38 @@ export class InMemoryMemoryStore implements MemoryStore {
 			};
 			Object.assign(judgment, rejected);
 			this.judgmentEventRecords.push(event);
+			// Atomic receipt emission (v0.4.0 Step 3): after the decision event,
+			// BEFORE the idempotency completion, with the captured now.
+			// relation_rejected carries the proposed/resulting judgment hashes,
+			// BOTH current observation envelope hashes, the human reason and the
+			// complete verified principal snapshot (rejection writes NO relation
+			// projection and performs no supersession).
+			const fromObs = this.byId.get(judgment.fromId)!;
+			const toObs = this.byId.get(judgment.toId)!;
+			this.emitReceipt(
+				this.basePayload(
+					"judgment",
+					judgment.id,
+					"relation_rejected",
+					{
+						tenantId: judgment.tenantId,
+						companyId: judgment.companyId,
+						fiscalPeriodId: judgment.fiscalPeriodId ?? "",
+					},
+					verifiedPrincipal(snapshot),
+					decision.policyVersion,
+					now,
+					{
+						reviewedJudgmentHash: actual,
+						resultingJudgmentHash: rejectedHash,
+						fromMemoryId: judgment.fromId,
+						fromEnvelopeHash: envelopeHashSync(fromObs),
+						toMemoryId: judgment.toId,
+						toEnvelopeHash: envelopeHashSync(toObs),
+						reason: command.reason,
+					},
+				),
+			);
 			const result: RejectJudgmentResult = {
 				judgmentId: judgment.id,
 				judgment: { ...judgment },
@@ -1511,6 +1892,116 @@ export class InMemoryMemoryStore implements MemoryStore {
 
 function chainKey(topicKey: string, scope: MemoryScope): string {
 	return `${topicKey}\u0000${scopeKey(scope)}`;
+}
+
+/** The receipt scope of a stored subject: institutional subjects use empty
+ * company and period (Go accessors return ""). */
+interface ReceiptScope {
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId: string;
+}
+
+function receiptScope(memory: AccountingMemory): ReceiptScope {
+	if (memory.scope.kind !== "company") {
+		return { tenantId: "", companyId: "", fiscalPeriodId: "" };
+	}
+	return {
+		tenantId: memory.scope.organizationId,
+		companyId: memory.scope.companyId,
+		fiscalPeriodId: memory.scope.period ?? "",
+	};
+}
+
+/** The principal fields a receipt payload carries. */
+interface ReceiptPrincipal {
+	principalId: string;
+	membershipId: string;
+	roles: string[];
+	authenticationMethod: string;
+	assuranceLevel: string;
+	authenticatedAt: string;
+}
+
+/**
+ * Claimed acts (save, supersession, reject/void transitions, evidence links):
+ * the source/transition/link actor as principalId with EMPTY membership,
+ * roles and authentication evidence — the actor claimed the act but was never
+ * verified (design "Claimed acts").
+ */
+function claimedPrincipal(principalId: string): ReceiptPrincipal {
+	return {
+		principalId,
+		membershipId: "",
+		roles: [],
+		authenticationMethod: "",
+		assuranceLevel: "",
+		authenticatedAt: "",
+	};
+}
+
+/**
+ * Verified acts (approval, judgment decisions): the complete canonical
+ * principal snapshot (roles already sorted and deduplicated by
+ * principalSnapshot) — never a claimed actor.
+ */
+function verifiedPrincipal(snapshot: PrincipalSnapshot): ReceiptPrincipal {
+	return {
+		principalId: snapshot.subjectId,
+		membershipId: snapshot.membershipId,
+		roles: [...snapshot.roles],
+		authenticationMethod: snapshot.authenticationMethod,
+		assuranceLevel: snapshot.assuranceLevel,
+		authenticatedAt: snapshot.authenticatedAt,
+	};
+}
+
+/** Lowercase SHA-256 hex via node:crypto (the synchronous emission paths). */
+function sha256HexSync(data: string): string {
+	return createHash("sha256").update(data, "utf8").digest("hex");
+}
+
+/** Canonical ref ordering (SET semantics — same algorithm as core
+ * canonicalRefs): unique, empty strings dropped, sorted. */
+function canonicalRefsSync(refs: string[]): string {
+	return [...new Set(refs.filter((ref) => ref !== ""))].sort().join("\u0000");
+}
+
+/**
+ * Synchronous envelope hash (v0.4.0 Step 3 emission): byte-identical to
+ * core.types computeEnvelopeHash, but node:crypto-sync so the synchronous
+ * mutation paths (applyStatusTransition, addLink, save auto-supersession)
+ * can recompute pre/post hashes INSIDE their critical section without an
+ * async-await gap.
+ */
+function envelopeHashSync(memory: AccountingMemory): string {
+	const identityHash = sha256HexSync(
+		[
+			scopeKey(memory.scope),
+			memory.identity.topicKey,
+			memory.effectiveAt,
+			memory.source.reference ?? "",
+		].join("\u0000"),
+	);
+	return sha256HexSync(
+		[
+			identityHash,
+			memory.contentHash,
+			memory.fiscalEffect,
+			memory.status,
+			memory.source.system,
+			memory.source.actorId ?? "",
+			memory.source.actorKind,
+			memory.source.model ?? "",
+			memory.source.session ?? "",
+			memory.recordedAt,
+			memory.observedAt ?? "",
+			memory.supersedesId ?? "",
+			memory.receiptId ?? "",
+			canonicalRefsSync(memory.evidenceRefs ?? []),
+			canonicalRefsSync(memory.ruleRefs ?? []),
+		].join("\u0000"),
+	);
 }
 
 /**
