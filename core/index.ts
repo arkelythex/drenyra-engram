@@ -8,3 +8,4 @@
  */
 export * from "./types.js";
 export * from "./receipt.js";
+export * from "./verify.js";

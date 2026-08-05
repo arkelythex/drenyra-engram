@@ -1,0 +1,453 @@
+{
+  "name": "verify-parity",
+  "subjectType": "memory",
+  "subjectId": "memory-1",
+  "seed": "0101010101010101010101010101010101010101010101010101010101010101",
+  "subjectScope": {
+    "tenantId": "tenant-1",
+    "companyId": "acme",
+    "fiscalPeriodId": "202601"
+  },
+  "keys": {
+    "revoked": {
+      "found": true,
+      "algorithm": "Ed25519",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "createdAt": "2026-08-05T10:00:00Z",
+      "revokedAt": "2026-08-05T12:00:00Z"
+    },
+    "valid": {
+      "found": true,
+      "algorithm": "Ed25519",
+      "publicKey": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+      "createdAt": "2026-08-05T10:00:00Z",
+      "revokedAt": ""
+    }
+  },
+  "receipts": [
+    {
+      "subjectType": "memory",
+      "subjectId": "memory-1",
+      "action": "memory_recorded",
+      "tenantId": "tenant-1",
+      "companyId": "acme",
+      "fiscalPeriodId": "202601",
+      "payloadHash": "064b0131bf17f79593ca4653d623edcdc373f544921155ddaf8884cb0f08c9df",
+      "previousReceiptHash": "",
+      "principalId": "agent-1",
+      "membershipId": "",
+      "policyVersion": "",
+      "algorithm": "Ed25519",
+      "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+      "signature": "sZwMqdWGhgBajQDsMI1pb0eXyRVucj8mJctVIpm7n2q53vz82U0JZvVU+w3pubmvRjSGrj1XPc7b/roWjvKwDQ==",
+      "issuedAt": "2026-08-05T12:00:00Z"
+    },
+    {
+      "subjectType": "memory",
+      "subjectId": "memory-1",
+      "action": "memory_approved",
+      "tenantId": "tenant-1",
+      "companyId": "acme",
+      "fiscalPeriodId": "202601",
+      "payloadHash": "145911e45560f4cda235ca4641b881fa10ec00c52413f0abcfdd7a06c4d41fc6",
+      "previousReceiptHash": "5977c3f7bffeeba0e5e098104428805506470d20af8684f5fc058709df555d56",
+      "principalId": "subject-1",
+      "membershipId": "membership-1",
+      "policyVersion": "approval-policy/v0.4.0",
+      "algorithm": "Ed25519",
+      "keyId": "ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e",
+      "signature": "sCFRt7snjMYIvTLtsLp78sGOMNKZ1RB0INQgkbswddX4vRkOLrLT94wv7Bv7naWlBE+06d8HWrB9ZGr8/NKfDA==",
+      "issuedAt": "2026-08-05T13:00:00Z"
+    }
+  ],
+  "payloads": [
+    {
+      "version": "receipt-payload/v0.4.0",
+      "subjectType": "memory",
+      "subjectId": "memory-1",
+      "action": "memory_recorded",
+      "tenantId": "tenant-1",
+      "companyId": "acme",
+      "fiscalPeriodId": "202601",
+      "reviewedEnvelopeHash": "",
+      "resultingEnvelopeHash": "h1-recorded-envelope",
+      "reviewedJudgmentHash": "",
+      "resultingJudgmentHash": "",
+      "fromMemoryId": "",
+      "fromEnvelopeHash": "",
+      "toMemoryId": "",
+      "toEnvelopeHash": "",
+      "successorId": "",
+      "evidenceRef": "",
+      "reason": "",
+      "principalId": "agent-1",
+      "membershipId": "",
+      "principalRoles": [],
+      "authenticationMethod": "",
+      "assuranceLevel": "",
+      "principalAuthenticatedAt": "",
+      "policyVersion": "",
+      "issuedAt": "2026-08-05T12:00:00Z"
+    },
+    {
+      "version": "receipt-payload/v0.4.0",
+      "subjectType": "memory",
+      "subjectId": "memory-1",
+      "action": "memory_approved",
+      "tenantId": "tenant-1",
+      "companyId": "acme",
+      "fiscalPeriodId": "202601",
+      "reviewedEnvelopeHash": "h1-reviewed-envelope",
+      "resultingEnvelopeHash": "h2-resulting-envelope",
+      "reviewedJudgmentHash": "",
+      "resultingJudgmentHash": "",
+      "fromMemoryId": "",
+      "fromEnvelopeHash": "",
+      "toMemoryId": "",
+      "toEnvelopeHash": "",
+      "successorId": "",
+      "evidenceRef": "",
+      "reason": "approved \u0026 verified \"controller\" review",
+      "principalId": "subject-1",
+      "membershipId": "membership-1",
+      "principalRoles": [
+        "controller",
+        "accountant",
+        "controller"
+      ],
+      "authenticationMethod": "session",
+      "assuranceLevel": "standard",
+      "principalAuthenticatedAt": "2026-08-05T13:00:00Z",
+      "policyVersion": "approval-policy/v0.4.0",
+      "issuedAt": "2026-08-05T13:00:00Z"
+    }
+  ],
+  "provenance": [
+    {
+      "action": "recorded",
+      "timestamp": "2026-08-05T12:00:00Z",
+      "principalId": "agent-1",
+      "membershipId": "",
+      "roles": [],
+      "authenticationMethod": "",
+      "assuranceLevel": "",
+      "authenticatedAt": "",
+      "policy": "",
+      "reason": "",
+      "reviewedEnvelopeHash": "",
+      "resultingEnvelopeHash": "",
+      "recordedJudgmentHash": ""
+    },
+    {
+      "action": "approved",
+      "timestamp": "2026-08-05T13:00:00Z",
+      "principalId": "subject-1",
+      "membershipId": "membership-1",
+      "roles": [
+        "controller",
+        "accountant"
+      ],
+      "authenticationMethod": "session",
+      "assuranceLevel": "standard",
+      "authenticatedAt": "2026-08-05T13:00:00Z",
+      "policy": "approval-policy/v0.4.0",
+      "reason": "approved \u0026 verified \"controller\" review",
+      "reviewedEnvelopeHash": "h1-reviewed-envelope",
+      "resultingEnvelopeHash": "h2-resulting-envelope",
+      "recordedJudgmentHash": ""
+    }
+  ],
+  "supersessionLinks": [
+    {
+      "subjectId": "memory-1",
+      "successorId": "",
+      "superseded": false,
+      "scope": {
+        "tenantId": "tenant-1",
+        "companyId": "acme",
+        "fiscalPeriodId": "202601"
+      }
+    }
+  ],
+  "evidence": {
+    "declaredRefs": [],
+    "currentLinks": [],
+    "currentEnvelope": "h2-resulting-envelope",
+    "committedEnvelope": "h2-resulting-envelope"
+  },
+  "rules": {
+    "storedRefs": [],
+    "currentLinks": [],
+    "mergedRefs": [],
+    "currentEnvelope": "h2-resulting-envelope",
+    "committedEnvelope": "h2-resulting-envelope"
+  },
+  "scenarios": {
+    "all-pass": {
+      "key": "valid",
+      "expected": {
+        "outcome": "passed",
+        "accountingCorrectness": "Accounting correctness: NOT ASSERTED",
+        "receipts": [
+          {
+            "receiptHash": "5977c3f7bffeeba0e5e098104428805506470d20af8684f5fc058709df555d56",
+            "action": "memory_recorded",
+            "layers": [
+              {
+                "name": "payload canonicalization",
+                "status": "passed",
+                "detail": "payload is canonical and payloadHash matches the canonical digest"
+              },
+              {
+                "name": "envelope integrity",
+                "status": "passed",
+                "detail": "envelope is integral and the stored receipt_hash matches the recomputed digest"
+              },
+              {
+                "name": "signature",
+                "status": "passed",
+                "detail": "Ed25519 signature verifies over the canonical unsigned envelope"
+              },
+              {
+                "name": "signing-key validity",
+                "status": "passed",
+                "detail": "signing key is registered, matches the keyId and its validity window covers the issuance"
+              },
+              {
+                "name": "tenant/company scope",
+                "status": "passed",
+                "detail": "payload, envelope and the stored subject share the same tenant/company/fiscal period"
+              },
+              {
+                "name": "chain link",
+                "status": "passed",
+                "detail": "genesis receipt has an empty previousReceiptHash"
+              }
+            ]
+          },
+          {
+            "receiptHash": "dfa4077c816e6516551995cd6e7876cc114770131b3bdce7bb21ce82057995ac",
+            "action": "memory_approved",
+            "layers": [
+              {
+                "name": "payload canonicalization",
+                "status": "passed",
+                "detail": "payload is canonical and payloadHash matches the canonical digest"
+              },
+              {
+                "name": "envelope integrity",
+                "status": "passed",
+                "detail": "envelope is integral and the stored receipt_hash matches the recomputed digest"
+              },
+              {
+                "name": "signature",
+                "status": "passed",
+                "detail": "Ed25519 signature verifies over the canonical unsigned envelope"
+              },
+              {
+                "name": "signing-key validity",
+                "status": "passed",
+                "detail": "signing key is registered, matches the keyId and its validity window covers the issuance"
+              },
+              {
+                "name": "tenant/company scope",
+                "status": "passed",
+                "detail": "payload, envelope and the stored subject share the same tenant/company/fiscal period"
+              },
+              {
+                "name": "chain link",
+                "status": "passed",
+                "detail": "chain link references the immediately preceding receipt hash"
+              }
+            ]
+          }
+        ],
+        "layers": [
+          {
+            "name": "payload canonicalization",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "envelope integrity",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "signature",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "signing-key validity",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "tenant/company scope",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "chain link",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "principal provenance",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "supersession chain",
+            "status": "passed",
+            "detail": "supersession chain is current at memory-1"
+          },
+          {
+            "name": "evidence availability",
+            "status": "passed",
+            "detail": "every declared evidence ref is linked and the current envelope matches the committed head result"
+          },
+          {
+            "name": "rule availability",
+            "status": "passed",
+            "detail": "rule refs are row-backed and the current envelope matches the committed head result"
+          }
+        ]
+      }
+    },
+    "revoked-key": {
+      "key": "revoked",
+      "expected": {
+        "outcome": "failed",
+        "accountingCorrectness": "Accounting correctness: NOT ASSERTED",
+        "receipts": [
+          {
+            "receiptHash": "5977c3f7bffeeba0e5e098104428805506470d20af8684f5fc058709df555d56",
+            "action": "memory_recorded",
+            "layers": [
+              {
+                "name": "payload canonicalization",
+                "status": "passed",
+                "detail": "payload is canonical and payloadHash matches the canonical digest"
+              },
+              {
+                "name": "envelope integrity",
+                "status": "passed",
+                "detail": "envelope is integral and the stored receipt_hash matches the recomputed digest"
+              },
+              {
+                "name": "signature",
+                "status": "passed",
+                "detail": "Ed25519 signature verifies over the canonical unsigned envelope"
+              },
+              {
+                "name": "signing-key validity",
+                "status": "failed",
+                "detail": "signing key ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e was revoked at 2026-08-05T12:00:00Z; issuance at 2026-08-05T12:00:00Z is at/after revocation"
+              },
+              {
+                "name": "tenant/company scope",
+                "status": "passed",
+                "detail": "payload, envelope and the stored subject share the same tenant/company/fiscal period"
+              },
+              {
+                "name": "chain link",
+                "status": "passed",
+                "detail": "genesis receipt has an empty previousReceiptHash"
+              }
+            ]
+          },
+          {
+            "receiptHash": "dfa4077c816e6516551995cd6e7876cc114770131b3bdce7bb21ce82057995ac",
+            "action": "memory_approved",
+            "layers": [
+              {
+                "name": "payload canonicalization",
+                "status": "passed",
+                "detail": "payload is canonical and payloadHash matches the canonical digest"
+              },
+              {
+                "name": "envelope integrity",
+                "status": "passed",
+                "detail": "envelope is integral and the stored receipt_hash matches the recomputed digest"
+              },
+              {
+                "name": "signature",
+                "status": "passed",
+                "detail": "Ed25519 signature verifies over the canonical unsigned envelope"
+              },
+              {
+                "name": "signing-key validity",
+                "status": "failed",
+                "detail": "signing key ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e was revoked at 2026-08-05T12:00:00Z; issuance at 2026-08-05T13:00:00Z is at/after revocation"
+              },
+              {
+                "name": "tenant/company scope",
+                "status": "passed",
+                "detail": "payload, envelope and the stored subject share the same tenant/company/fiscal period"
+              },
+              {
+                "name": "chain link",
+                "status": "passed",
+                "detail": "chain link references the immediately preceding receipt hash"
+              }
+            ]
+          }
+        ],
+        "layers": [
+          {
+            "name": "payload canonicalization",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "envelope integrity",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "signature",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "signing-key validity",
+            "status": "failed",
+            "detail": "signing key ed25519:34750f98bd59fcfc946da45aaabe933be154a4b5094e1c4abf42866505f3c97e was revoked at 2026-08-05T12:00:00Z; issuance at 2026-08-05T12:00:00Z is at/after revocation"
+          },
+          {
+            "name": "tenant/company scope",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "chain link",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "principal provenance",
+            "status": "passed",
+            "detail": "all 2 receipts passed"
+          },
+          {
+            "name": "supersession chain",
+            "status": "passed",
+            "detail": "supersession chain is current at memory-1"
+          },
+          {
+            "name": "evidence availability",
+            "status": "passed",
+            "detail": "every declared evidence ref is linked and the current envelope matches the committed head result"
+          },
+          {
+            "name": "rule availability",
+            "status": "passed",
+            "detail": "rule refs are row-backed and the current envelope matches the committed head result"
+          }
+        ]
+      }
+    }
+  }
+}

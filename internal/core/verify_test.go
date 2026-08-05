@@ -15,7 +15,10 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -769,5 +772,241 @@ func TestNewReportStableLayerNames(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("layer[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// ──────────────────────────────────────────────
+// Go↔TS parity fixture (design §7)
+// ──────────────────────────────────────────────
+
+// The fixture structs below are TEST-LOCAL with json tags because the core
+// verification input types (SigningKey, SubjectScope, ActProvenance,
+// SupersessionLink) intentionally carry no JSON tags — they are store-independent
+// pure inputs, not wire objects. The fixture shape is therefore part of the
+// Go↔TS contract (design §7) and mirrors the TS test-local interfaces in
+// core/__tests__/verify.test.ts.
+
+type parityKey struct {
+	Found     bool   `json:"found"`
+	Algorithm string `json:"algorithm"`
+	PublicKey string `json:"publicKey"`
+	CreatedAt string `json:"createdAt"`
+	RevokedAt string `json:"revokedAt"`
+}
+
+func (k parityKey) signingKey() core.SigningKey {
+	return core.SigningKey{Found: k.Found, Algorithm: k.Algorithm, PublicKey: k.PublicKey, CreatedAt: k.CreatedAt, RevokedAt: k.RevokedAt}
+}
+
+type parityScope struct {
+	TenantID       string `json:"tenantId"`
+	CompanyID      string `json:"companyId"`
+	FiscalPeriodID string `json:"fiscalPeriodId"`
+}
+
+func (s parityScope) subjectScope() core.SubjectScope {
+	return core.SubjectScope{TenantID: s.TenantID, CompanyID: s.CompanyID, FiscalPeriodID: s.FiscalPeriodID}
+}
+
+type parityProvenance struct {
+	Action                string   `json:"action"`
+	Timestamp             string   `json:"timestamp"`
+	PrincipalID           string   `json:"principalId"`
+	MembershipID          string   `json:"membershipId"`
+	Roles                 []string `json:"roles"`
+	AuthenticationMethod  string   `json:"authenticationMethod"`
+	AssuranceLevel        string   `json:"assuranceLevel"`
+	AuthenticatedAt       string   `json:"authenticatedAt"`
+	Policy                string   `json:"policy"`
+	Reason                string   `json:"reason"`
+	ReviewedEnvelopeHash  string   `json:"reviewedEnvelopeHash"`
+	ResultingEnvelopeHash string   `json:"resultingEnvelopeHash"`
+	RecordedJudgmentHash  string   `json:"recordedJudgmentHash"`
+}
+
+func (p parityProvenance) act() core.ActProvenance {
+	return core.ActProvenance{
+		Action: p.Action, Timestamp: p.Timestamp, PrincipalID: p.PrincipalID,
+		MembershipID: p.MembershipID, Roles: p.Roles,
+		AuthenticationMethod: p.AuthenticationMethod, AssuranceLevel: p.AssuranceLevel,
+		AuthenticatedAt: p.AuthenticatedAt, Policy: p.Policy, Reason: p.Reason,
+		ReviewedEnvelopeHash: p.ReviewedEnvelopeHash, ResultingEnvelopeHash: p.ResultingEnvelopeHash,
+		RecordedJudgmentHash: p.RecordedJudgmentHash,
+	}
+}
+
+type paritySupersessionLink struct {
+	SubjectID   string      `json:"subjectId"`
+	SuccessorID string      `json:"successorId"`
+	Superseded  bool        `json:"superseded"`
+	Scope       parityScope `json:"scope"`
+}
+
+func (l paritySupersessionLink) link() core.SupersessionLink {
+	return core.SupersessionLink{SubjectID: l.SubjectID, SuccessorID: l.SuccessorID, Superseded: l.Superseded, Scope: l.Scope.subjectScope()}
+}
+
+type parityAvailability struct {
+	DeclaredRefs      []string `json:"declaredRefs"`
+	CurrentLinks      []string `json:"currentLinks"`
+	CurrentEnvelope   string   `json:"currentEnvelope"`
+	CommittedEnvelope string   `json:"committedEnvelope"`
+}
+
+type parityRuleAvailability struct {
+	StoredRefs        []string `json:"storedRefs"`
+	CurrentLinks      []string `json:"currentLinks"`
+	MergedRefs        []string `json:"mergedRefs"`
+	CurrentEnvelope   string   `json:"currentEnvelope"`
+	CommittedEnvelope string   `json:"committedEnvelope"`
+}
+
+type parityExpectedReport struct {
+	Outcome               core.VerificationOutcome   `json:"outcome"`
+	AccountingCorrectness string                     `json:"accountingCorrectness"`
+	Receipts              []core.ReceiptVerification `json:"receipts"`
+	Layers                []core.VerificationLayer   `json:"layers"`
+}
+
+type parityScenario struct {
+	Key      string               `json:"key"`
+	Expected parityExpectedReport `json:"expected"`
+}
+
+type parityFixture struct {
+	Name             string                       `json:"name"`
+	SubjectType      core.SubjectType             `json:"subjectType"`
+	SubjectID        string                       `json:"subjectId"`
+	Seed             string                       `json:"seed"`
+	SubjectScope     parityScope                  `json:"subjectScope"`
+	Keys             map[string]parityKey         `json:"keys"`
+	Receipts         []core.SignedReceipt         `json:"receipts"`
+	Payloads         []core.ReceiptPayload        `json:"payloads"`
+	Provenance       []parityProvenance           `json:"provenance"`
+	SupersessionLink []paritySupersessionLink     `json:"supersessionLinks"`
+	Evidence         parityAvailability           `json:"evidence"`
+	Rules            parityRuleAvailability       `json:"rules"`
+	Scenarios        map[string]parityScenario    `json:"scenarios"`
+}
+
+// buildParityReport assembles the full memory verification report exactly as
+// internal/server/verify_service.go does (design §5): per-receipt six layers in
+// the stable order, the six aggregated top-level layers, the per-receipt
+// diagnostic blocks, then the memory object layers (principal provenance
+// aggregate, supersession chain, evidence availability, rule availability) and
+// Finalize. The TypeScript mirror test runs the IDENTICAL sequence over the same
+// fixture (core/__tests__/verify.test.ts) and must produce byte-identical
+// names, statuses and details.
+func buildParityReport(t *testing.T, f parityFixture, key core.SigningKey) core.VerificationReport {
+	t.Helper()
+	report := *core.NewReport(f.SubjectType, f.SubjectID)
+	perReceipt := make([][]core.VerificationLayer, len(f.Receipts))
+	rawKey := core.DecodeSigningPublicKey(key)
+	prevComputed := ""
+	for i, r := range f.Receipts {
+		payload := f.Payloads[i]
+		payloadJSON := string(core.CanonicalReceiptPayload(payload))
+		storedHash := core.ReceiptHash(r)
+		layers := []core.VerificationLayer{
+			core.VerifyPayloadCanonicalization(payloadJSON, payload, r),
+			core.VerifyEnvelopeIntegrity(r, payload, storedHash),
+			core.VerifySignature(r, rawKey),
+			core.VerifySigningKeyValidity(key, r),
+			core.VerifyTenantCompanyScope(r, payload, f.SubjectScope.subjectScope()),
+		}
+		layers = append(layers, core.VerifyChainLink(r, prevComputed, true))
+		prevComputed = storedHash
+		perReceipt[i] = layers
+	}
+	for col, name := range core.ReceiptLayerNames() {
+		instances := make([]core.VerificationLayer, len(f.Receipts))
+		for i := range f.Receipts {
+			instances[i] = perReceipt[i][col]
+		}
+		report.Layers = append(report.Layers, core.AggregateLayers(name, instances))
+	}
+	for i, r := range f.Receipts {
+		report.Receipts = append(report.Receipts, core.ReceiptVerification{ReceiptHash: core.ReceiptHash(r), Action: r.Action, Layers: perReceipt[i]})
+	}
+	provInstances := make([]core.VerificationLayer, len(f.Payloads))
+	for i, p := range f.Payloads {
+		provInstances[i] = core.VerifyPrincipalProvenance(p, f.Provenance[i].act())
+	}
+	report.Layers = append(report.Layers, core.AggregateLayers(core.LayerPrincipalProvenance, provInstances))
+	links := make([]core.SupersessionLink, len(f.SupersessionLink))
+	for i, l := range f.SupersessionLink {
+		links[i] = l.link()
+	}
+	report.Layers = append(report.Layers, core.VerifySupersessionChain(links, f.SubjectScope.subjectScope()))
+	report.Layers = append(report.Layers, core.VerifyEvidenceAvailability(f.Evidence.DeclaredRefs, f.Evidence.CurrentLinks, f.Evidence.CurrentEnvelope, f.Evidence.CommittedEnvelope))
+	report.Layers = append(report.Layers, core.VerifyRuleAvailability(f.Rules.StoredRefs, f.Rules.CurrentLinks, f.Rules.MergedRefs, f.Rules.CurrentEnvelope, f.Rules.CommittedEnvelope))
+	core.Finalize(&report)
+	return report
+}
+
+// TestVerifyParityFixture runs the SHARED parity fixture (testdata/verify-parity.json)
+// against the Go implementation: two real signed receipts (memory_recorded
+// genesis + memory_approved chained, fixed parity seed), two key records (valid
+// and revoked at issuance) and the EXPECTED ordered report for each scenario
+// (names, statuses, details, outcome and conclusion). The SAME fixture runs from
+// TypeScript (core/__tests__/verify.test.ts): a divergence between runtimes
+// fails one of the two runners, never silently (design §8, AC12).
+func TestVerifyParityFixture(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "verify-parity.json"))
+	if err != nil {
+		t.Fatalf("read parity fixture: %v", err)
+	}
+	var f parityFixture
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("decode parity fixture: %v", err)
+	}
+	if f.Seed != paritySeedHex {
+		t.Fatalf("fixture seed = %q, want the fixed parity seed", f.Seed)
+	}
+	if len(f.Receipts) != 2 {
+		t.Fatalf("fixture must carry a 2-receipt chain, got %d", len(f.Receipts))
+	}
+
+	for name, sc := range f.Scenarios {
+		t.Run(name, func(t *testing.T) {
+			key, ok := f.Keys[sc.Key]
+			if !ok {
+				t.Fatalf("scenario references unknown key %q", sc.Key)
+			}
+			report := buildParityReport(t, f, key.signingKey())
+			if report.SubjectType != string(f.SubjectType) || report.SubjectID != f.SubjectID {
+				t.Errorf("subject = %s %s, want %s %s", report.SubjectType, report.SubjectID, f.SubjectType, f.SubjectID)
+			}
+			if report.Outcome != sc.Expected.Outcome {
+				t.Errorf("outcome = %s, want %s", report.Outcome, sc.Expected.Outcome)
+			}
+			if report.AccountingCorrectness != core.AccountingCorrectnessNotAsserted {
+				t.Errorf("conclusion = %q", report.AccountingCorrectness)
+			}
+			if report.AccountingCorrectness != sc.Expected.AccountingCorrectness {
+				t.Errorf("accountingCorrectness = %q, want %q", report.AccountingCorrectness, sc.Expected.AccountingCorrectness)
+			}
+			if !reflect.DeepEqual(report.Receipts, sc.Expected.Receipts) {
+				t.Errorf("receipts differ:\n got %+v\nwant %+v", report.Receipts, sc.Expected.Receipts)
+			}
+			if len(report.Layers) != len(sc.Expected.Layers) {
+				t.Fatalf("layer count = %d, want %d", len(report.Layers), len(sc.Expected.Layers))
+			}
+			for i := range sc.Expected.Layers {
+				if report.Layers[i] != sc.Expected.Layers[i] {
+					t.Errorf("layer[%d] = %+v, want %+v", i, report.Layers[i], sc.Expected.Layers[i])
+				}
+			}
+			// AC12: the serialized report ends with the exact conclusion in BOTH
+			// the all-pass and the failed report (the fixture pins the constant).
+			data, err := json.Marshal(report)
+			if err != nil {
+				t.Fatalf("marshal report: %v", err)
+			}
+			suffix := `"accountingCorrectness":` + strconv.Quote(sc.Expected.AccountingCorrectness) + `}`
+			if !strings.HasSuffix(string(data), suffix) {
+				t.Errorf("report must end with the exact conclusion: %s", data)
+			}
+		})
 	}
 }
