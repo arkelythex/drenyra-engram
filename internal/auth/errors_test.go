@@ -87,14 +87,21 @@ func TestFrozenCodes(t *testing.T) {
 		CodeEnvelopeMismatch,
 		CodeAlreadyDecided,
 		CodeIdempotencyConflict,
+		CodeJudgmentNotFound,
+		CodeRelationNotProposable,
+		CodeResolutionRequired,
+		CodeProposalUnauthorized,
+		CodeInvalidJudgmentTransition,
+		CodeJudgmentConflict,
+		CodeJudgmentHashMismatch,
 	}
 	for _, code := range want {
 		if code == "" {
 			t.Errorf("frozen code constant must not be empty")
 		}
 	}
-	if len(want) != 14 {
-		t.Errorf("frozen code set changed: got %d codes, want 14", len(want))
+	if len(want) != 21 {
+		t.Errorf("frozen code set changed: got %d codes, want 21", len(want))
 	}
 }
 

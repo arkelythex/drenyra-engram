@@ -28,6 +28,20 @@ const (
 	CodeIdempotencyConflict       = "IDEMPOTENCY_CONFLICT"
 )
 
+// Frozen error codes (v0.4.0 Step 2 — judgment lifecycle; do not rename or
+// reuse). JUDGMENT_HASH_MISMATCH is the judgment-hash analogue of
+// ENVELOPE_MISMATCH: a separately versioned contract (judgment hashes are
+// NEVER compared against envelope hashes).
+const (
+	CodeJudgmentNotFound          = "JUDGMENT_NOT_FOUND"
+	CodeRelationNotProposable     = "RELATION_NOT_PROPOSABLE"
+	CodeResolutionRequired        = "RESOLUTION_REQUIRED"
+	CodeProposalUnauthorized      = "PROPOSAL_UNAUTHORIZED"
+	CodeInvalidJudgmentTransition = "INVALID_JUDGMENT_TRANSITION"
+	CodeJudgmentConflict          = "JUDGMENT_CONFLICT"
+	CodeJudgmentHashMismatch      = "JUDGMENT_HASH_MISMATCH"
+)
+
 // Error is the typed approval error: a frozen code plus a human message.
 // Only ENVELOPE_MISMATCH carries ExpectedEnvelopeHash/ActualEnvelopeHash; all
 // other codes leave them empty.
@@ -102,4 +116,12 @@ var (
 	ErrEnvelopeMismatch         = &Error{Code: CodeEnvelopeMismatch, Message: "envelope mismatch"}
 	ErrAlreadyDecided           = &Error{Code: CodeAlreadyDecided, Message: "already decided"}
 	ErrIdempotencyConflict      = &Error{Code: CodeIdempotencyConflict, Message: "idempotency conflict"}
+	// ── v0.4.0 Step 2 judgment lifecycle codes ──
+	ErrJudgmentNotFound          = &Error{Code: CodeJudgmentNotFound, Message: "judgment not found"}
+	ErrRelationNotProposable     = &Error{Code: CodeRelationNotProposable, Message: "relation is not proposable"}
+	ErrResolutionRequired        = &Error{Code: CodeResolutionRequired, Message: "a non-empty resolution is required"}
+	ErrProposalUnauthorized      = &Error{Code: CodeProposalUnauthorized, Message: "proposal unauthorized"}
+	ErrInvalidJudgmentTransition = &Error{Code: CodeInvalidJudgmentTransition, Message: "invalid judgment transition"}
+	ErrJudgmentConflict          = &Error{Code: CodeJudgmentConflict, Message: "judgment conflict"}
+	ErrJudgmentHashMismatch      = &Error{Code: CodeJudgmentHashMismatch, Message: "judgment hash mismatch"}
 )

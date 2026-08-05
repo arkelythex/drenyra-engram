@@ -239,7 +239,9 @@ export interface ApprovalAuthorizationDecision {
 
 /**
  * Frozen approval error codes (v0.4.0 Step 1) — the single source for the
- * HTTP/MCP mapping. Mirrors the codes in auth/errors.go.
+ * HTTP/MCP mapping. Mirrors the codes in auth/errors.go. Extended in
+ * v0.4.0 Step 2 with the frozen judgment lifecycle codes; the existing
+ * codes are unchanged.
  */
 export type ApprovalErrorCode =
 	| "AUTHENTICATION_REQUIRED"
@@ -255,8 +257,15 @@ export type ApprovalErrorCode =
 	| "INVALID_TRANSITION"
 	| "ENVELOPE_MISMATCH"
 	| "ALREADY_DECIDED"
-	| "IDEMPOTENCY_CONFLICT";
-
+	| "IDEMPOTENCY_CONFLICT"
+	| "JUDGMENT_NOT_FOUND"
+	| "RELATION_NOT_PROPOSABLE"
+	| "RESOLUTION_REQUIRED"
+	| "PROPOSAL_UNAUTHORIZED"
+	| "INVALID_JUDGMENT_TRANSITION"
+	| "JUDGMENT_CONFLICT"
+	| "JUDGMENT_HASH_MISMATCH";
+    
 export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"AUTHENTICATION_REQUIRED",
 	"PRINCIPAL_INVALID",
@@ -272,6 +281,13 @@ export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"ENVELOPE_MISMATCH",
 	"ALREADY_DECIDED",
 	"IDEMPOTENCY_CONFLICT",
+	"JUDGMENT_NOT_FOUND",
+	"RELATION_NOT_PROPOSABLE",
+	"RESOLUTION_REQUIRED",
+	"PROPOSAL_UNAUTHORIZED",
+	"INVALID_JUDGMENT_TRANSITION",
+	"JUDGMENT_CONFLICT",
+	"JUDGMENT_HASH_MISMATCH",
 ];
 
 /**
@@ -872,3 +888,238 @@ export function assertValidMemory(memory: AccountingMemory): void {
 		);
 	}
 }
+
+
+    // ──────────────────────────────────────────────
+    // v0.4.0 Step 2 — accounting judgment vocabulary
+    // ──────────────────────────────────────────────
+
+    /**
+     * Lifecycle state of an accounting judgment (v0.4.0 Step 2). Mirrors
+     * core.JudgmentStatus. Legal machine: proposed → confirmed | rejected |
+     * withdrawn | superseded; confirmed → superseded ONLY; rejected/withdrawn/
+     * superseded are terminal.
+     */
+    export const JUDGMENT_STATUSES = [
+    	"proposed",
+    	"confirmed",
+    	"rejected",
+    	"withdrawn",
+    	"superseded",
+    ] as const;
+
+    export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
+
+    /**
+     * An adjudication act over two immutable observations (v0.4.0 Step 2) — NOT
+     * a KindDecision memory. Agents/systems may propose and withdraw their own
+     * proposals (proposer is provenance ONLY, never authority); only a
+     * VerifiedApprovalPrincipal may confirm or reject. Mirrors
+     * core.AccountingJudgment.
+     */
+    export interface AccountingJudgment {
+    	id: string;
+    	tenantId: string;
+    	companyId: string;
+    	/** Set only when both observations share a fiscal period. */
+    	fiscalPeriodId?: string;
+    	fromId: string;
+    	toId: string;
+    	relation: MemoryRelation;
+    	status: JudgmentStatus;
+    	/** Provenance only — agent|system; never authority. */
+    	proposer: MemorySource;
+    	proposalReason: string;
+    	/** Empty until confirmed/rejected. */
+    	resolution?: string;
+    	/** Absent until an authenticated decision. */
+    	adjudicator?: PrincipalSnapshot;
+    	/** Empty until an authenticated decision. */
+    	policyVersion?: string;
+    	/** Correction target declared by the successor. */
+    	predecessorId?: string;
+    	/** Successor routing stored on the old row. */
+    	supersedesId?: string;
+    	proposedAt: string;
+    	updatedAt: string;
+    	/** Set when decided (confirmed/rejected/superseded). */
+    	decidedAt?: string;
+    }
+
+    /**
+     * Proposal command (v0.4.0 Step 2). Deliberately carries NO subject,
+     * membership, role, actor-kind or assurance fields (compile-level contract):
+     * the proposer Source arrives separately as provenance-only caller context,
+     * and authority never travels in the transport payload. Mirrors
+     * core.ProposeJudgmentCommand.
+     */
+    export interface ProposeJudgmentCommand {
+    	fromId: string;
+    	toId: string;
+    	relation: MemoryRelation;
+    	/** Proposer's justification (REQUIRED, non-whitespace). */
+    	reason: string;
+    	/** Idempotency key scoped to (tenant, requestId). */
+    	requestId: string;
+    	/** Names an existing judgment this proposal corrects. */
+    	predecessorId?: string;
+    }
+
+    /**
+     * Confirmation command (v0.4.0 Step 2). Resolution is the professional
+     * human resolution (REQUIRED); expectedJudgmentHash is the reviewed
+     * proposed hash the adjudicator actually saw. Mirrors
+     * core.ConfirmJudgmentCommand.
+     */
+    export interface ConfirmJudgmentCommand {
+    	judgmentId: string;
+    	resolution: string;
+    	expectedJudgmentHash: string;
+    	requestId: string;
+    }
+
+    /**
+     * Rejection command (v0.4.0 Step 2). Reason is the human reason, stored as
+     * the resolution (REQUIRED); expectedJudgmentHash is the reviewed proposed
+     * hash the adjudicator actually saw. Mirrors core.RejectJudgmentCommand.
+     */
+    export interface RejectJudgmentCommand {
+    	judgmentId: string;
+    	reason: string;
+    	expectedJudgmentHash: string;
+    	requestId: string;
+    }
+
+    /**
+     * Withdrawal command (v0.4.0 Step 2): withdraws the caller's OWN proposed
+     * judgment. Mirrors core.WithdrawJudgmentCommand.
+     */
+    export interface WithdrawJudgmentCommand {
+    	judgmentId: string;
+    	requestId: string;
+    }
+
+    const PROPOSABLE_RELATIONS: readonly MemoryRelation[] = [
+    	"supports",
+    	"contradicts",
+    	"explains",
+    	"reconciles",
+    	"reverses",
+    	"supersedes",
+    ];
+
+    /**
+     * The six proposable judgment relations in fixed order. `conflicts_with` is
+     * a legacy sync/discovery marker: it can motivate a proposal but is neither
+     * accepted as a proposal relation nor removed automatically (design §3).
+     * Mirrors core.ProposableRelations.
+     */
+    export function proposableRelations(): MemoryRelation[] {
+    	return [...PROPOSABLE_RELATIONS];
+    }
+
+    /**
+     * Reports whether a relation is one of the six proposable relations.
+     * related/conflicts_with/derived_from/... are never proposable. Mirrors
+     * core.IsProposableRelation.
+     */
+    export function isProposableRelation(relation: MemoryRelation): boolean {
+    	return PROPOSABLE_RELATIONS.includes(relation);
+    }
+
+    /**
+     * Canonical proposer JSON shape: keys sorted alphabetically (actorId,
+     * actorKind, model, reference, session, system), empty optional fields
+     * omitted — byte-identical with core's canonicalSource (Go).
+     */
+    function canonicalJudgmentProposer(
+    	source: MemorySource,
+    ): Record<string, string> {
+    	const out: Record<string, string> = {};
+    	if (source.actorId !== undefined && source.actorId !== "") {
+    		out.actorId = source.actorId;
+    	}
+    	out.actorKind = source.actorKind;
+    	if (source.model !== undefined && source.model !== "") {
+    		out.model = source.model;
+    	}
+    	if (source.reference !== undefined && source.reference !== "") {
+    		out.reference = source.reference;
+    	}
+    	if (source.session !== undefined && source.session !== "") {
+    		out.session = source.session;
+    	}
+    	out.system = source.system;
+    	return out;
+    }
+
+    /**
+     * Canonical adjudicator snapshot: roles sorted and deduplicated; field order
+     * matches auth.PrincipalSnapshot (subjectId, membershipId, roles,
+     * authenticationMethod, assuranceLevel, authenticatedAt) so Go and TS
+     * produce identical JSON bytes. Mirrors core.canonicalSnapshot (Go).
+     */
+    function canonicalJudgmentSnapshot(
+    	snapshot: PrincipalSnapshot,
+    ): PrincipalSnapshot {
+    	return {
+    		subjectId: snapshot.subjectId,
+    		membershipId: snapshot.membershipId,
+    		roles: [...new Set(snapshot.roles)].sort(),
+    		authenticationMethod: snapshot.authenticationMethod,
+    		assuranceLevel: snapshot.assuranceLevel,
+    		authenticatedAt: snapshot.authenticatedAt,
+    	};
+    }
+
+    /**
+     * Canonical SHA-256 (hex) of a judgment's REVIEWED or CONFIRMED state over
+     * canonical JSON — byte-identical with core.ComputeJudgmentHash (Go). The
+     * payload key order below is the byte contract (Go marshals its payload
+     * struct in this exact order).
+     *
+     * Documented field coverage per status:
+     * - proposed (and every non-confirmed status): id, tenantId, companyId,
+     *   fiscalPeriodId ("" when absent), fromId, toId, relation, status,
+     *   canonical proposer (sorted keys, empties omitted), proposalReason,
+     *   predecessorId ("" when absent), proposedAt. Routing fields
+     *   (supersedesId) and updatedAt NEVER participate.
+     * - confirmed: the base fields PLUS resolution, the canonical adjudicator
+     *   snapshot (sorted roles), policyVersion, status and decidedAt.
+     *
+     * Rejected/withdrawn/superseded judgments hash with the reviewed shape
+     * (decided fields never participate).
+     */
+    export async function computeJudgmentHash(
+    	judgment: AccountingJudgment,
+    ): Promise<string> {
+    	const payload: Record<string, unknown> = {
+    		id: judgment.id,
+    		tenantId: judgment.tenantId,
+    		companyId: judgment.companyId,
+    		fiscalPeriodId: judgment.fiscalPeriodId ?? "",
+    		fromId: judgment.fromId,
+    		toId: judgment.toId,
+    		relation: judgment.relation,
+    		status: judgment.status,
+    		proposer: canonicalJudgmentProposer(judgment.proposer),
+    		proposalReason: judgment.proposalReason,
+    		predecessorId: judgment.predecessorId ?? "",
+    		proposedAt: judgment.proposedAt,
+    	};
+    	if (judgment.status === "confirmed") {
+    		if (judgment.resolution !== undefined && judgment.resolution !== "") {
+    			payload.resolution = judgment.resolution;
+    		}
+    		if (judgment.adjudicator !== undefined) {
+    			payload.adjudicator = canonicalJudgmentSnapshot(judgment.adjudicator);
+    		}
+    		if (judgment.policyVersion !== undefined && judgment.policyVersion !== "") {
+    			payload.policyVersion = judgment.policyVersion;
+    		}
+    		if (judgment.decidedAt !== undefined && judgment.decidedAt !== "") {
+    			payload.decidedAt = judgment.decidedAt;
+    		}
+    	}
+    	return sha256Hex(JSON.stringify(payload));
+    }
