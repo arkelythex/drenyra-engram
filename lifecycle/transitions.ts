@@ -28,11 +28,22 @@ import {
 	type ActorKind,
 	type ApprovalResult,
 	type ApproveMemoryCommand,
+	type ConfirmJudgmentCommand,
+	type ConfirmJudgmentResult,
 	type FiscalEffect,
+	type JudgmentStatus,
+	type MemorySource,
 	type MemoryStatus,
+	type ProposeJudgmentCommand,
+	type ProposeJudgmentResult,
+	type RejectJudgmentCommand,
+	type RejectJudgmentResult,
 	type VerifiedApprovalPrincipal,
+	type WithdrawJudgmentCommand,
+	type WithdrawJudgmentResult,
+	isProposableRelation,
 } from "../core/types.js";
-import type { ApprovalPolicyFn, MemoryStore } from "../store/memory-store.js";
+import type { ApprovalPolicyFn, JudgmentPolicyFn, JudgmentStore, MemoryStore } from "../store/memory-store.js";
 
 export const INVALID_TRANSITION_ERROR = "INVALID_TRANSITION";
 export const GATE_REQUIRES_HUMAN_ERROR = "GATE_REQUIRES_HUMAN";
@@ -193,23 +204,233 @@ export async function approveMemory(
 	return store.approveMemory(command, principal, policy);
 }
 
-/**
- * Apply a gated status transition (approve/reject/void) to a stored memory,
- * recording an audit-trail entry. The store applies the transition; legality
- * and the human gate are checked here (mirror of core.Approve/Reject/Void).
- */
-export function applyGateTransition(
-	store: MemoryStore,
-	memoryId: string,
-	to: MemoryStatus,
-	meta: TransitionMeta,
-): AccountingMemory {
-	const memory = store.findById(memoryId);
-	if (memory === undefined) {
-		throw new Error(`MEMORY_NOT_FOUND: ${memoryId}`);
-	}
-	if (to === "approved") approve(memory, meta);
-	else if (to === "rejected") reject(memory, meta);
-	else if (to === "voided") voidMemory(memory, meta);
-	return store.applyStatusTransition(memoryId, to, meta);
-}
+    /**
+     * Apply a gated status transition (approve/reject/void) to a stored memory,
+     * recording an audit-trail entry. The store applies the transition; legality
+     * and the human gate are checked here (mirror of core.Approve/Reject/Void).
+     */
+    export function applyGateTransition(
+    	store: MemoryStore,
+    	memoryId: string,
+    	to: MemoryStatus,
+    	meta: TransitionMeta,
+    ): AccountingMemory {
+    	const memory = store.findById(memoryId);
+    	if (memory === undefined) {
+    		throw new Error(`MEMORY_NOT_FOUND: ${memoryId}`);
+    	}
+    	if (to === "approved") approve(memory, meta);
+    	else if (to === "rejected") reject(memory, meta);
+    	else if (to === "voided") voidMemory(memory, meta);
+    	return store.applyStatusTransition(memoryId, to, meta);
+    }
+
+    // ──────────────────────────────────────────────
+    // Judgment lifecycle (v0.4.0 Step 2 — adjudicable conflicts)
+    // ──────────────────────────────────────────────
+
+    /**
+     * Only an agent|system Source may propose (provenance-only — the proposal
+     * Source records the claim, it never authorizes). Humans propose nothing:
+     * their authority arrives as a verified principal at confirm/reject time.
+     * Mirrors core.CanPropose.
+     */
+    export function canProposeJudgment(source: MemorySource): boolean {
+    	return source.actorKind === "agent" || source.actorKind === "system";
+    }
+
+    /** Only a proposed judgment can be confirmed. Mirrors core.CanConfirm. */
+    export function canConfirmJudgment(status: JudgmentStatus): boolean {
+    	return status === "proposed";
+    }
+
+    /**
+     * Only a proposed judgment can be rejected. Named canRejectJudgment because
+     * the v2 memory lifecycle already owns canReject(MemoryStatus). Mirrors
+     * core.CanRejectJudgment.
+     */
+    export function canRejectJudgment(status: JudgmentStatus): boolean {
+    	return status === "proposed";
+    }
+
+    /** Only a proposed judgment can be withdrawn by its proposer. Mirrors core.CanWithdraw. */
+    export function canWithdrawJudgment(status: JudgmentStatus): boolean {
+    	return status === "proposed";
+    }
+
+    /**
+     * Only a confirmed judgment can be superseded (a correction supersedes its
+     * predecessor while atomically confirming). Mirrors core.CanSupersedeConfirmed.
+     */
+    export function canSupersedeConfirmed(status: JudgmentStatus): boolean {
+    	return status === "confirmed";
+    }
+
+    /**
+     * Adjacency table of the judgment machine, independent of any stored
+     * judgment: proposed → confirmed|rejected|withdrawn|superseded; confirmed →
+     * superseded ONLY; terminal states never re-open. Mirrors
+     * core.IsLegalJudgmentTransition.
+     */
+    export function isLegalJudgmentTransition(
+    	from: JudgmentStatus,
+    	to: JudgmentStatus,
+    ): boolean {
+    	switch (from) {
+    		case "proposed":
+    			return (
+    				to === "confirmed" ||
+    				to === "rejected" ||
+    				to === "withdrawn" ||
+    				to === "superseded"
+    			);
+    		case "confirmed":
+    			return to === "superseded";
+    	}
+    	return false;
+    }
+
+    /**
+     * Propose a judgment (v0.4.0 Step 2) — mirror of server.ProposeJudgment.
+     * Validates command syntax and proposer provenance (agent|system ONLY) then
+     * delegates the WHOLE state change to the store's atomic proposal; there is
+     * no read + mutate composition. The caller Source is provenance only and is
+     * a SEPARATE argument — it never travels inside the command.
+     */
+    export async function proposeJudgment(
+    	command: ProposeJudgmentCommand,
+    	caller: MemorySource,
+    	store: JudgmentStore,
+    ): Promise<ProposeJudgmentResult> {
+    	if (
+    		command.fromId.trim().length === 0 ||
+    		command.toId.trim().length === 0 ||
+    		command.reason.trim().length === 0 ||
+    		command.requestId.trim().length === 0
+    	) {
+    		throw new ApprovalError(
+    			"MEMORY_NOT_FOUND",
+    			"proposal command is incomplete (fromId, toId, reason and requestId are required)",
+    		);
+    	}
+    	if (!isProposableRelation(command.relation)) {
+    		throw new ApprovalError(
+    			"RELATION_NOT_PROPOSABLE",
+    			"relation is not proposable (supports|contradicts|explains|reconciles|reverses|supersedes only)",
+    		);
+    	}
+    	if (command.fromId === command.toId) {
+    		throw new ApprovalError(
+    			"MEMORY_NOT_FOUND",
+    			"a judgment requires two DISTINCT observations (fromId and toId must differ)",
+    		);
+    	}
+    	if (!canProposeJudgment(caller)) {
+    		throw new ApprovalError(
+    			"PROPOSAL_UNAUTHORIZED",
+    			"only agents and systems may propose judgments (provenance, never authority)",
+    		);
+    	}
+    	return store.proposeJudgment(command, caller);
+    }
+
+    /**
+     * Confirm a proposed judgment (v0.4.0 Step 2) — mirror of
+     * server.ConfirmJudgment. The principal is ALWAYS a separate verified
+     * argument; agent-confirm is IMPOSSIBLE by construction because the command
+     * has no actor-kind and the principal is a branded factory product. The
+     * store owns the whole authenticated act (hash comparison, policy, guarded
+     * transition, event, correction supersession).
+     */
+    export async function confirmJudgment(
+    	command: ConfirmJudgmentCommand,
+    	principal: VerifiedApprovalPrincipal,
+    	store: JudgmentStore,
+    	policy?: JudgmentPolicyFn,
+    ): Promise<ConfirmJudgmentResult> {
+    	if (principal.subjectId.trim() === "") {
+    		throw new ApprovalError(
+    			"PRINCIPAL_INVALID",
+    			"no verified approval principal present",
+    		);
+    	}
+    	if (
+    		command.judgmentId.trim().length === 0 ||
+    		command.expectedJudgmentHash.trim().length === 0 ||
+    		command.requestId.trim().length === 0
+    	) {
+    		throw new ApprovalError(
+    			"JUDGMENT_NOT_FOUND",
+    			"confirm command is incomplete (judgmentId, expectedJudgmentHash and requestId are required)",
+    		);
+    	}
+    	if (command.resolution.trim().length === 0) {
+    		throw new ApprovalError(
+    			"RESOLUTION_REQUIRED",
+    			"a non-empty professional resolution is required for confirmation",
+    		);
+    	}
+    	return store.confirmJudgment(command, principal, policy);
+    }
+
+    /**
+     * Reject a proposed judgment (v0.4.0 Step 2) — mirror of server.RejectJudgment.
+     * The human reason is stored as the resolution; the proposal reason is never
+     * silently promoted into a professional resolution.
+     */
+    export async function rejectJudgment(
+    	command: RejectJudgmentCommand,
+    	principal: VerifiedApprovalPrincipal,
+    	store: JudgmentStore,
+    	policy?: JudgmentPolicyFn,
+    ): Promise<RejectJudgmentResult> {
+    	if (principal.subjectId.trim() === "") {
+    		throw new ApprovalError(
+    			"PRINCIPAL_INVALID",
+    			"no verified approval principal present",
+    		);
+    	}
+    	if (
+    		command.judgmentId.trim().length === 0 ||
+    		command.expectedJudgmentHash.trim().length === 0 ||
+    		command.requestId.trim().length === 0
+    	) {
+    		throw new ApprovalError(
+    			"JUDGMENT_NOT_FOUND",
+    			"reject command is incomplete (judgmentId, expectedJudgmentHash and requestId are required)",
+    		);
+    	}
+    	if (command.reason.trim().length === 0) {
+    		throw new ApprovalError(
+    			"RESOLUTION_REQUIRED",
+    			"a non-empty human reason is required for rejection",
+    		);
+    	}
+    	return store.rejectJudgment(command, principal, policy);
+    }
+
+    /**
+     * Withdraw the caller's OWN proposed judgment (v0.4.0 Step 2) — mirror of
+     * server.WithdrawJudgment. The SAME exact proposer identity is required
+     * (provenance continuity — never professional authorization); the store
+     * enforces it inside the atomic withdrawal.
+     */
+    export async function withdrawJudgment(
+    	command: WithdrawJudgmentCommand,
+    	caller: MemorySource,
+    	store: JudgmentStore,
+    ): Promise<WithdrawJudgmentResult> {
+    	if (command.judgmentId.trim().length === 0 || command.requestId.trim().length === 0) {
+    		throw new ApprovalError(
+    			"JUDGMENT_NOT_FOUND",
+    			"withdraw command is incomplete (judgmentId and requestId are required)",
+    		);
+    	}
+    	if (!canProposeJudgment(caller)) {
+    		throw new ApprovalError(
+    			"PROPOSAL_UNAUTHORIZED",
+    			"only the proposing agent/system may withdraw",
+    		);
+    	}
+    	return store.withdrawJudgment(command, caller);
+    }

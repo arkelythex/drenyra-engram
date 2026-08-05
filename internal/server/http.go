@@ -94,6 +94,10 @@ type HTTPServer struct {
 	// approvalStore is the atomic approval surface the authenticated route
 	// delegates to (one BEGIN IMMEDIATE store operation).
 	approvalStore ApprovalStore
+	// judgmentStore is the atomic judgment surface the adjudication routes
+	// delegate to (one BEGIN IMMEDIATE store operation per transition —
+	// propose/confirm/reject/withdraw, v0.4.0 Step 2).
+	judgmentStore JudgmentStore
 	// legacyApprove mounts the deprecated v0.3 POST /v1/observations/{id}/approve
 	// route. Disabled by default (v0.5.0 removes it); daemons opt in explicitly
 	// for the migration window (design section 6, resolved decision 2).
@@ -111,6 +115,9 @@ func NewHTTPServer(api *API, token string) *HTTPServer {
 	}
 	if approval, ok := api.Store.(ApprovalStore); ok {
 		h.approvalStore = approval
+	}
+	if judgments, ok := api.Store.(JudgmentStore); ok {
+		h.judgmentStore = judgments
 	}
 	return h
 }
@@ -148,6 +155,16 @@ func (h *HTTPServer) Handler() http.Handler {
 	// ONLY from the Authorization credential; the strict body can never supply
 	// authority (actor/actorKind/subjectId/roles are REJECTED, never ignored).
 	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.authenticate(h.handleApprovalApprove))
+	// Authenticated adjudication (v0.4.0 Step 2 — adjudicable conflicts):
+	// proposal and withdrawal bodies carry a provenance-only source
+	// (agent|system — NEVER authority); confirm and reject derive the principal
+	// ONLY from the Authorization credential and their STRICT bodies reject any
+	// authority field (actor/actorKind/subjectId/roles → 400, the ADR-003 gap
+	// closure for adjudication, design §7).
+	mux.HandleFunc("POST /accounting/judgments", h.requireToken(h.handleJudgmentPropose))
+	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/confirm", h.authenticate(h.handleJudgmentConfirm))
+	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/reject", h.authenticate(h.handleJudgmentReject))
+	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/withdraw", h.requireToken(h.handleJudgmentWithdraw))
 	// Deprecated v0.3 approval surface: stays compiled but is DISABLED by default
 	// in the daemon (v0.5.0 removes it). Mounted only behind an explicit opt-in
 	// (EnableLegacyApprove) for the migration window.
@@ -516,6 +533,307 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 			Error:                httpErrorDetail{Code: e.Code, Message: e.Message},
 			ExpectedEnvelopeHash: e.ExpectedEnvelopeHash,
 			ActualEnvelopeHash:   e.ActualEnvelopeHash,
+		})
+		return
+	}
+	writeHTTPError(w, status, e.Code, e.Message)
+}
+
+// ──────────────────────────────────────────────
+// Authenticated adjudication (v0.4.0 Step 2 — design §7)
+// ──────────────────────────────────────────────
+
+// judgmentSourceInput is the provenance-only source shape of a proposal or
+// withdrawal body: system/actorId/actorKind/session. It is NEVER authority —
+// an agent|system Source can propose and withdraw, but only the verified
+// principal from the Authorization credential may confirm or reject.
+type judgmentSourceInput struct {
+	System    string `json:"system"`
+	ActorID   string `json:"actorId"`
+	ActorKind string `json:"actorKind"`
+	Session   string `json:"session"`
+}
+
+// judgmentProposeInput is the STRICT proposal body (design §7): the pair, the
+// proposable relation, the reason, an optional predecessorId and the
+// provenance-only source. Any authority field in the body is REJECTED with
+// 400 (DisallowUnknownFields), never ignored.
+type judgmentProposeInput struct {
+	FromID        string              `json:"fromId"`
+	ToID          string              `json:"toId"`
+	Relation      core.Relation       `json:"relation"`
+	Reason        string              `json:"reason"`
+	PredecessorID string              `json:"predecessorId"`
+	Source        judgmentSourceInput `json:"source"`
+}
+
+// judgmentConfirmInput is the STRICT authenticated body of the confirm route:
+// exactly the professional resolution plus the reviewed judgment hash. It
+// carries NO authority fields (actor/actorKind/subjectId/roles are REJECTED
+// with 400 — the ADR-003 gap closure for adjudication).
+type judgmentConfirmInput struct {
+	Resolution           string `json:"resolution"`
+	ExpectedJudgmentHash string `json:"expectedJudgmentHash"`
+}
+
+type judgmentRejectInput struct {
+	Reason               string `json:"reason"`
+	ExpectedJudgmentHash string `json:"expectedJudgmentHash"`
+}
+
+// judgmentWithdrawInput is the STRICT withdrawal body: the provenance-only
+// source; no authority fields and no reason/resolution.
+type judgmentWithdrawInput struct {
+	Source judgmentSourceInput `json:"source"`
+}
+
+// judgmentIDFromPath extracts the judgment id from POST
+// /accounting/judgments/{judgmentId}/<action>: the single path segment between
+// the fixed prefixes/suffixes (the same TrimPrefix/TrimSuffix pattern as
+// handleApprovalApprove).
+func judgmentIDFromPath(path, action string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(path, "/accounting/judgments/"), "/"+action)
+}
+
+// handleJudgmentPropose is the provenance-only proposal route: an agent/system
+// Source proposes a judgment over two observations. 201 on success.
+func (h *HTTPServer) handleJudgmentPropose(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input judgmentProposeInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.judgmentStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "judgment store is not available")
+		return
+	}
+	cmd := core.ProposeJudgmentCommand{
+		FromID:        input.FromID,
+		ToID:          input.ToID,
+		Relation:      input.Relation,
+		Reason:        input.Reason,
+		RequestID:     requestID,
+		PredecessorID: input.PredecessorID,
+	}
+	caller := core.Source{
+		System:    input.Source.System,
+		ActorID:   input.Source.ActorID,
+		ActorKind: core.ActorKind(input.Source.ActorKind),
+		Session:   input.Source.Session,
+	}
+	result, err := ProposeJudgment(r.Context(), h.judgmentStore, cmd, caller)
+	if err != nil {
+		writeJudgmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, result)
+}
+
+// handleJudgmentConfirm is the AUTHENTICATED confirmation route: the principal
+// comes ONLY from the resolved session credential; the strict body can never
+// supply authority. 200 on success.
+func (h *HTTPServer) handleJudgmentConfirm(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeJudgmentError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input judgmentConfirmInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.judgmentStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "judgment store is not available")
+		return
+	}
+	cmd := core.ConfirmJudgmentCommand{
+		JudgmentID:           judgmentIDFromPath(r.URL.Path, "confirm"),
+		Resolution:           input.Resolution,
+		ExpectedJudgmentHash: input.ExpectedJudgmentHash,
+		RequestID:            requestID,
+	}
+	result, err := ConfirmJudgment(r.Context(), h.judgmentStore, authz.NewJudgmentPolicy(), cmd, principal)
+	if err != nil {
+		writeJudgmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleJudgmentReject is the AUTHENTICATED rejection route: same strict
+// surface as confirm, with the human reason stored as the resolution.
+func (h *HTTPServer) handleJudgmentReject(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeJudgmentError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input judgmentRejectInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.judgmentStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "judgment store is not available")
+		return
+	}
+	cmd := core.RejectJudgmentCommand{
+		JudgmentID:           judgmentIDFromPath(r.URL.Path, "reject"),
+		Reason:               input.Reason,
+		ExpectedJudgmentHash: input.ExpectedJudgmentHash,
+		RequestID:            requestID,
+	}
+	result, err := RejectJudgment(r.Context(), h.judgmentStore, authz.NewJudgmentPolicy(), cmd, principal)
+	if err != nil {
+		writeJudgmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleJudgmentWithdraw is the provenance-only withdrawal route: the SAME
+// exact proposer identity that proposed may withdraw (provenance continuity,
+// never professional authorization). 200 on success.
+func (h *HTTPServer) handleJudgmentWithdraw(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input judgmentWithdrawInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	if h.judgmentStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "judgment store is not available")
+		return
+	}
+	cmd := core.WithdrawJudgmentCommand{
+		JudgmentID: judgmentIDFromPath(r.URL.Path, "withdraw"),
+		RequestID:  requestID,
+	}
+	caller := core.Source{
+		System:    input.Source.System,
+		ActorID:   input.Source.ActorID,
+		ActorKind: core.ActorKind(input.Source.ActorKind),
+		Session:   input.Source.Session,
+	}
+	result, err := WithdrawJudgment(r.Context(), h.judgmentStore, cmd, caller)
+	if err != nil {
+		writeJudgmentError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// judgmentMismatchBody is the ONLY judgment error shape with extra fields: the
+// expected and actual judgment hashes (design §6 — judgment content NEVER
+// appears in errors, and judgment hashes are never compared against envelope
+// hashes).
+type judgmentMismatchBody struct {
+	Error                httpErrorDetail `json:"error"`
+	ExpectedJudgmentHash string          `json:"expectedJudgmentHash"`
+	ActualJudgmentHash   string          `json:"actualJudgmentHash"`
+}
+
+// judgmentErrorStatus maps a frozen judgment/adjudication code to its HTTP
+// status (design §6). Auth codes keep the Step 1 mappings; unmapped codes fail
+// closed (not ok).
+func judgmentErrorStatus(code string) (int, bool) {
+	switch code {
+	case auth.CodeAuthenticationRequired, auth.CodePrincipalInvalid:
+		return http.StatusUnauthorized, true
+	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
+		auth.CodeRoleNotAuthorized, auth.CodeAssuranceTooLow, auth.CodeProposalUnauthorized:
+		return http.StatusForbidden, true
+	case auth.CodeRelationNotProposable, auth.CodeResolutionRequired:
+		return http.StatusBadRequest, true
+	case auth.CodeJudgmentNotFound, auth.CodeMemoryNotFound:
+		return http.StatusNotFound, true
+	case auth.CodeInvalidJudgmentTransition, auth.CodeJudgmentConflict, auth.CodeJudgmentHashMismatch,
+		auth.CodeIdempotencyConflict, auth.CodeAlreadyDecided:
+		return http.StatusConflict, true
+	}
+	return 0, false
+}
+
+// writeJudgmentError writes the judgment error envelope. Only
+// JUDGMENT_HASH_MISMATCH adds expectedJudgmentHash/actualJudgmentHash; every
+// other code carries just the frozen code and message. Never include judgment
+// content.
+func writeJudgmentError(w http.ResponseWriter, err error) {
+	var e *auth.Error
+	if !errors.As(err, &e) {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "judgment operation failed")
+		return
+	}
+	status, ok := judgmentErrorStatus(e.Code)
+	if !ok {
+		// Fail closed: an unmapped frozen code is a server defect, never a guess.
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL",
+			"judgment error code "+e.Code+" is not mapped to a transport status")
+		return
+	}
+	if e.Code == auth.CodeJudgmentHashMismatch {
+		writeJSON(w, status, judgmentMismatchBody{
+			Error:                httpErrorDetail{Code: e.Code, Message: e.Message},
+			ExpectedJudgmentHash: e.ExpectedJudgmentHash,
+			ActualJudgmentHash:   e.ActualJudgmentHash,
 		})
 		return
 	}

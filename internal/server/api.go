@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/store"
@@ -440,52 +441,20 @@ func (a *API) LinkRules(memoryID string, refs []string, actor string) ([]string,
 }
 
 // ──────────────────────────────────────────────
-// Judge — documented professional resolution of a conflict
+// Judge — DEPRECATED legacy caller-declared adjudication (design §4)
 // ──────────────────────────────────────────────
 
-// Judge records a professional adjudication of a conflict: it creates a
-// decision memory (kind decision, informative fiscal effect) approved by the
-// human actor, explaining how the conflict was resolved, and links it to the
-// conflict with an `explains` relation. REQUIRES a human actor — a machine
-// cannot adjudicate professional conflicts (GATE_REQUIRES_HUMAN otherwise).
+// Judge is the DEPRECATED v0.3 caller-declared adjudication path (design §4).
+// Since v0.4.0 Step 2 it is FAIL-CLOSED: it returns AUTHENTICATION_REQUIRED
+// and writes NOTHING — no decision memory, no explains relation. The legacy
+// caller-declared actor (machine OR human-without-a-principal) can never
+// supply the verified principal that adjudication now requires; confirm and
+// reject happen only through the authenticated judgment services (POST
+// /accounting/judgments/{id}/confirm|reject). Kept compiled for v0.3
+// consumers; removed in v0.5.0.
 func (a *API) Judge(conflictID string, resolution string, actor core.Source) (core.AccountingMemory, error) {
-	if err := core.AssertHumanApproval(actor); err != nil {
-		return core.AccountingMemory{}, err
-	}
-	conflict, err := a.Get(conflictID)
-	if err != nil {
-		return core.AccountingMemory{}, err
-	}
-	if strings.TrimSpace(resolution) == "" {
-		return core.AccountingMemory{}, errors.New("INVALID_RESOLUTION: resolution must be a non-empty string")
-	}
-	// The adjudication is an informative decision (fiscalEffect none → active)
-	// recorded by a HUMAN actor; its provenance is the approval evidence. It
-	// lives in the SAME tenant/period as the conflict (never cross-tenant).
-	result, err := a.Save(core.SaveInput{
-		TopicKey: "judgment/" + conflictID,
-		Title:    "Resolución de conflicto",
-		Kind:     core.KindDecision,
-		Scope:    conflict.Scope,
-		Content: core.Content{
-			What:    resolution,
-			Why:     "Adjudicación profesional documentada del conflicto " + conflictID,
-			Where:   conflictID,
-			Learned: "Resolución registrada como memoria institucional; la evidencia permanece.",
-		},
-		FiscalEffect: core.FiscalEffectNone,
-		Source:       actor,
-	})
-	if err != nil {
-		return core.AccountingMemory{}, err
-	}
-	if err := a.Store.Relate(result.Memory.Identity.ID, conflictID, core.RelationExplains, &core.RelationMeta{
-		Actor:     actor.ActorID,
-		Timestamp: nowISO(),
-	}); err != nil {
-		return core.AccountingMemory{}, err
-	}
-	return result.Memory, nil
+	return core.AccountingMemory{}, auth.New(auth.CodeAuthenticationRequired,
+		"legacy Judge is deprecated and fail-closed: authenticated adjudication happens through the judgment services (design §4)")
 }
 
 // ──────────────────────────────────────────────

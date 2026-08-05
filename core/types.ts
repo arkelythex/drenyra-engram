@@ -355,31 +355,45 @@ export interface ApprovalEvent {
 	createdAt: string;
 }
 
-/**
- * Transport-independent approval error carrying the frozen code (mirror of
- * auth.Error in internal/auth/errors.go). ONLY an ENVELOPE_MISMATCH error
- * carries the two hashes; memory content is never included, especially on
- * cross-tenant surfaces.
- */
-export class ApprovalError extends Error {
-	readonly code: ApprovalErrorCode;
-	/** Present ONLY on ENVELOPE_MISMATCH — the hash the reviewer submitted. */
-	readonly expectedEnvelopeHash?: string;
-	/** Present ONLY on ENVELOPE_MISMATCH — the current envelope hash. */
-	readonly actualEnvelopeHash?: string;
+    /**
+     * Transport-independent approval error carrying the frozen code (mirror of
+     * auth.Error in internal/auth/errors.go). ONLY an ENVELOPE_MISMATCH error
+     * carries the two envelope hashes and only a JUDGMENT_HASH_MISMATCH error
+     * carries the two judgment hashes; memory/judgment content is never
+     * included, especially on cross-tenant surfaces. Judgment hashes are a
+     * separately versioned contract and are NEVER compared against envelope
+     * hashes (design §6).
+     */
+    export class ApprovalError extends Error {
+    	readonly code: ApprovalErrorCode;
+    	/** Present ONLY on ENVELOPE_MISMATCH — the hash the reviewer submitted. */
+    	readonly expectedEnvelopeHash?: string;
+    	/** Present ONLY on ENVELOPE_MISMATCH — the current envelope hash. */
+    	readonly actualEnvelopeHash?: string;
+    	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the reviewed judgment hash. */
+    	readonly expectedJudgmentHash?: string;
+    	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the current judgment hash. */
+    	readonly actualJudgmentHash?: string;
 
-	constructor(
-		code: ApprovalErrorCode,
-		message: string,
-		hashes?: { expectedEnvelopeHash?: string; actualEnvelopeHash?: string },
-	) {
-		super(message);
-		this.name = "ApprovalError";
-		this.code = code;
-		this.expectedEnvelopeHash = hashes?.expectedEnvelopeHash;
-		this.actualEnvelopeHash = hashes?.actualEnvelopeHash;
-	}
-}
+    	constructor(
+    		code: ApprovalErrorCode,
+    		message: string,
+    		hashes?: {
+    			expectedEnvelopeHash?: string;
+    			actualEnvelopeHash?: string;
+    			expectedJudgmentHash?: string;
+    			actualJudgmentHash?: string;
+    		},
+    	) {
+    		super(message);
+    		this.name = "ApprovalError";
+    		this.code = code;
+    		this.expectedEnvelopeHash = hashes?.expectedEnvelopeHash;
+    		this.actualEnvelopeHash = hashes?.actualEnvelopeHash;
+    		this.expectedJudgmentHash = hashes?.expectedJudgmentHash;
+    		this.actualJudgmentHash = hashes?.actualJudgmentHash;
+    	}
+    }
 
 // ──────────────────────────────────────────────
 // Content / source / validity
@@ -997,6 +1011,72 @@ export function assertValidMemory(memory: AccountingMemory): void {
     export interface WithdrawJudgmentCommand {
     	judgmentId: string;
     	requestId: string;
+    }
+
+    /**
+     * Proposal result (v0.4.0 Step 2). A proposal writes NO judgment event
+     * (the events CHECK admits only confirm|reject|withdraw|supersede), so the
+     * result carries the entity alone; a same-request retry replays the same
+     * judgment with idempotentReplay=true. Mirrors core.ProposeJudgmentResult.
+     */
+    export interface ProposeJudgmentResult {
+    	judgmentId: string;
+    	judgment: AccountingJudgment;
+    	/** True when re-derived from the completed idempotency reservation. */
+    	idempotentReplay: boolean;
+    }
+
+    /** Confirmation result (v0.4.0 Step 2). Mirrors core.ConfirmJudgmentResult. */
+    export interface ConfirmJudgmentResult {
+    	judgmentId: string;
+    	judgment: AccountingJudgment;
+    	/** The immutable 'confirm' event written for this decision. */
+    	judgmentEventId: string;
+    	idempotentReplay: boolean;
+    }
+
+    /** Rejection result (v0.4.0 Step 2). Mirrors core.RejectJudgmentResult. */
+    export interface RejectJudgmentResult {
+    	judgmentId: string;
+    	judgment: AccountingJudgment;
+    	/** The immutable 'reject' event written for this decision. */
+    	judgmentEventId: string;
+    	idempotentReplay: boolean;
+    }
+
+    /** Withdrawal result (v0.4.0 Step 2). Mirrors core.WithdrawJudgmentResult. */
+    export interface WithdrawJudgmentResult {
+    	judgmentId: string;
+    	judgment: AccountingJudgment;
+    	/** The immutable 'withdraw' event written for this withdrawal. */
+    	judgmentEventId: string;
+    	idempotentReplay: boolean;
+    }
+
+    /**
+     * Immutable judgment transition event (v0.4.0 Step 2). Every decision
+     * (confirm/reject/withdraw/supersede) writes exactly one event; proposals
+     * write none. Confirm/reject events carry the adjudicator snapshot and the
+     * frozen policy version. Mirrors the judgment_events table (design §4).
+     */
+    export interface JudgmentEvent {
+    	id: string;
+    	requestId: string;
+    	judgmentId: string;
+    	tenantId: string;
+    	/** Frozen to confirm | reject | withdraw | supersede. */
+    	action: "confirm" | "reject" | "withdraw" | "supersede";
+    	fromStatus: JudgmentStatus;
+    	toStatus: JudgmentStatus;
+    	/** Hash of the resulting state (reviewed shape for supersede). */
+    	judgmentHash: string;
+    	/** Present ONLY on confirm/reject — the adjudicator snapshot. */
+    	principalSnapshot?: PrincipalSnapshot;
+    	/** Present ONLY on confirm/reject — the frozen policy version. */
+    	policyVersion?: string;
+    	/** The human resolution (confirm) / reason (reject) / empty otherwise. */
+    	reason?: string;
+    	createdAt: string;
     }
 
     const PROPOSABLE_RELATIONS: readonly MemoryRelation[] = [

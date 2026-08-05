@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 )
 
@@ -198,44 +199,44 @@ func TestPeriodSummaryGateCounts(t *testing.T) {
 	}
 }
 
-// TestJudgeRecordsProfessionalResolution verifies the documented professional
-// adjudication: a human judge creates an approved decision memory linked to the
-// conflict with an `explains` relation; machines cannot judge.
+// TestJudgeRecordsProfessionalResolution freezes the DEPRECATED legacy
+// caller-declared adjudication path (design §4): since v0.4.0 Step 2 it is
+// FAIL-CLOSED. A machine AND a human-without-a-principal both get
+// AUTHENTICATION_REQUIRED and NOTHING is written — no decision memory, no
+// explains relation. The legacy path cannot adjudicate anymore; confirm/reject
+// happen only through the authenticated judgment services.
 func TestJudgeRecordsProfessionalResolution(t *testing.T) {
 	api := newTestAPI(t)
 
 	conflict := saveDemoFact(t, api, "exception/mismatch-001", "Diferencia de saldo",
 		"Diferencia S/ 1,284.30 entre mayor y SIRE", "2026-07-28T00:00:00Z")
 
-	// A machine cannot adjudicate.
-	if _, err := api.Judge(conflict.Identity.ID, "resolución de máquina", testAgentSource); !IsGateError(err) {
-		t.Fatalf("machine judge: IsGateError(%v) = false, want true", err)
+	// A machine cannot adjudicate: the fail-closed path answers
+	// AUTHENTICATION_REQUIRED (provenance is never authority).
+	if _, err := api.Judge(conflict.Identity.ID, "resolución de máquina", testAgentSource); auth.Code(err) != auth.CodeAuthenticationRequired {
+		t.Fatalf("machine judge: code = %q, want AUTHENTICATION_REQUIRED; err = %v", auth.Code(err), err)
 	}
 
-	// A human adjudicates.
-	judgment, err := api.Judge(conflict.Identity.ID, "El comprobante F001-948 llegó tarde; el crédito se difiere a 2026-08.", humanSource("maria.torres"))
-	if err != nil {
-		t.Fatalf("judge: %v", err)
+	// A human WITHOUT a verified principal cannot adjudicate either — the legacy
+	// caller-declared actor never becomes a VerifiedApprovalPrincipal.
+	if _, err := api.Judge(conflict.Identity.ID, "El comprobante F001-948 llegó tarde; el crédito se difiere a 2026-08.", humanSource("maria.torres")); auth.Code(err) != auth.CodeAuthenticationRequired {
+		t.Fatalf("human judge: code = %q, want AUTHENTICATION_REQUIRED; err = %v", auth.Code(err), err)
 	}
-	if judgment.Kind != core.KindDecision {
-		t.Fatalf("judgment kind = %q, want decision", judgment.Kind)
-	}
-	if judgment.Status != core.StatusActive {
-		t.Fatalf("judgment status = %q, want active (informative adjudication)", judgment.Status)
+
+	// Fail-closed means NO write: no decision memory was created for the
+	// conflict topic and no explains relation points at the conflict.
+	if _, err := api.GetByTopic("judgment/"+conflict.Identity.ID, conflict.Scope); err == nil {
+		t.Fatal("legacy Judge must not write a decision memory; a judgment/ topic exists")
 	}
 
 	relations, err := api.Relations()
 	if err != nil {
 		t.Fatalf("relations: %v", err)
 	}
-	found := false
 	for _, relation := range relations {
-		if relation.FromID == judgment.Identity.ID && relation.ToID == conflict.Identity.ID && relation.Relation == core.RelationExplains {
-			found = true
+		if relation.ToID == conflict.Identity.ID && relation.Relation == core.RelationExplains {
+			t.Fatalf("legacy Judge must not write an explains relation to the conflict; found %+v", relation)
 		}
-	}
-	if !found {
-		t.Fatal("judgment must record an `explains` relation to the conflict")
 	}
 }
 

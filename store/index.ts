@@ -7,4 +7,4 @@
  * (in-memory reference adapter, never canonical — ADR-002).
  */
 export { InMemoryMemoryStore } from "./memory-store.js";
-export type { MemoryStore } from "./memory-store.js";
+export type { JudgmentPolicyFn, JudgmentStore, MemoryStore } from "./memory-store.js";
