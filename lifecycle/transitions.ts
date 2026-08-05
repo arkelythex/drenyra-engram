@@ -151,48 +151,48 @@ export function supersedePrev(
  * the pure policy, not here.
  */
 export async function approveMemory(
-command: ApproveMemoryCommand,
-principal: VerifiedApprovalPrincipal,
-store: MemoryStore,
-policy?: ApprovalPolicyFn,
+	command: ApproveMemoryCommand,
+	principal: VerifiedApprovalPrincipal,
+	store: MemoryStore,
+	policy?: ApprovalPolicyFn,
 ): Promise<ApprovalResult> {
-// A zero principal cannot approve anything (mirror of the service's fail-closed
-// guard before the policy could misreport it). The factory always mints a
-// fully-validated principal, so an empty subject is the only observable zero
-// value in the mirror.
-if (principal.subjectId.trim() === "") {
-throw new ApprovalError(
-"PRINCIPAL_INVALID",
-"no verified approval principal present",
-);
+	// A zero principal cannot approve anything (mirror of the service's fail-closed
+	// guard before the policy could misreport it). The factory always mints a
+	// fully-validated principal, so an empty subject is the only observable zero
+	// value in the mirror.
+	if (principal.subjectId.trim() === "") {
+		throw new ApprovalError(
+			"PRINCIPAL_INVALID",
+			"no verified approval principal present",
+		);
+	}
+	// Command syntax — the frozen transport mapping treats a malformed
+	// command as a not-found/identity failure, never an authorization
+	// decision.
+	if (command.memoryId.trim() === "") {
+		throw new ApprovalError("MEMORY_NOT_FOUND", "memoryId is required");
+	}
+	if (command.expectedEnvelopeHash.trim() === "") {
+		throw new ApprovalError(
+			"MEMORY_NOT_FOUND",
+			"expectedEnvelopeHash is required",
+		);
+	}
+	if (command.requestId.trim() === "") {
+		throw new ApprovalError(
+			"MEMORY_NOT_FOUND",
+			"requestId (idempotency key) is required",
+		);
+	}
+	if (command.reason.trim() === "") {
+		throw new ApprovalError(
+			"REASON_REQUIRED",
+			"a reason is required for approval",
+		);
+	}
+	return store.approveMemory(command, principal, policy);
 }
-// Command syntax — the frozen transport mapping treats a malformed
-// command as a not-found/identity failure, never an authorization
-// decision.
-if (command.memoryId.trim() === "") {
-throw new ApprovalError("MEMORY_NOT_FOUND", "memoryId is required");
-}
-if (command.expectedEnvelopeHash.trim() === "") {
-throw new ApprovalError(
-"MEMORY_NOT_FOUND",
-"expectedEnvelopeHash is required",
-);
-}
-if (command.requestId.trim() === "") {
-throw new ApprovalError(
-"MEMORY_NOT_FOUND",
-"requestId (idempotency key) is required",
-);
-}
-if (command.reason.trim() === "") {
-throw new ApprovalError(
-"REASON_REQUIRED",
-"a reason is required for approval",
-);
-}
-return store.approveMemory(command, principal, policy);
-}
-    
+
 /**
  * Apply a gated status transition (approve/reject/void) to a stored memory,
  * recording an audit-trail entry. The store applies the transition; legality

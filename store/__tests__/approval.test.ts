@@ -69,7 +69,10 @@ function principal(overrides: Record<string, unknown> = {}) {
 	} as Parameters<typeof createVerifiedApprovalPrincipal>[0]);
 }
 
-async function savedMemoryId(store: InMemoryMemoryStore, overrides: Partial<SaveMemoryInput> = {}) {
+async function savedMemoryId(
+	store: InMemoryMemoryStore,
+	overrides: Partial<SaveMemoryInput> = {},
+) {
 	const result = await store.save(input(overrides));
 	return result.memory.identity.id;
 }
@@ -304,7 +307,9 @@ describe("authenticated approval (v0.4.0 Step 1)", () => {
 
 	it("raises the required role for a material adjustment (MATERIALITY_LIMIT_EXCEEDED)", async () => {
 		const store = new InMemoryMemoryStore();
-		const id = await savedMemoryId(store, { materialityLevel: "material" as const });
+		const id = await savedMemoryId(store, {
+			materialityLevel: "material" as const,
+		});
 		const envelope = store.findById(id)!.envelopeHash!;
 
 		// accountant is the base role for adjustment, but material raises to
@@ -385,10 +390,7 @@ describe("authenticated approval (v0.4.0 Step 1)", () => {
 
 		const event = store.approvalEvents()[0]!;
 		// Canonical set: sorted and deduplicated, independent of future roles.
-		expect(event.principalSnapshot.roles).toEqual([
-			"accountant",
-			"controller",
-		]);
+		expect(event.principalSnapshot.roles).toEqual(["accountant", "controller"]);
 		// The event never carries session ids or token material.
 		expect(event.principalSnapshot).not.toHaveProperty("sessionId");
 		expect(JSON.stringify(event)).not.toContain("secret");

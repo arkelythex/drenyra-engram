@@ -350,7 +350,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		// Syntax guards (defense in depth — the transitions orchestrator validates
 		// first). Mirrors the store's fail-closed guards.
 		if (command.reason.trim().length === 0) {
-			throw new ApprovalError("REASON_REQUIRED", "a reason is required for approval");
+			throw new ApprovalError(
+				"REASON_REQUIRED",
+				"a reason is required for approval",
+			);
 		}
 		if (
 			command.memoryId.trim().length === 0 ||
@@ -446,14 +449,16 @@ export class InMemoryMemoryStore implements MemoryStore {
 			// H1 recomputed FRESH from the current row — never from a stale cached
 			// envelope. A mismatch carries ONLY the two hashes, never content.
 			const h1 = await computeEnvelopeHash(memory);
-			if (command.expectedEnvelopeHash.trim().toLowerCase() !== h1.toLowerCase()) {
+			if (
+				command.expectedEnvelopeHash.trim().toLowerCase() !== h1.toLowerCase()
+			) {
 				throw new ApprovalError(
 					"ENVELOPE_MISMATCH",
 					"memory envelope changed after review; expected hash does not match the current envelope",
-				{
-					expectedEnvelopeHash: command.expectedEnvelopeHash,
-					actualEnvelopeHash: h1,
-				},
+					{
+						expectedEnvelopeHash: command.expectedEnvelopeHash,
+						actualEnvelopeHash: h1,
+					},
 				);
 			}
 
