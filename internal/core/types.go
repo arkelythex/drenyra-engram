@@ -406,6 +406,12 @@ type AccountingMemory struct {
 	// by policy. NOT persisted yet (v3 schema batch); it does NOT participate in
 	// the envelope hash (frozen decision).
 	MaterialityLevel *MaterialityLevel `json:"materialityLevel,omitempty"`
+	// CloseSnapshot is the OPTIONAL structured payload of a monthly close memory
+	// (kind=summary, fiscalEffect=closing — v0.5.0, design §2.1). Canonical bytes
+	// are persisted verbatim in observations.close_snapshot_json (schema v6) and
+	// PARTICIPATE in the content and envelope hashes; nil on every non-close
+	// memory (contributes the empty string, so pre-v6 envelopes are unchanged).
+	CloseSnapshot *CloseSnapshot `json:"closeSnapshot,omitempty"`
 	// ContentHash is the canonical SHA-256 of the semantic content (see
 	// ComputeContentHash). Computed at write, never editable.
 	ContentHash string `json:"contentHash"`
@@ -569,6 +575,19 @@ func ScopeKey(s Scope) string {
 	return "company\x00" + s.OrganizationID + "\x00" + s.CompanyID + "\x00" + s.RUC + "\x00" + s.Period
 }
 
+// copyCountMap returns a defensive copy of a string→int count map (nil input
+// stays nil).
+func copyCountMap(in map[string]int) map[string]int {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]int, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // CloneMemory is a defensive copy — stored memories are never handed out by
 // reference.
 func CloneMemory(m AccountingMemory) AccountingMemory {
@@ -589,6 +608,18 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 		ml := *m.MaterialityLevel
 		cloned.MaterialityLevel = &ml
 	}
+	if m.CloseSnapshot != nil {
+		snap := *m.CloseSnapshot
+		snap.Counts.ByKind = copyCountMap(m.CloseSnapshot.Counts.ByKind)
+		snap.Counts.ByStatus = copyCountMap(m.CloseSnapshot.Counts.ByStatus)
+		snap.Totals = append([]CloseTotal(nil), m.CloseSnapshot.Totals...)
+		for i := range snap.Totals {
+			snap.Totals[i].SourceMemoryIDs = append([]string(nil), m.CloseSnapshot.Totals[i].SourceMemoryIDs...)
+		}
+		snap.PendingItems = append([]ClosePendingItem(nil), m.CloseSnapshot.PendingItems...)
+		snap.NarrativeMemoryIDs = append([]string(nil), m.CloseSnapshot.NarrativeMemoryIDs...)
+		cloned.CloseSnapshot = &snap
+	}
 	cloned.EvidenceRefs = append([]string(nil), m.EvidenceRefs...)
 	cloned.RuleRefs = append([]string(nil), m.RuleRefs...)
 	return cloned
@@ -605,7 +636,7 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 // not the envelope. Same input → same hash; any immutable-field change → a
 // different hash (idempotency-safe for exact duplicates).
 func ComputeContentHash(m AccountingMemory) string {
-	canonical := strings.Join([]string{
+	parts := []string{
 		ScopeKey(m.Scope),
 		string(m.Kind),
 		m.Title,
@@ -617,7 +648,14 @@ func ComputeContentHash(m AccountingMemory) string {
 		m.Content.Learned,
 		m.Source.System,
 		string(m.Source.ActorKind),
-	}, "\x00")
+	}
+	if contribution := closeSnapshotCanonicalContribution(m.CloseSnapshot); contribution != "" {
+		// A snapshot contributes a self-describing element; a memory WITHOUT one
+		// contributes NOTHING, so every pre-v6 canonical string is byte-identical
+		// (frozen v0.3 hash contract — legacy envelopes never re-hash).
+		parts = append(parts, contribution)
+	}
+	canonical := strings.Join(parts, "\x00")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
 }
@@ -646,7 +684,7 @@ func ComputeIdentityHash(m AccountingMemory) string {
 // duplicate (idempotent no-op) and a differing envelope hash on the same
 // identity as an immutable conflict.
 func ComputeEnvelopeHash(m AccountingMemory) string {
-	canonical := strings.Join([]string{
+	parts := []string{
 		ComputeIdentityHash(m),
 		m.ContentHash,
 		string(m.FiscalEffect),
@@ -662,7 +700,13 @@ func ComputeEnvelopeHash(m AccountingMemory) string {
 		m.ReceiptID,
 		canonicalRefs(m.EvidenceRefs),
 		canonicalRefs(m.RuleRefs),
-	}, "\x00")
+	}
+	if contribution := closeSnapshotCanonicalContribution(m.CloseSnapshot); contribution != "" {
+		// Same contract as the content hash: only memories WITH a snapshot
+		// contribute; pre-v6 envelopes stay byte-identical.
+		parts = append(parts, contribution)
+	}
+	canonical := strings.Join(parts, "\x00")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
 }

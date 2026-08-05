@@ -42,12 +42,24 @@ const (
 	CodeJudgmentHashMismatch      = "JUDGMENT_HASH_MISMATCH"
 )
 
+// Frozen error codes (v0.5.0 close foundation — do not rename or reuse).
+// PERIOD_CLOSED is the close write gate: an exact company period whose closure
+// projection is status='closed' is immutable until an explicit controller
+// reopen. It carries ONLY the scope tuple and the close memory ID (never
+// private content). PERIOD_ALREADY_CLOSED is the approval-time guard: a second
+// close for an already-closed period is rejected.
+const (
+	CodePeriodClosed        = "PERIOD_CLOSED"
+	CodePeriodAlreadyClosed = "PERIOD_ALREADY_CLOSED"
+)
+
 // Error is the typed approval/judgment error: a frozen code plus a human
 // message. Only ENVELOPE_MISMATCH carries ExpectedEnvelopeHash/
-// ActualEnvelopeHash and only JUDGMENT_HASH_MISMATCH carries
-// ExpectedJudgmentHash/ActualJudgmentHash; all other codes leave both pairs
-// empty (design §6 — the judgment hash contract is versioned separately and
-// NEVER compared against envelope hashes).
+// ActualEnvelopeHash, only JUDGMENT_HASH_MISMATCH carries
+// ExpectedJudgmentHash/ActualJudgmentHash and only PERIOD_CLOSED carries the
+// TenantID/CompanyID/FiscalPeriodID/CloseMemoryID tuple; all other codes leave
+// every field empty (design §6 — the judgment hash contract is versioned
+// separately and NEVER compared against envelope hashes).
 type Error struct {
 	Code                 string
 	Message              string
@@ -55,6 +67,10 @@ type Error struct {
 	ActualEnvelopeHash   string
 	ExpectedJudgmentHash string
 	ActualJudgmentHash   string
+	TenantID             string
+	CompanyID            string
+	FiscalPeriodID       string
+	CloseMemoryID        string
 }
 
 func (e *Error) Error() string {
@@ -65,6 +81,10 @@ func (e *Error) Error() string {
 	if e.Code == CodeJudgmentHashMismatch && e.ExpectedJudgmentHash != "" && e.ActualJudgmentHash != "" {
 		return fmt.Sprintf("%s: %s (expected judgment hash %s, actual judgment hash %s)",
 			e.Code, e.Message, e.ExpectedJudgmentHash, e.ActualJudgmentHash)
+	}
+	if e.Code == CodePeriodClosed && e.TenantID != "" && e.CompanyID != "" {
+		return fmt.Sprintf("%s: %s (tenant %s, company %s, period %s, close memory %s)",
+			e.Code, e.Message, e.TenantID, e.CompanyID, e.FiscalPeriodID, e.CloseMemoryID)
 	}
 	return e.Code + ": " + e.Message
 }
@@ -107,6 +127,20 @@ func NewJudgmentHashMismatch(expectedHash, actualHash, message string) error {
 	}
 }
 
+// NewPeriodClosed returns a PERIOD_CLOSED error carrying ONLY the exact scope
+// tuple and the close memory ID (never private content): the close write gate's
+// typed error. Adapters map it to a closed-period HTTP/MCP/CLI result.
+func NewPeriodClosed(tenantID, companyID, fiscalPeriodID, closeMemoryID, message string) error {
+	return &Error{
+		Code:           CodePeriodClosed,
+		Message:        message,
+		TenantID:       tenantID,
+		CompanyID:      companyID,
+		FiscalPeriodID: fiscalPeriodID,
+		CloseMemoryID:  closeMemoryID,
+	}
+}
+
 // Code returns the frozen error code carried by err, or "" when err is not an
 // *Error (including nil). Wrapped errors are unwrapped via errors.As.
 func Code(err error) string {
@@ -145,4 +179,7 @@ var (
 	ErrInvalidJudgmentTransition = &Error{Code: CodeInvalidJudgmentTransition, Message: "invalid judgment transition"}
 	ErrJudgmentConflict          = &Error{Code: CodeJudgmentConflict, Message: "judgment conflict"}
 	ErrJudgmentHashMismatch      = &Error{Code: CodeJudgmentHashMismatch, Message: "judgment hash mismatch"}
+	// ── v0.5.0 close foundation codes ──
+	ErrPeriodClosed        = &Error{Code: CodePeriodClosed, Message: "period is closed; an explicit controller reopen is required before writing"}
+	ErrPeriodAlreadyClosed = &Error{Code: CodePeriodAlreadyClosed, Message: "period is already closed by another close"}
 )

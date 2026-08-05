@@ -1217,8 +1217,9 @@ export async function computeJudgmentHash(
     export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
 
     /**
-     * The CLOSED set of covered acts (v0.4.0 Step 3) — an unknown action fails
-     * closed. Mirrors core.ReceiptAction.
+     * The CLOSED set of covered acts (v0.4.0 Step 3; extended with the two
+     * v0.5.0 close actions memory_closed / memory_reopened) — an unknown
+     * action fails closed. Mirrors core.ReceiptAction.
      */
     export const RECEIPT_ACTIONS = [
     	"memory_recorded",
@@ -1229,6 +1230,8 @@ export async function computeJudgmentHash(
     	"relation_rejected",
     	"evidence_linked",
     	"memory_superseded",
+    	"memory_closed",
+    	"memory_reopened",
     ] as const;
 
     export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];

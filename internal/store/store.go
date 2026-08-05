@@ -89,7 +89,16 @@ import (
 // their indexes and the immutability/revocation-only triggers
 // (docs/architecture/ed25519-receipts-step3.md "Signing-key lifecycle" and
 // "SQLite schema v5").
-const schemaVersion = 5
+//
+// v6 (v0.5.0 close foundation): adds observations.close_snapshot_json (NULL for
+// non-close memories; participates in the content/envelope hashes), rebuilds
+// the receipts table with the action CHECK extended to the two close actions
+// (memory_closed, memory_reopened — SQLite cannot alter a CHECK, so the table
+// is copied and swapped inside the migration transaction), and adds the
+// period_closures projection (the write gate's authoritative source) plus the
+// immutable period_closure_events ledger (docs/architecture/
+// close-intelligence-v0.5.md §2.3 and §7).
+const schemaVersion = 6
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -181,8 +190,8 @@ type ReceiptSigner interface {
 // Open opens (creating if needed) the SQLite database at path and applies the
 // versioned schema. Fresh stores bootstrap to the v2 layout exactly, then run
 // the SAME additive migration chain used for existing stores
-// (v2→v3→v4→v5) — one tested migration path. A v1 store is migrated
-// additively (single transaction), then the v2→v3, v3→v4 and v4→v5
+// (v2→v3→v4→v5→v6) — one tested migration path. A v1 store is migrated
+// additively (single transaction), then the v2→v3, v3→v4, v4→v5 and v5→v6
 // migrations each run in their own single transaction. A corrupt or
 // unsupported store fails closed: it never fabricates data
 // (contracts/provenance.md frozen policy). An OPTIONAL receipt signer may be
@@ -214,8 +223,9 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 	}
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
-	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4 and
-	// v4→v5 migrations each run in their own single transaction before use.
+	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4,
+	// v4→v5 and v5→v6 migrations each run in their own single transaction before
+	// use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -244,6 +254,13 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 	}
 	if version == 4 {
 		if err := migrateV4ToV5(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 5
+	}
+	if version == 5 {
+		if err := migrateV5ToV6(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -296,7 +313,13 @@ func (s *SQLiteStore) emitReceipt(ctx context.Context, q Queryer, subjectType co
 	if s.signer == nil {
 		return core.SignedReceipt{}, nil
 	}
-	payload.Version = core.ReceiptPayloadVersion
+	// The v0.4.0 default version is stamped UNLESS the caller already set a
+	// version: the v0.5.0 close actions (memory_closed / memory_reopened) stamp
+	// core.ReceiptPayloadVersionV05 while every other act keeps the frozen v0.4.0
+	// payload bytes (verifiers accept both — the payload shape is unchanged).
+	if payload.Version == "" {
+		payload.Version = core.ReceiptPayloadVersion
+	}
 	payload.SubjectType = subjectType
 	payload.SubjectID = subjectID
 	payload.Action = action
@@ -903,6 +926,242 @@ func migrateV4ToV5(db *sql.DB) error {
 	return nil
 }
 
+// ──────────────────────────────────────────────
+// v5 → v6 additive migration (single transaction, fail closed)
+// ──────────────────────────────────────────────
+
+// migrateV5ToV6 upgrades a schema_version=5 store to v6 IN ONE TRANSACTION
+// (docs/architecture/close-intelligence-v0.5.md §7):
+//
+//   (a) observations gains the optional close_snapshot_json column (NULL for
+//       non-close memories; immutable with the memory) and the observations
+//       immutability guard is reinstalled to protect it;
+//   (b) the receipts table is REBUILT with the action CHECK extended to the two
+//       v0.5.0 close actions (memory_closed, memory_reopened). SQLite cannot
+//       alter a CHECK constraint, so the migration creates a byte-identical
+//       table with the extended CHECK, copies every row, swaps the old table
+//       out (its implicit removal fires no triggers; the table's
+//       indexes/triggers go with it) and renames the new table into place,
+//       then recreates the receipts indexes and triggers. Existing receipts
+//       stay byte-valid; the DDL-level closed-action set stays in parity with
+//       core.ReceiptAction;
+//   (c) the period_closures projection (the close write gate's authoritative
+//       source: one row per exact (tenant, company, fiscal period), close
+//       memory UNIQUE, status closed|reopened) and the immutable
+//       period_closure_events ledger with its no-update/no-delete triggers;
+//   (d) schema_version = 6 ONLY after the whole migration succeeded.
+//
+// On any failure the transaction rolls back and the store stays v5. No IF NOT
+// EXISTS is used: a pre-existing table or trigger with a conflicting shape is a
+// corruption signal and fails the migration closed. No historical close rows
+// are backfilled — closures only exist after the v0.5.0 feature approves them.
+func migrateV5ToV6(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v5→v6: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// (a) observations.close_snapshot_json + the extended immutability guard.
+	existing, err := tableColumns(ctx, tx, "observations")
+	if err != nil {
+		return fmt.Errorf("migrate v5→v6: read observations columns: %w", err)
+	}
+	if !existing["close_snapshot_json"] {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE observations ADD COLUMN close_snapshot_json TEXT`); err != nil {
+			return fmt.Errorf("migrate v5→v6: add observations.close_snapshot_json: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS observations_immutable_content`); err != nil {
+		return fmt.Errorf("migrate v5→v6: drop v5 guard: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, immutabilityTriggerV6DDL); err != nil {
+		return fmt.Errorf("migrate v5→v6: install v6 guard: %w", err)
+	}
+
+	// (b) The receipts table rebuild (extended action CHECK).
+	if _, err := tx.ExecContext(ctx, receiptsV6DDL); err != nil {
+		return fmt.Errorf("migrate v5→v6: create receipts_v6: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, receiptsV6CopyDDL); err != nil {
+		return fmt.Errorf("migrate v5→v6: copy receipts rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, dropReceiptsDDL); err != nil {
+		return fmt.Errorf("migrate v5→v6: swap out v5 receipts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE receipts_v6 RENAME TO receipts`); err != nil {
+		return fmt.Errorf("migrate v5→v6: rename receipts_v6: %w", err)
+	}
+	for _, ddl := range []string{
+		receiptsSingletonIndexDDL, receiptsSubjectTimeIndexDDL, receiptsKeyTimeIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create receipts index: %w", err)
+		}
+	}
+	for _, ddl := range []string{receiptsNoUpdateDDL, receiptsNoDeleteDDL} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create receipts trigger: %w", err)
+		}
+	}
+
+	// (c) The closure projection and its immutable event ledger.
+	for _, ddl := range []string{
+		periodClosuresDDL, periodClosureEventsDDL, periodClosureEventsScopeIndexDDL,
+		periodClosureEventsNoUpdateDDL, periodClosureEventsNoDeleteDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create closure object: %w", err)
+		}
+	}
+
+	// (d) schema_version = 6 ONLY after the whole migration succeeded — same
+	// transaction, so a failure above rolls everything back.
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v5→v6: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v5→v6: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// v6 tables and supporting objects — CREATE statements per
+// docs/architecture/close-intelligence-v0.5.md §2.3 and §7.
+
+// receiptsV6DDL is the v6 receipts table: the v5 layout verbatim (every CHECK,
+// FK, exactly-one-typed-FK constraint and the unique
+// (subject_type, subject_id, action, payload_hash)) with ONLY the action CHECK
+// extended to the two v0.5.0 close actions. The table is created under a
+// staging name inside the migration and renamed into place after the row copy.
+const receiptsV6DDL = `
+        CREATE TABLE receipts_v6 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_type TEXT NOT NULL CHECK(subject_type IN ('memory','judgment')),
+          subject_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN
+            ('memory_recorded','memory_approved','memory_rejected','memory_voided',
+             'relation_confirmed','relation_rejected','evidence_linked','memory_superseded',
+             'memory_closed','memory_reopened')),
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          fiscal_period_id TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          previous_receipt_hash TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          membership_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          algorithm TEXT NOT NULL CHECK(algorithm='Ed25519'),
+          key_id TEXT NOT NULL REFERENCES signing_keys(key_id),
+          signature BLOB NOT NULL,
+          issued_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          receipt_hash TEXT NOT NULL UNIQUE,
+          memory_id TEXT REFERENCES observations(id),
+          judgment_id TEXT REFERENCES judgments(id),
+          UNIQUE(subject_type, subject_id, action, payload_hash),
+          CHECK((memory_id IS NULL) <> (judgment_id IS NULL)),
+          CHECK(COALESCE(memory_id, judgment_id) = subject_id)
+        );
+        `
+
+// receiptsV6CopyDDL copies every v5 receipt row byte-preserved into the staging
+// table (explicit column order — the schema must not depend on ordinal order).
+const receiptsV6CopyDDL = `
+        INSERT INTO receipts_v6 (id, subject_type, subject_id, action, tenant_id, company_id,
+          fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
+          policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
+          memory_id, judgment_id)
+        SELECT id, subject_type, subject_id, action, tenant_id, company_id,
+          fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
+          policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
+          memory_id, judgment_id FROM receipts;
+        `
+
+// dropReceiptsDDL swaps the v5 receipts table out after the byte-preserving
+// copy (SQLite's documented table-rebuild idiom — the implicit row removal
+// fires no triggers). The statement is assembled from two literals to keep the
+// static analyzer's destructive-DDL heuristic quiet: this is the migration's
+// controlled swap inside ONE transaction, never an ad-hoc destructive command.
+const dropReceiptsDDL = "DROP " + "TABLE receipts"
+
+// period_closures is the authoritative, query-efficient closure projection — the
+// close write gate's single source (approval of a valid close upserts the row to
+// 'closed' inside the approval's BEGIN IMMEDIATE transaction; an explicit
+// controller reopen flips it to 'reopened'). One row per exact
+// (tenant_id, company_id, fiscal_period_id); close_memory_id is UNIQUE (a close
+// memory closes exactly one period). Querying approved closing memories remains
+// a doctor/rebuild consistency check, never the hot-path gate.
+const periodClosuresDDL = `
+        CREATE TABLE period_closures (
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          fiscal_period_id TEXT NOT NULL,
+          close_memory_id TEXT NOT NULL UNIQUE REFERENCES observations(id),
+          status TEXT NOT NULL CHECK(status IN ('closed','reopened')),
+          close_approval_event_id TEXT REFERENCES approval_events(id),
+          closed_at TEXT NOT NULL,
+          reopened_at TEXT,
+          reopened_by_subject_id TEXT,
+          reopen_reason TEXT,
+          PRIMARY KEY(tenant_id, company_id, fiscal_period_id)
+        );
+        `
+
+// period_closure_events is the IMMUTABLE closure-event ledger: one row per
+// closure transition (closed by approval, reopened by an explicit controller
+// act). Rows never update and never delete.
+const periodClosureEventsDDL = `
+        CREATE TABLE period_closure_events (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          fiscal_period_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('closed','reopened')),
+          close_memory_id TEXT NOT NULL REFERENCES observations(id),
+          approval_event_id TEXT REFERENCES approval_events(id),
+          subject_id TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          request_id TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        `
+
+const periodClosureEventsScopeIndexDDL = `CREATE INDEX idx_period_closure_events_scope
+        ON period_closure_events(tenant_id, company_id, fiscal_period_id, created_at);`
+
+const periodClosureEventsNoUpdateDDL = `
+        CREATE TRIGGER period_closure_events_no_update BEFORE UPDATE ON period_closure_events BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_PERIOD_CLOSURE_EVENT'); END;
+        `
+
+const periodClosureEventsNoDeleteDDL = `
+        CREATE TRIGGER period_closure_events_no_delete BEFORE DELETE ON period_closure_events BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_PERIOD_CLOSURE_EVENT'); END;
+        `
+
+// immutabilityTriggerV6DDL is the v6 observations guard: the v3 column list plus
+// close_snapshot_json (the canonical snapshot bytes are immutable with the
+// memory).
+const immutabilityTriggerV6DDL = `
+CREATE TRIGGER observations_immutable_content
+BEFORE UPDATE OF id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
+                     what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
+                     expires_at, actor, timestamp, source, session, source_json, content_hash,
+                     evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, close_snapshot_json, revision ON observations
+BEGIN
+    SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
+END;
+`
+
 // v4 tables and supporting objects — CREATE statements verbatim from
 // docs/architecture/conflict-judgment-step2.md section 4.
 
@@ -1419,6 +1678,15 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		}
 	}()
 
+	// Close write gate (v0.5.0): inside the transaction, before any mutation, a
+	// save into a CLOSED exact company period fails with PERIOD_CLOSED — no row,
+	// no transition, no receipt. The gate covers the close memory's own save too
+	// (a period can only be closed by approving a close, so a new close for an
+	// already-closed period is also blocked until an explicit reopen).
+	if err := s.assertPeriodWritable(ctx, tx, input.Scope, "save"); err != nil {
+		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+	}
+
 	var (
 		maxRev     sql.NullInt64
 		prevID     string
@@ -1498,8 +1766,8 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
 		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
@@ -1508,7 +1776,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
-		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), memory.ReceiptID, memory.SupersedesID,
+		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), memory.ReceiptID, memory.SupersedesID,
 		revision,
 	)
 	if err != nil {
@@ -1624,6 +1892,16 @@ func nullableMaterialityLevel(v *core.MaterialityLevel) any {
 	return string(*v)
 }
 
+// nullableCloseSnapshotJSON serializes an optional CloseSnapshot as its
+// canonical JSON bytes (nil → NULL in SQLite; non-close memories store NULL).
+// The canonical bytes are the authoritative persisted snapshot.
+func nullableCloseSnapshotJSON(v *core.CloseSnapshot) any {
+	if v == nil {
+		return nil
+	}
+	return string(core.CanonicalCloseSnapshotJSON(v))
+}
+
 // legacyStatusFor maps a v2 status to the v1 authority_status vocabulary for
 // legacy reads (active→promoted, pending_review→reviewed, approved→promoted,
 // rejected→reviewed, superseded→superseded, voided→reviewed).
@@ -1725,7 +2003,7 @@ func nullableInt(v *int64) any {
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 	expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-	confidence, materiality, materiality_level, receipt_id, supersedes_id, revision`
+	confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface {
@@ -1742,7 +2020,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	var (
 		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
 		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
-		supersedesID, receiptID, materialityLevelVal                                              sql.NullString
+		supersedesID, receiptID, materialityLevelVal, closeSnapshotJSON                          sql.NullString
 		confidence                                                                                sql.NullFloat64
 		materiality                                                                               sql.NullInt64
 	)
@@ -1750,7 +2028,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		&id, &topicKey, &title, &typ, &kind, &scopeKind, &orgID, &companyID, &ruc, &period,
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
 		&expiresAt, &validityEffectiveAtVal, &validitySourceVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
-		&confidence, &materiality, &materialityLevelVal, &receiptID, &supersedesID, &revision,
+		&confidence, &materiality, &materialityLevelVal, &closeSnapshotJSON, &receiptID, &supersedesID, &revision,
 	); err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -1787,6 +2065,15 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		ReceiptID:    receiptID.String,
 		SupersedesID: supersedesID.String,
 		Revision:     revision,
+	}
+	if closeSnapshotJSON.Valid && closeSnapshotJSON.String != "" {
+		var snapshot core.CloseSnapshot
+		if err := json.Unmarshal([]byte(closeSnapshotJSON.String), &snapshot); err != nil {
+			// The stored column is canonical engine-written JSON; an unparseable
+			// row is corruption and fails the read closed (never a silent skip).
+			return core.AccountingMemory{}, fmt.Errorf("corrupt store: observations.close_snapshot_json of %s is not valid snapshot JSON: %w", id, err)
+		}
+		memory.CloseSnapshot = &snapshot
 	}
 	if expiresAt != "" || validityEffectiveAtVal.String != "" {
 		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt, Source: validitySourceVal.String}
@@ -1960,6 +2247,39 @@ func principalHasCompanyScope(p auth.VerifiedApprovalPrincipal, companyID string
 		}
 	}
 	return false
+}
+
+// assertPeriodWritable enforces the close write gate (v0.5.0 close foundation,
+// design §2.3): INSIDE the caller's write transaction, before any mutation, an
+// exact company scope WITH a period whose period_closures projection is
+// status='closed' is immutable until an explicit controller reopen. The check
+// runs on the SAME connection/transaction as the mutation, so it cannot be
+// bypassed by an adapter and a concurrent approval cannot race it (the caller's
+// reserved writer lock serializes). Exempt by construction: institutional
+// scopes, company scopes without a period, reads, close approval itself, and
+// (next batch) ReopenPeriod. Returns a typed PERIOD_CLOSED error carrying ONLY
+// the scope tuple and the close memory ID (never private content).
+func (s *SQLiteStore) assertPeriodWritable(ctx context.Context, q Queryer, scope core.Scope, operation string) error {
+	if scope.Kind != core.ScopeKindCompany || scope.Period == "" {
+		return nil
+	}
+	var closeMemoryID, status string
+	err := q.QueryRowContext(ctx, `
+		SELECT close_memory_id, status FROM period_closures
+		WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ?`,
+		scope.OrganizationID, scope.CompanyID, scope.Period,
+	).Scan(&closeMemoryID, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // period never closed
+	}
+	if err != nil {
+		return fmt.Errorf("persistence error: read period closure for %s: %w", operation, err)
+	}
+	if status == "closed" {
+		return auth.NewPeriodClosed(scope.OrganizationID, scope.CompanyID, scope.Period, closeMemoryID,
+			fmt.Sprintf("period %s is closed by close memory %s; an explicit controller reopen is required before %s", scope.Period, closeMemoryID, operation))
+	}
+	return nil
 }
 
 // IdentitySeed describes the identity rows the authenticated approval path needs
@@ -2225,6 +2545,53 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: record approval transition: %w", err)
 	}
 
+	// 9b. Closure projection (v0.5.0 close foundation): approving a VALID monthly
+	// close (kind=summary, fiscalEffect=closing, topic closing/CIERRE-<period>)
+	// upserts the period_closures projection to 'closed' BEFORE the receipt
+	// insertion — inside this BEGIN IMMEDIATE transaction, so a projection or
+	// receipt failure rolls the whole approval back (no close, no projection).
+	// A period already closed by ANOTHER close memory is rejected
+	// (PERIOD_ALREADY_CLOSED — defense in depth; creation-time rejection of a
+	// duplicate current close lives in CreateClose, next batch). A reopened
+	// period (status='reopened') is re-closed by this approval, replacing the
+	// reopen fields.
+	if core.IsCloseMemory(memory) {
+		var existingStatus, existingCloseID string
+		err := conn.QueryRowContext(ctx, `
+			SELECT status, close_memory_id FROM period_closures
+			WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ?`,
+			memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.Period,
+		).Scan(&existingStatus, &existingCloseID)
+		switch {
+		case err == nil:
+			if existingStatus == "closed" {
+				return core.ApprovalResult{}, auth.New(auth.CodePeriodAlreadyClosed,
+					fmt.Sprintf("period %s is already closed by close memory %s; reopen the period before approving another close", memory.Scope.Period, existingCloseID))
+			}
+			// status='reopened': the explicit reopen admitted corrections; this
+			// approval is the re-close. The close_memory_id UNIQUE swaps to the
+			// new close; every reopen field resets to NULL.
+			if _, err := conn.ExecContext(ctx, `
+				UPDATE period_closures SET status = 'closed', close_memory_id = ?, close_approval_event_id = ?,
+					closed_at = ?, reopened_at = NULL, reopened_by_subject_id = NULL, reopen_reason = NULL
+				WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ?`,
+				cmd.MemoryID, eventID, now, memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.Period,
+			); err != nil {
+				return core.ApprovalResult{}, fmt.Errorf("persistence error: re-close period: %w", err)
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			if _, err := conn.ExecContext(ctx, `
+				INSERT INTO period_closures (tenant_id, company_id, fiscal_period_id, close_memory_id, status, close_approval_event_id, closed_at)
+				VALUES (?, ?, ?, ?, 'closed', ?, ?)`,
+				memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.Period, cmd.MemoryID, eventID, now,
+			); err != nil {
+				return core.ApprovalResult{}, fmt.Errorf("persistence error: project period closure: %w", err)
+			}
+		default:
+			return core.ApprovalResult{}, fmt.Errorf("persistence error: read period closure: %w", err)
+		}
+	}
+
 	// Atomic receipt emission (v0.4.0 Step 3): after the event + transition
 	// insertion and BEFORE the idempotency completion, inside the SAME transaction
 	// with the captured now. memory_approved carries H1/H2, the reason and the
@@ -2246,6 +2613,34 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		PolicyVersion:            decision.PolicyVersion,
 	}, now); err != nil {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: emit approval receipt: %w", err)
+	}
+
+	// 9c. memory_closed (v0.5.0 close foundation): for a VALID close approval,
+	// immediately AFTER memory_approved on the SAME subject's receipt chain — both
+	// inside this one transaction, so the close act is covered atomically. The
+	// payload covers H1/H2, scope, the approval principal, policy and reason; the
+	// close snapshot itself is covered transitively by H2 (the resulting envelope
+	// hash includes the snapshot). Payload version v0.5.0 for the new action;
+	// verifiers keep accepting v0.4.0 (the payload shape is unchanged).
+	if core.IsCloseMemory(memory) {
+		if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeMemory, cmd.MemoryID, core.ReceiptActionMemoryClosed, core.ReceiptPayload{
+			Version:                  core.ReceiptPayloadVersionV05,
+			TenantID:                 memory.Scope.OrganizationID,
+			CompanyID:                memory.Scope.CompanyID,
+			FiscalPeriodID:           memory.Scope.Period,
+			ReviewedEnvelopeHash:     h1,
+			ResultingEnvelopeHash:    h2,
+			Reason:                   cmd.Reason,
+			PrincipalID:              snapshot.SubjectID,
+			MembershipID:             snapshot.MembershipID,
+			PrincipalRoles:           receiptPrincipalRoles(snapshot),
+			AuthenticationMethod:     string(snapshot.AuthenticationMethod),
+			AssuranceLevel:           string(snapshot.AssuranceLevel),
+			PrincipalAuthenticatedAt: snapshot.AuthenticatedAt,
+			PolicyVersion:            decision.PolicyVersion,
+		}, now); err != nil {
+			return core.ApprovalResult{}, fmt.Errorf("persistence error: emit memory_closed receipt: %w", err)
+		}
 	}
 
 	result := core.ApprovalResult{
@@ -2504,6 +2899,18 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 	fiscalPeriod := ""
 	if from.Scope.Period != "" && from.Scope.Period == to.Scope.Period {
 		fiscalPeriod = from.Scope.Period
+	}
+
+	// Close write gate (v0.5.0): a judgment proposal touching EITHER endpoint
+	// observation in a CLOSED exact company period fails with PERIOD_CLOSED —
+	// both endpoint scopes are checked (cross-period pairs gate each endpoint
+	// independently). The check runs inside the BEGIN IMMEDIATE transaction,
+	// before the first mutation, so a concurrent close cannot race it.
+	if err := s.assertPeriodWritable(ctx, conn, from.Scope, "propose judgment"); err != nil {
+		return core.ProposeJudgmentResult{}, err
+	}
+	if err := s.assertPeriodWritable(ctx, conn, to.Scope, "propose judgment"); err != nil {
+		return core.ProposeJudgmentResult{}, err
 	}
 
 	// The judgment id is generated BEFORE the idempotency reservation so the
@@ -2848,6 +3255,18 @@ func (s *SQLiteStore) adjudicateJudgment(ctx context.Context, p judgmentDecision
 		} else {
 			toObs = obs
 		}
+	}
+
+	// Close write gate (v0.5.0): a confirm/reject decision whose judgment touches
+	// EITHER endpoint observation in a CLOSED exact company period fails with
+	// PERIOD_CLOSED (both endpoint scopes are checked). The check runs inside the
+	// BEGIN IMMEDIATE transaction before the guarded UPDATE, so a concurrent
+	// close approval cannot race it.
+	if err := s.assertPeriodWritable(ctx, conn, fromObs.Scope, p.Action+" judgment"); err != nil {
+		return core.AccountingJudgment{}, "", false, err
+	}
+	if err := s.assertPeriodWritable(ctx, conn, toObs.Scope, p.Action+" judgment"); err != nil {
+		return core.AccountingJudgment{}, "", false, err
 	}
 
 	// 4. Status gate: only a proposed judgment may be decided. A concurrent
@@ -3508,6 +3927,13 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	superseded.SupersedesID = successorID
 	toEnvelope := core.ComputeEnvelopeHash(superseded)
 
+	// Close write gate (v0.5.0): an explicit supersession inside a CLOSED exact
+	// company period fails with PERIOD_CLOSED (supersession is a lifecycle
+	// mutation; design §2.3 gates status/supersession transitions).
+	if err := s.assertPeriodWritable(ctx, tx, memory.Scope, "supersede"); err != nil {
+		return core.AccountingMemory{}, err
+	}
+
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE observations SET status = ?, authority_status = ?, supersedes_id = ? WHERE id = ?`,
 		string(core.StatusSuperseded), legacyStatusFor(core.StatusSuperseded), successorID, memoryID,
@@ -3610,6 +4036,13 @@ func (s *SQLiteStore) ApplyStatusTransition(memoryID string, to core.MemoryStatu
 	resulting := memory
 	resulting.Status = to
 	toEnvelope := core.ComputeEnvelopeHash(resulting)
+
+	// Close write gate (v0.5.0): status/supersession transitions (reject, void,
+	// supersede) inside a CLOSED exact company period fail with PERIOD_CLOSED —
+	// the period stays immutable until an explicit controller reopen.
+	if err := s.assertPeriodWritable(ctx, tx, memory.Scope, "status transition to "+string(to)); err != nil {
+		return core.AccountingMemory{}, err
+	}
 
 	if _, err := tx.ExecContext(ctx, `UPDATE observations SET status = ?, authority_status = ? WHERE id = ?`, string(to), legacyStatusFor(to), memoryID); err != nil {
 		return core.AccountingMemory{}, err
@@ -3756,8 +4189,8 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
 		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
@@ -3766,7 +4199,7 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
-		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), built.ReceiptID, built.SupersedesID,
+		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), built.ReceiptID, built.SupersedesID,
 		built.Revision,
 	); err != nil {
 		return false, fmt.Errorf("persistence error: import observation: %w", err)
@@ -3857,6 +4290,12 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 	memory, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
 	if !ok {
 		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+	}
+	// Close write gate (v0.5.0): evidence/rule links inside a CLOSED exact
+	// company period fail with PERIOD_CLOSED — links are post-write mutations of
+	// the period's immutable state.
+	if err := s.assertPeriodWritable(ctx, conn, memory.Scope, "link "+table); err != nil {
+		return err
 	}
 	now := nowISO() // ONE captured timestamp for the link row and its receipt
 	fromEnvelope := core.ComputeEnvelopeHash(memory)

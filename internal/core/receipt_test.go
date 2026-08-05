@@ -119,8 +119,8 @@ func signFixture(t *testing.T) (core.SignedReceipt, core.ReceiptPayload, ed25519
 // Closed model
 // ──────────────────────────────────────────────
 
-// TestReceiptClosedEnums freezes the two subject types, the eight actions and
-// the algorithm constant; unknown values fail closed.
+// TestReceiptClosedEnums freezes the two subject types, the ten actions and
+// the algorithm constants; unknown values fail closed.
 func TestReceiptClosedEnums(t *testing.T) {
 	for _, s := range []core.SubjectType{core.SubjectTypeMemory, core.SubjectTypeJudgment} {
 		if !core.IsValidSubjectType(s) {
@@ -132,6 +132,7 @@ func TestReceiptClosedEnums(t *testing.T) {
 		core.ReceiptActionMemoryRejected, core.ReceiptActionMemoryVoided,
 		core.ReceiptActionRelationConfirmed, core.ReceiptActionRelationRejected,
 		core.ReceiptActionEvidenceLinked, core.ReceiptActionMemorySuperseded,
+		core.ReceiptActionMemoryClosed, core.ReceiptActionMemoryReopened,
 	} {
 		if !core.IsValidReceiptAction(a) {
 			t.Errorf("IsValidReceiptAction(%q) = false, want true", a)
@@ -154,6 +155,9 @@ func TestReceiptClosedEnums(t *testing.T) {
 	}
 	if core.ReceiptPayloadVersion != "receipt-payload/v0.4.0" {
 		t.Errorf("ReceiptPayloadVersion = %q", core.ReceiptPayloadVersion)
+	}
+	if core.ReceiptPayloadVersionV05 != "receipt-payload/v0.5.0" {
+		t.Errorf("ReceiptPayloadVersionV05 = %q, want receipt-payload/v0.5.0 (v0.5.0 close actions)", core.ReceiptPayloadVersionV05)
 	}
 }
 

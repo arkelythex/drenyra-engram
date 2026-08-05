@@ -5,7 +5,8 @@
 //
 // An Ed25519 receipt is an immutable, signed record of one covered act
 // (memory_recorded | memory_approved | memory_rejected | memory_voided |
-// relation_confirmed | relation_rejected | evidence_linked | memory_superseded).
+// relation_confirmed | relation_rejected | evidence_linked | memory_superseded |
+// memory_closed | memory_reopened).
 // It proves INTEGRITY and SIGNER POSSESSION — never accounting correctness
 // (documented: Accounting correctness: NOT ASSERTED).
 //
@@ -78,22 +79,43 @@ const (
 	ReceiptActionEvidenceLinked ReceiptAction = "evidence_linked"
 	// ReceiptActionMemorySuperseded covers a memory superseded by a successor.
 	ReceiptActionMemorySuperseded ReceiptAction = "memory_superseded"
+	// ReceiptActionMemoryClosed covers an APPROVED monthly close: the close
+	// approval emits memory_approved THEN memory_closed atomically on the close
+	// memory's receipt chain (v0.5.0 close foundation). The payload covers H1/H2,
+	// scope, the approval principal, policy and reason; the snapshot itself is
+	// covered transitively by H2 (the resulting envelope hash includes the close
+	// snapshot).
+	ReceiptActionMemoryClosed ReceiptAction = "memory_closed"
+	// ReceiptActionMemoryReopened covers an explicit controller reopen of a
+	// closed period (v0.5.0; emitted by ReopenPeriod — next batch). Defined now
+	// so the closed set and schema CHECK stay in parity.
+	ReceiptActionMemoryReopened ReceiptAction = "memory_reopened"
 )
 
-// IsValidReceiptAction reports whether a is one of the eight closed actions.
+// IsValidReceiptAction reports whether a is one of the ten closed actions.
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
 		ReceiptActionMemoryRejected, ReceiptActionMemoryVoided,
 		ReceiptActionRelationConfirmed, ReceiptActionRelationRejected,
-		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded:
+		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded,
+		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened:
 		return true
 	}
 	return false
 }
 
-// ReceiptPayloadVersion is the frozen payload version.
+// ReceiptPayloadVersion is the frozen payload version stamped on the eight
+// original v0.4.0 actions (memory_recorded … memory_superseded): their receipts
+// are byte-identical to the pre-v0.5 protocol.
 const ReceiptPayloadVersion = "receipt-payload/v0.4.0"
+
+// ReceiptPayloadVersionV05 is the payload version stamped on the v0.5.0 close
+// actions (memory_closed, memory_reopened). Canonicalization is version-agnostic
+// (the payload shape is unchanged — the snapshot is covered via the resulting
+// envelope hash), so verifiers accept both v0.4.0 and v0.5.0 payloads unchanged
+// (design §2.5: “verifiers continue accepting v0.4”).
+const ReceiptPayloadVersionV05 = "receipt-payload/v0.5.0"
 
 // ReceiptAlgorithm is the frozen signing algorithm.
 const ReceiptAlgorithm = "Ed25519"
