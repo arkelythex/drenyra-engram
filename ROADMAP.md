@@ -103,13 +103,22 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       `accounting_judgment_*` (confirm/reject fail-closed without session) ·
       CLI `judge propose|confirm|reject|withdraw|show`. Contracts:
       contracts/judgment.md. Implemented in commits 0333a29..b49436f.
-- [ ] **3. Receipts Ed25519** covering ACTS (memory_recorded, memory_approved,
-      memory_rejected, memory_voided, relation_confirmed, relation_rejected,
-      evidence_linked, memory_superseded): envelope { subjectType, subjectId,
-      action, tenantId, companyId, fiscalPeriodId, payloadHash,
-      previousReceiptHash, principalId, membershipId, policyVersion,
-      algorithm, keyId, signature, issuedAt }. An approval signs the reviewed
-      envelopeHash + principal identity + action + policy used.
+- [x] **3. Receipts Ed25519** (`SignedReceipt` — DONE): every immutable act
+      emits a canonical, offline-verifiable receipt — `memory_recorded`,
+      `memory_approved`, `memory_rejected`, `memory_voided`,
+      `relation_confirmed`, `relation_rejected`, `evidence_linked`,
+      `memory_superseded`. Envelope: `{ subjectType, subjectId, action,
+      tenantId, companyId, fiscalPeriodId, payloadHash, previousReceiptHash,
+      principalId, membershipId, policyVersion, algorithm (Ed25519), keyId,
+      signature, issuedAt }`. An approval signs the reviewed envelopeHash (H1)
+      + resultingEnvelopeHash (H2) + principal identity + action + reason +
+      policyVersion + timestamp. Atomic emission inside each act's transaction
+      (schema v5 `receipts` immutable + `signing_keys` public-only); private
+      keyring in user-only file (0600), key lifecycle (`keys init|show|rotate`),
+      per-subject `previousReceiptHash` chain; Go signs / TS verifies and TS
+      canonicalizes / Go verifies (golden vector). Receipt integrity never
+      implies accounting correctness. Contracts: contracts/receipts.md.
+      Implemented in commits 5e07d90..1eb9055.
 - [ ] **4. Verificación offline**: `drenyra-engram verify memory|judgment|
       receipt` answering per layer — Payload canonicalization, Envelope
       integrity, Signature, Signing-key validity, Principal provenance,

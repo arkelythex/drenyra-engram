@@ -27,12 +27,19 @@ Drenyra Engram is **independent**: it has no dependencies on Drenyra, Drenyra AI
 Drenyra Engram is **not**:
 
 - An authorization engine. It has no authority model; no observation is ever approval, permission, or authorization.
-- A receipt engine. Receipts, gates, and approvals belong to `drenyra-ai`.
+- A receipt engine for other products' acts. Since v0.4.0 (Step 3) Engram emits
+  Ed25519 receipts for ITS OWN immutable acts (memory_recorded, memory_approved,
+  memory_rejected, memory_voided, relation_confirmed, relation_rejected,
+  evidence_linked, memory_superseded); cross-product authorization gates remain
+  in `drenyra-ai`.
 - A product UI or Pi harness. Those belong to Drenyra and `drenyra-pi`.
 
 ## What Drenyra Engram must NOT contain long-term
 
-- **Authorization, receipts, or gates** → `drenyra-ai`. Cross-consumer approvals route through Drenyra AI gates and human professionals, never through memory.
+- **Authorization or gates** → `drenyra-ai`. Cross-consumer approvals route
+  through Drenyra AI gates and human professionals, never through memory.
+  Engram's own act receipts (v0.4.0) are its record of its own immutable
+  operations — they never authorize and never imply accounting correctness.
 - **Product surfaces** (UI, tenants, documents, accounts, SUNAT flows) → Drenyra.
 - **Pi harness logic** → `drenyra-pi`.
 - **Cloud offering** → deferred to `arkelythex/drenyra-cloud`.
@@ -54,7 +61,8 @@ Drenyra Engram is **not**:
 ## Ownership and accountability
 
 - Memory contracts, lifecycle, provenance, and sync semantics: this repo.
-- Authorization, receipts, and gates: `drenyra-ai`. Product: Drenyra. Pi harness: `drenyra-pi`.
+- Authorization and gates: `drenyra-ai`. Engram's own act receipts: this repo
+  (v0.4.0). Product: Drenyra. Pi harness: `drenyra-pi`.
 - A defect in memory behavior is filed here; a defect in how a consumer reads memory belongs to that consumer.
 
 ## Boundary enforcement

@@ -10,7 +10,10 @@
 Memory guides.        → Drenyra Engram stores and retrieves knowledge.
 Policy restricts.     → Consumers apply their policies; Engram carries them as observations.
 Evidence demonstrates. → Provenance and vigencia make knowledge checkable.
-Receipt certifies.    → Certification happens in drenyra-ai receipts, never in memory.
+Receipt certifies.    → Engram certifies its OWN immutable acts with Ed25519
+                        receipts (v0.4.0 Step 3); certifying business decisions
+                        belongs to `drenyra-ai`. Receipt integrity never implies
+                        accounting correctness.
 Professional authorizes. → Only humans approve; no observation is ever an approval.
 ```
 

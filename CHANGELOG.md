@@ -109,6 +109,37 @@ correction is a NEW judgment that supersedes it.
   superseded-judgment-corrects-confirmed, immutable-confirmed) pass
   byte-identically in Go and TS.
 
+### Step 3 — Receipts Ed25519 (DONE)
+
+Every immutable act emits a canonical, offline-verifiable Ed25519 receipt,
+atomically inside the act's transaction.
+
+- **Canonical signed envelope** (`SignedReceipt`): subjectType, subjectId,
+  action, tenantId, companyId, fiscalPeriodId, payloadHash,
+  previousReceiptHash, principalId, membershipId, policyVersion, algorithm,
+  keyId, signature, issuedAt. Byte-identical canonicalization in Go and
+  TypeScript (compact JSON, fixed property order, no HTML escaping); an
+  approval signs reviewedEnvelopeHash (H1) + resultingEnvelopeHash (H2) +
+  principal identity + action + reason + policyVersion + timestamp.
+- **8 acts covered**: memory_recorded, memory_approved, memory_rejected,
+  memory_voided, relation_confirmed, relation_rejected, evidence_linked,
+  memory_superseded — each emitted inside its own transaction (signing failure
+  rolls back the act), with the transaction's captured timestamp.
+- **Per-subject chain**: `previousReceiptHash` = ReceiptHash of the prior
+  receipt of the same subject; genesis empty. The writer lock prevents chain
+  forks.
+- **Key lifecycle** (schema v5): private seed in a user-only file (0600,
+  `keys init|show|rotate`); SQLite stores public keys only (`signing_keys`,
+  revocation one-way); `keyId = ed25519:<sha256(pubkey)>`; rotation is
+  explicit; revoked keys never sign; historical acts are never backfilled.
+- **Parity**: golden vector `receipt-ed25519-v1.json` proves Go signs / TS
+  verifies AND TS canonicalizes/signs / Go verifies (RFC 8032 deterministic
+  Ed25519; Node key derivation via JWK import, byte-identical to Go).
+- **Boundary**: receipts prove an act happened unaltered — they NEVER imply
+  accounting correctness. Cross-product authorization gates remain in
+  `drenyra-ai`; Engram's act receipts are its own immutable record
+  (ecosystem-boundaries.md and trust-model.md reconciled).
+
 ## v0.3.0 — Accounting Memory Kernel (released)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
