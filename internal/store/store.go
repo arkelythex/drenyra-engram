@@ -53,6 +53,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -4142,6 +4143,434 @@ func (s *SQLiteStore) InsertReceipt(ctx context.Context, q Queryer, row ReceiptR
 		return fmt.Errorf("insert receipt %s: %w", row.ReceiptHash, err)
 	}
 	return nil
+}
+
+// ──────────────────────────────────────────────
+// Offline verification read surface (v0.4.0 Step 4)
+// ──────────────────────────────────────────────
+
+// ErrReceiptNotFound is the sentinel for a receipt lookup that matched no
+// row: a bad target (unknown hash/id), never corruption — corruption
+// surfaces as a wrapped error with the underlying cause. Typed/sentinel
+// errors distinguish bad targets from corruption (design §4).
+var ErrReceiptNotFound = errors.New("receipt not found")
+
+// storedReceiptRow is the full stored shape of one receipt row: the signed
+// envelope, the canonical payload JSON, the stored receipt_hash and the
+// local row id. The unexported single-query scan keeps the narrow public
+// read contracts below while avoiding N+1 payload lookups (design §4 —
+// SignedReceipt intentionally excludes persistence metadata and the
+// canonical payload_json).
+type storedReceiptRow struct {
+	rowID       int64
+	receipt     core.SignedReceipt
+	payloadJSON string
+	storedHash  string
+}
+
+// receiptRowSelect reads every stored column the verification engine needs.
+const receiptRowSelect = `SELECT id, subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
+	payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version,
+	algorithm, key_id, signature, issued_at, payload_json, receipt_hash FROM receipts`
+
+// scanStoredReceiptRow maps one receipt row to its stored shape; the raw
+// signature BLOB is converted to the protocol's padded base64.
+func scanStoredReceiptRow(sc interface{ Scan(dest ...any) error }) (storedReceiptRow, error) {
+	var (
+		row         storedReceiptRow
+		subjectType string
+		action      string
+		signature   []byte
+	)
+	if err := sc.Scan(
+		&row.rowID, &subjectType, &row.receipt.SubjectID, &action,
+		&row.receipt.TenantID, &row.receipt.CompanyID, &row.receipt.FiscalPeriodID,
+		&row.receipt.PayloadHash, &row.receipt.PreviousReceiptHash,
+		&row.receipt.PrincipalID, &row.receipt.MembershipID, &row.receipt.PolicyVersion,
+		&row.receipt.Algorithm, &row.receipt.KeyID, &signature, &row.receipt.IssuedAt,
+		&row.payloadJSON, &row.storedHash,
+	); err != nil {
+		return storedReceiptRow{}, err
+	}
+	row.receipt.SubjectType = core.SubjectType(subjectType)
+	row.receipt.Action = core.ReceiptAction(action)
+	row.receipt.Signature = base64.StdEncoding.EncodeToString(signature)
+	return row, nil
+}
+
+// queryStoredReceiptRows runs the shared receipt-row query with the given
+// WHERE/ORDER suffix (verification is read-only; it never starts a
+// transaction).
+func (s *SQLiteStore) queryStoredReceiptRows(ctx context.Context, suffix string, args ...any) ([]storedReceiptRow, error) {
+	rows, err := s.db.QueryContext(ctx, receiptRowSelect+suffix, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]storedReceiptRow, 0, 8)
+	for rows.Next() {
+		row, err := scanStoredReceiptRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ReceiptsForSubject returns every signed receipt of a subject ordered by
+// issued_at ASC, rowid ASC — the full chain the verification engine walks
+// (design §4; ordered receipts verify complete chains, so no head-only
+// shortcut is needed).
+func (s *SQLiteStore) ReceiptsForSubject(ctx context.Context, subjectType core.SubjectType, subjectID string) ([]core.SignedReceipt, error) {
+	rows, err := s.queryStoredReceiptRows(ctx,
+		` WHERE subject_type = ? AND subject_id = ? ORDER BY issued_at ASC, rowid ASC`,
+		string(subjectType), subjectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]core.SignedReceipt, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.receipt)
+	}
+	return out, nil
+}
+
+// ReceiptByHash returns the receipt whose stored receipt_hash equals the
+// given digest — the standalone predecessor resolution (design §4).
+// ErrReceiptNotFound when no row matches.
+func (s *SQLiteStore) ReceiptByHash(ctx context.Context, receiptHash string) (core.SignedReceipt, error) {
+	rows, err := s.queryStoredReceiptRows(ctx, ` WHERE receipt_hash = ? LIMIT 1`, receiptHash)
+	if err != nil {
+		return core.SignedReceipt{}, err
+	}
+	if len(rows) == 0 {
+		return core.SignedReceipt{}, fmt.Errorf("%w: %s", ErrReceiptNotFound, receiptHash)
+	}
+	return rows[0].receipt, nil
+}
+
+// ReceiptByID returns the receipt with the given local SQLite row id — the
+// numeric convenience selector (design §5; the hash is the portable
+// identity). ErrReceiptNotFound when no row matches.
+func (s *SQLiteStore) ReceiptByID(ctx context.Context, id int64) (core.SignedReceipt, error) {
+	rows, err := s.queryStoredReceiptRows(ctx, ` WHERE id = ? LIMIT 1`, id)
+	if err != nil {
+		return core.SignedReceipt{}, err
+	}
+	if len(rows) == 0 {
+		return core.SignedReceipt{}, fmt.Errorf("%w: id %d", ErrReceiptNotFound, id)
+	}
+	return rows[0].receipt, nil
+}
+
+// ReceiptPayloadByHash returns the canonical payload JSON, the stored
+// receipt_hash and the row id of the receipt identified by its stored hash
+// — the accessor the verification engine needs because SignedReceipt
+// intentionally excludes persistence metadata and the canonical payload
+// (design §4). ErrReceiptNotFound when no row matches.
+func (s *SQLiteStore) ReceiptPayloadByHash(ctx context.Context, receiptHash string) (payloadJSON string, storedHash string, rowID int64, err error) {
+	rows, err := s.queryStoredReceiptRows(ctx, ` WHERE receipt_hash = ? LIMIT 1`, receiptHash)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if len(rows) == 0 {
+		return "", "", 0, fmt.Errorf("%w: %s", ErrReceiptNotFound, receiptHash)
+	}
+	return rows[0].payloadJSON, rows[0].storedHash, rows[0].rowID, nil
+}
+
+// SigningKeyForVerify reads a signing-key row through the pool connection
+// — the read-only verification surface. It reuses LookupSigningKey
+// (verification never starts a transaction).
+func (s *SQLiteStore) SigningKeyForVerify(ctx context.Context, keyID string) (SigningKeyRecord, error) {
+	return s.LookupSigningKey(ctx, s.db, keyID)
+}
+
+// ReceiptActProvenance resolves the immutable event snapshot a covered-act
+// receipt must match: approval_events for memory_approved, judgment_events
+// for relation_confirmed/relation_rejected, transition_log for the terminal
+// memory transitions, the observations row for memory_recorded and
+// evidence_links for evidence_linked (design §4). Records correlate by
+// (subject, action, issued_at) because receipts carry no event-id column;
+// ZERO matches return found=false and MULTIPLE matches are rejected as
+// ambiguity — fail closed (corruption is never a successful skip).
+func (s *SQLiteStore) ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string) (core.ActProvenance, bool, error) {
+	switch action {
+	case core.ReceiptActionMemoryApproved:
+		return s.approvalEventProvenance(ctx, subjectID, issuedAt)
+	case core.ReceiptActionRelationConfirmed:
+		return s.judgmentEventProvenance(ctx, subjectID, "confirm", issuedAt)
+	case core.ReceiptActionRelationRejected:
+		return s.judgmentEventProvenance(ctx, subjectID, "reject", issuedAt)
+	case core.ReceiptActionMemoryRecorded:
+		return s.recordedObservationProvenance(ctx, subjectID, issuedAt)
+	case core.ReceiptActionMemoryRejected, core.ReceiptActionMemoryVoided, core.ReceiptActionMemorySuperseded:
+		return s.transitionLogProvenance(ctx, subjectID, strings.TrimPrefix(string(action), "memory_"), issuedAt)
+	case core.ReceiptActionEvidenceLinked:
+		return s.evidenceLinkProvenance(ctx, subjectID, issuedAt)
+	default:
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: unknown receipt action %q", action)
+	}
+}
+
+// approvalEventProvenance maps an approval_events row to the immutable
+// snapshot a memory_approved receipt must match.
+func (s *SQLiteStore) approvalEventProvenance(ctx context.Context, memoryID, issuedAt string) (core.ActProvenance, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT principal_subject_id, membership_id, principal_roles_json, authentication_method,
+			assurance_level, principal_authenticated_at, policy_version, reason,
+			reviewed_envelope_hash, resulting_envelope_hash, created_at
+		FROM approval_events WHERE memory_id = ? AND created_at = ?`, memoryID, issuedAt)
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		count      int
+		principal  string
+		membership string
+		rolesJSON  string
+		authMethod string
+		assurance  string
+		authdAt    string
+		policy     string
+		reason     string
+		revEnv     string
+		resEnv     string
+		created    string
+	)
+	for rows.Next() {
+		count++
+		if err := rows.Scan(&principal, &membership, &rolesJSON, &authMethod,
+			&assurance, &authdAt, &policy, &reason, &revEnv, &resEnv, &created); err != nil {
+			return core.ActProvenance{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	if count == 0 {
+		return core.ActProvenance{}, false, nil
+	}
+	if count > 1 {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: %d approval_events match memory %s at %s — ambiguity", count, memoryID, issuedAt)
+	}
+	var roles []string
+	if err := json.Unmarshal([]byte(rolesJSON), &roles); err != nil {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: corrupt approval event roles for memory %s: %w", memoryID, err)
+	}
+	return core.ActProvenance{
+		Action:                "approved",
+		Timestamp:             created,
+		PrincipalID:           principal,
+		MembershipID:          membership,
+		Roles:                 roles,
+		AuthenticationMethod:  authMethod,
+		AssuranceLevel:        assurance,
+		AuthenticatedAt:       authdAt,
+		Policy:                policy,
+		Reason:                reason,
+		ReviewedEnvelopeHash:  revEnv,
+		ResultingEnvelopeHash: resEnv,
+	}, true, nil
+}
+
+// judgmentEventProvenance maps a confirm/reject judgment_events row to the
+// immutable snapshot a relation_confirmed/relation_rejected receipt must
+// match. The event records the RESULTING state hash (the exact hash the
+// decided row now hashes to) in judgment_hash — the recordedJudgmentHash
+// agreement the verification engine checks.
+func (s *SQLiteStore) judgmentEventProvenance(ctx context.Context, judgmentID, eventAction, issuedAt string) (core.ActProvenance, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT judgment_hash, principal_snapshot_json, policy_version, reason, created_at
+		FROM judgment_events WHERE judgment_id = ? AND created_at = ? AND action = ?`,
+		judgmentID, issuedAt, eventAction)
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		count        int
+		judgmentHash string
+		snapshotJSON string
+		policy       string
+		reason       string
+		created      string
+	)
+	for rows.Next() {
+		count++
+		if err := rows.Scan(&judgmentHash, &snapshotJSON, &policy, &reason, &created); err != nil {
+			return core.ActProvenance{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	if count == 0 {
+		return core.ActProvenance{}, false, nil
+	}
+	if count > 1 {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: %d %s events match judgment %s at %s — ambiguity", count, eventAction, judgmentID, issuedAt)
+	}
+	var snapshot auth.PrincipalSnapshot
+	if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: corrupt %s event snapshot for judgment %s: %w", eventAction, judgmentID, err)
+	}
+	roles := make([]string, 0, len(snapshot.Roles))
+	for _, r := range snapshot.Roles {
+		roles = append(roles, string(r))
+	}
+	return core.ActProvenance{
+		Action:               eventAction,
+		Timestamp:            created,
+		PrincipalID:          snapshot.SubjectID,
+		MembershipID:         snapshot.MembershipID,
+		Roles:                roles,
+		AuthenticationMethod: string(snapshot.AuthenticationMethod),
+		AssuranceLevel:       string(snapshot.AssuranceLevel),
+		AuthenticatedAt:      snapshot.AuthenticatedAt,
+		Policy:               policy,
+		Reason:               reason,
+		RecordedJudgmentHash: judgmentHash,
+	}, true, nil
+}
+
+// recordedObservationProvenance maps the immutable recorded source of a
+// memory (the observations row) to the claimed-act snapshot a
+// memory_recorded receipt must match (attribution continuity).
+func (s *SQLiteStore) recordedObservationProvenance(ctx context.Context, memoryID, issuedAt string) (core.ActProvenance, bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT actor, timestamp FROM observations WHERE id = ? AND timestamp = ?`, memoryID, issuedAt)
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		count int
+		actor string
+		ts    string
+	)
+	for rows.Next() {
+		count++
+		if err := rows.Scan(&actor, &ts); err != nil {
+			return core.ActProvenance{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	if count == 0 {
+		return core.ActProvenance{}, false, nil
+	}
+	if count > 1 {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: %d observation rows match memory %s at %s — ambiguity", count, memoryID, issuedAt)
+	}
+	return core.ActProvenance{Action: "recorded", Timestamp: ts, PrincipalID: actor}, true, nil
+}
+
+// transitionLogProvenance maps a transition_log row to the claimed-act
+// snapshot a memory_rejected/memory_voided/memory_superseded receipt must
+// match (attribution continuity).
+func (s *SQLiteStore) transitionLogProvenance(ctx context.Context, memoryID, toStatus, issuedAt string) (core.ActProvenance, bool, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT actor, to_status, timestamp FROM transition_log
+		WHERE observation_id = ? AND timestamp = ? AND to_status = ?`, memoryID, issuedAt, toStatus)
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		count  int
+		actor  string
+		status string
+		ts     string
+	)
+	for rows.Next() {
+		count++
+		if err := rows.Scan(&actor, &status, &ts); err != nil {
+			return core.ActProvenance{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	if count == 0 {
+		return core.ActProvenance{}, false, nil
+	}
+	if count > 1 {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: %d transition_log rows match memory %s at %s — ambiguity", count, memoryID, issuedAt)
+	}
+	return core.ActProvenance{Action: status, Timestamp: ts, PrincipalID: actor}, true, nil
+}
+
+// evidenceLinkProvenance maps an evidence_links row to the claimed-act
+// snapshot an evidence_linked receipt must match (attribution continuity).
+func (s *SQLiteStore) evidenceLinkProvenance(ctx context.Context, memoryID, issuedAt string) (core.ActProvenance, bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT actor, timestamp FROM evidence_links WHERE memory_id = ? AND timestamp = ?`, memoryID, issuedAt)
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var (
+		count int
+		actor string
+		ts    string
+	)
+	for rows.Next() {
+		count++
+		if err := rows.Scan(&actor, &ts); err != nil {
+			return core.ActProvenance{}, false, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	if count == 0 {
+		return core.ActProvenance{}, false, nil
+	}
+	if count > 1 {
+		return core.ActProvenance{}, false, fmt.Errorf("provenance: %d evidence_links rows match memory %s at %s — ambiguity", count, memoryID, issuedAt)
+	}
+	return core.ActProvenance{Action: "linked", Timestamp: ts, PrincipalID: actor}, true, nil
+}
+
+// EvidenceLinkRefs returns the CURRENT evidence_links rows of a memory — the
+// immutable snapshot of what evidence is available now (design §3; the
+// verification engine reads it through the store, never raw SQL).
+func (s *SQLiteStore) EvidenceLinkRefs(ctx context.Context, memoryID string) ([]string, error) {
+	return s.linkRefsByID(ctx, `evidence_links`, memoryID)
+}
+
+// RuleLinkRefs returns the CURRENT rule_links rows of a memory (design §3
+// rule availability).
+func (s *SQLiteStore) RuleLinkRefs(ctx context.Context, memoryID string) ([]string, error) {
+	return s.linkRefsByID(ctx, `rule_links`, memoryID)
+}
+
+func (s *SQLiteStore) linkRefsByID(ctx context.Context, table, memoryID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT ref FROM `+table+` WHERE memory_id = ? ORDER BY rowid`, memoryID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ──────────────────────────────────────────────
