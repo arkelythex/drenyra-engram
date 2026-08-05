@@ -114,6 +114,21 @@ func run(args []string) int {
 	}
 }
 
+// openStore opens the store at path with the receipt signer attached (v0.4.0
+// Step 3 atomic emission): every covered mutation on the CLI surface mints an
+// immutable Ed25519 receipt inside its own transaction, below the adapter. The
+// signer is attached right after Open because the signer itself needs the opened
+// store (the store↔signer construction cycle); nil signer → no emission. The
+// keyring is created lazily on the FIRST covered mutation.
+func openStore(path string) (*store.SQLiteStore, error) {
+	st, err := store.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	st.SetReceiptSigner(receipts.NewSigner(st, receipts.DefaultKeyringPath()))
+	return st, nil
+}
+
 func cmdSave(args []string) int {
 	fs := flag.NewFlagSet("save", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
@@ -139,7 +154,7 @@ func cmdSave(args []string) int {
 		return fail("parse %s: %v", rest[0], err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -178,7 +193,7 @@ func cmdSearch(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -226,7 +241,7 @@ func cmdContext(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -260,7 +275,7 @@ func cmdDoctor(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -298,7 +313,7 @@ func cmdCompare(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -358,7 +373,7 @@ func cmdApprove(args []string) int {
 		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -435,7 +450,7 @@ func cmdGatedTransition(name string, args []string, run func(*server.API, string
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -564,7 +579,7 @@ func cmdGatedTransition(name string, args []string, run func(*server.API, string
     		fs.Usage()
     		return 2
     	}
-    	st, err := store.Open(*dbPath)
+    	st, err := openStore(*dbPath)
     	if err != nil {
     		return fail("keys rotate: %v", err)
     	}
@@ -680,7 +695,7 @@ func cmdAuthLogin(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("auth login: %v", err)
 	}
@@ -758,7 +773,7 @@ func cmdAuthSeedLocalDev(args []string) int {
 		return fail("auth seed-local-dev is only available with DRENYRA_ENV=local_dev; production mode rejects the command")
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("auth seed-local-dev: %v", err)
 	}
@@ -941,7 +956,7 @@ func cmdJudgePropose(args []string) int {
 		return fail("judge propose: %v", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -991,7 +1006,7 @@ func cmdJudgeConfirm(args []string) int {
 		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1051,7 +1066,7 @@ func cmdJudgeReject(args []string) int {
 		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1108,7 +1123,7 @@ func cmdJudgeWithdraw(args []string) int {
 		return fail("judge withdraw: %v", err)
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1144,7 +1159,7 @@ func cmdJudgeShow(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1184,7 +1199,7 @@ func cmdSupersede(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1221,7 +1236,7 @@ func cmdMCP(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1262,7 +1277,7 @@ func cmdServe(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1315,12 +1330,12 @@ func cmdSync(args []string) int {
 		return 2
 	}
 
-	from, err := store.Open(*fromPath)
+	from, err := openStore(*fromPath)
 	if err != nil {
 		return fail("open source store: %v", err)
 	}
 	defer func() { _ = from.Close() }()
-	to, err := store.Open(*toPath)
+	to, err := openStore(*toPath)
 	if err != nil {
 		return fail("open target store: %v", err)
 	}
@@ -1440,7 +1455,7 @@ func cmdLinkEvidence(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1482,7 +1497,7 @@ func cmdPeriodSummary(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1528,7 +1543,7 @@ func cmdTimeline(args []string) int {
 		return 2
 	}
 
-	st, err := store.Open(*dbPath)
+	st, err := openStore(*dbPath)
 	if err != nil {
 		return fail("%v", err)
 	}

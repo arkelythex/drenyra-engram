@@ -160,6 +160,21 @@ type Store interface {
 // targets; concurrent writers are serialized through a single connection.
 type SQLiteStore struct {
 	db *sql.DB
+	// signer mints and persists an immutable action receipt INSIDE the caller's
+	// transaction for every covered act (v0.4.0 Step 3 atomic emission). nil
+	// disables receipt emission entirely — the default for callers that never
+	// attach one (imports, read-only surfaces, tests).
+	signer ReceiptSigner
+}
+
+// ReceiptSigner mints and persists an immutable receipt for one covered act. The
+// signer runs on the caller-provided Queryer and NEVER starts or commits a
+// transaction — the caller's tx owns atomicity, so a signing failure rolls the
+// covered act back with it. *receipts.Signer satisfies this interface (its Sign
+// reads the subject chain head, signs with the active keyring key, registers the
+// public key and inserts the receipt row on q).
+type ReceiptSigner interface {
+	Sign(ctx context.Context, q Queryer, payload core.ReceiptPayload, issuedAt string) (core.SignedReceipt, error)
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies the
@@ -169,8 +184,11 @@ type SQLiteStore struct {
 // additively (single transaction), then the v2→v3, v3→v4 and v4→v5
 // migrations each run in their own single transaction. A corrupt or
 // unsupported store fails closed: it never fabricates data
-// (contracts/provenance.md frozen policy).
-func Open(path string) (*SQLiteStore, error) {
+// (contracts/provenance.md frozen policy). An OPTIONAL receipt signer may be
+// attached at open (nil signer → no receipt emission); the store↔signer
+// construction cycle (the signer needs the opened store) is resolved by the
+// adapter via SetReceiptSigner right after Open.
+func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
@@ -235,7 +253,66 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("unsupported store layout: schema_version=%d, supported=%d — fail closed; migrate additively, never rewrite", version, schemaVersion)
 	}
 
-	return &SQLiteStore{db: db}, nil
+	if len(signers) > 1 {
+		_ = db.Close()
+		return nil, fmt.Errorf("open sqlite store: at most one receipt signer may be attached")
+	}
+	st := &SQLiteStore{db: db}
+	if len(signers) == 1 {
+		st.signer = signers[0]
+	}
+	return st, nil
+}
+
+// SetReceiptSigner attaches the signer that mints immutable action receipts for
+// covered mutations (v0.4.0 Step 3 atomic emission). It is attached at Open,
+// below the HTTP/MCP/CLI adapters, so every surface emits identically; a nil
+// signer disables emission (the default). SetReceiptSigner exists for the
+// store↔signer construction cycle (the signer itself needs the store): the
+// adapter opens the store, builds the signer over it, and attaches it before any
+// command runs. A signer attached later only affects acts emitted after the
+// attachment.
+func (s *SQLiteStore) SetReceiptSigner(signer ReceiptSigner) { s.signer = signer }
+
+// kernelPolicyVersion is the frozen policy version stamped on NON-policy acts
+// (memory_recorded / memory_rejected / memory_voided / memory_superseded /
+// evidence_linked): the design's rule — non-policy acts use kernel/v0.4.0,
+// avoiding an ambiguous empty policy.
+const kernelPolicyVersion = "kernel/v0.4.0"
+
+// emitReceipt mints and persists ONE immutable receipt for a covered act INSIDE
+// the caller's transaction — it NEVER starts or commits a transaction (the
+// caller's tx owns atomicity, so a signing failure rolls the act back with it).
+//
+// The helper fixes the subject/action/issuedAt on the payload (the caller
+// provides every other payload field — scope, envelope/judgment hashes, reason,
+// principal snapshot, successor, evidence ref, policy version) and delegates to
+// the attached signer, which reads the subject's chain head (LatestReceiptChainHead),
+// canonicalizes, signs, registers the public key and inserts the receipt row, all
+// on the given Queryer. With no signer attached (nil), receipts are NOT emitted
+// and the call is a no-op returning the zero receipt.
+func (s *SQLiteStore) emitReceipt(ctx context.Context, q Queryer, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, payload core.ReceiptPayload, issuedAt string) (core.SignedReceipt, error) {
+	if s.signer == nil {
+		return core.SignedReceipt{}, nil
+	}
+	payload.Version = core.ReceiptPayloadVersion
+	payload.SubjectType = subjectType
+	payload.SubjectID = subjectID
+	payload.Action = action
+	payload.IssuedAt = issuedAt
+	return s.signer.Sign(ctx, q, payload, issuedAt)
+}
+
+// receiptPrincipalRoles converts the canonical snapshot roles (sorted,
+// deduplicated) to the payload's string list; the receipt payload canonicalizes
+// them again defensively (sorted + deduplicated — the contract never depends on
+// the caller's ordering).
+func receiptPrincipalRoles(snapshot auth.PrincipalSnapshot) []string {
+	out := make([]string, 0, len(snapshot.Roles))
+	for _, r := range snapshot.Roles {
+		out = append(out, string(r))
+	}
+	return out
 }
 
 // Close releases the underlying database.
@@ -1370,28 +1447,45 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		hasPrev = true
 	}
 
+	// Auto-supersession receipt state: when the new revision supersedes the prior
+	// current one, the design emits memory_superseded for the PRIOR subject FIRST
+	// (pre/post envelope hashes + successor id), then memory_recorded for the new
+	// subject — both inside this one transaction with the same captured timestamp.
+	var (
+		autoSuperseded         bool
+		supersededFromEnvelope string
+		supersededToEnvelope   string
+	)
 	if hasPrev {
-		// Supersede the previous current revision (same (topicKey, scope) chain).
-		// The supersedes relation is recorded in the SAME transaction, atomic
-		// with the status flip (the immutable-history chain is visible in the
-		// relation graph).
-		prev := core.AccountingMemory{Identity: core.Identity{ID: prevID}, Status: prevStatus}
+		// Load the FULL previous revision (with its current link rows) through the
+		// transaction BEFORE the supersede update: the receipt covers the act with
+		// the envelope hashes BEFORE (status/supersedes_id as stored) and AFTER
+		// (status superseded, supersedes_id = new id) — status and supersession
+		// participate in the envelope, so they are recomputed, never cached.
+		prev, ok := s.readMemoryWithLinks(ctx, tx, prevID)
+		if !ok {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: read previous revision row: %w", err)
+		}
+		prevEnvelope := core.ComputeEnvelopeHash(prev)
 		if err := core.SupersedePrev(&prev, id); err == nil {
+			// The auto-supersession is a lifecycle transition: it must trace to
+			// actor + actorKind + timestamp in the audit trail (lifecycle.md
+			// rule 4, provenance.md rule 3) so sync can replay it.
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE observations SET status = ?, supersedes_id = ? WHERE id = ?`,
 				string(prev.Status), prev.SupersedesID, prevID,
 			); err != nil {
 				return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: supersede previous revision: %w", err)
 			}
-			// The auto-supersession is a lifecycle transition: it must trace to
-			// actor + actorKind + timestamp in the audit trail (lifecycle.md
-			// rule 4, provenance.md rule 3) so sync can replay it.
 			if _, err := tx.ExecContext(ctx,
 				`INSERT INTO transition_log (observation_id, from_status, to_status, actor, actor_kind, timestamp) VALUES (?, ?, ?, ?, ?, ?)`,
 				prevID, string(prevStatus), string(core.StatusSuperseded), input.Source.ActorID, string(input.Source.ActorKind), recordedAt,
 			); err != nil {
 				return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: record supersede audit: %w", err)
 			}
+			autoSuperseded = true
+			supersededFromEnvelope = prevEnvelope
+			supersededToEnvelope = core.ComputeEnvelopeHash(prev) // SupersedePrev mutated status + supersedes_id
 		} else if !errors.Is(err, core.ErrInvalidTransition) {
 			// Only terminal predecessors are skipped; anything else is a bug.
 			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
@@ -1429,6 +1523,39 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: record supersedes relation: %w", err)
 		}
 	}
+
+	// Atomic receipt emission (v0.4.0 Step 3): inside the SAME transaction, before
+	// COMMIT, with the captured recordedAt — never a fresh time call. A signing
+	// failure returns an error and rolls the whole save back (no act, no receipt).
+	// If auto-supersession changed the prior observation, memory_superseded for the
+	// prior subject is emitted FIRST (it chains on the prior's own receipts), then
+	// memory_recorded for the new subject. The new memory's envelope hash is
+	// recomputed fresh (the stored envelope cache is not trusted).
+	if autoSuperseded {
+		if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, prevID, core.ReceiptActionMemorySuperseded, core.ReceiptPayload{
+			TenantID:         memory.Scope.OrganizationID,
+			CompanyID:        memory.Scope.CompanyID,
+			FiscalPeriodID:   memory.Scope.Period,
+			FromEnvelopeHash: supersededFromEnvelope,
+			ToEnvelopeHash:   supersededToEnvelope,
+			SuccessorID:      id,
+			PrincipalID:      input.Source.ActorID,
+			PolicyVersion:    kernelPolicyVersion,
+		}, recordedAt); err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: emit superseded receipt: %w", err)
+		}
+	}
+	if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, id, core.ReceiptActionMemoryRecorded, core.ReceiptPayload{
+		TenantID:              memory.Scope.OrganizationID,
+		CompanyID:             memory.Scope.CompanyID,
+		FiscalPeriodID:        memory.Scope.Period,
+		ResultingEnvelopeHash: core.ComputeEnvelopeHash(memory),
+		PrincipalID:           input.Source.ActorID,
+		PolicyVersion:         kernelPolicyVersion,
+	}, recordedAt); err != nil {
+		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: emit recorded receipt: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: commit: %w", err)
 	}
@@ -2097,6 +2224,29 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: record approval transition: %w", err)
 	}
 
+	// Atomic receipt emission (v0.4.0 Step 3): after the event + transition
+	// insertion and BEFORE the idempotency completion, inside the SAME transaction
+	// with the captured now. memory_approved carries H1/H2, the reason and the
+	// complete verified principal snapshot; a signing failure rolls the whole
+	// approval back (no event, no receipt).
+	if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeMemory, cmd.MemoryID, core.ReceiptActionMemoryApproved, core.ReceiptPayload{
+		TenantID:                 memory.Scope.OrganizationID,
+		CompanyID:                memory.Scope.CompanyID,
+		FiscalPeriodID:           memory.Scope.Period,
+		ReviewedEnvelopeHash:     h1,
+		ResultingEnvelopeHash:    h2,
+		Reason:                   cmd.Reason,
+		PrincipalID:              snapshot.SubjectID,
+		MembershipID:             snapshot.MembershipID,
+		PrincipalRoles:           receiptPrincipalRoles(snapshot),
+		AuthenticationMethod:     string(snapshot.AuthenticationMethod),
+		AssuranceLevel:           string(snapshot.AssuranceLevel),
+		PrincipalAuthenticatedAt: snapshot.AuthenticatedAt,
+		PolicyVersion:            decision.PolicyVersion,
+	}, now); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: emit approval receipt: %w", err)
+	}
+
 	result := core.ApprovalResult{
 		MemoryID:              cmd.MemoryID,
 		ApprovalEventID:       eventID,
@@ -2679,14 +2829,23 @@ func (s *SQLiteStore) adjudicateJudgment(ctx context.Context, p judgmentDecision
 		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
 	}
 
-	// 3. Read the judgment plus both observations on the SAME connection.
+	// 3. Read the judgment plus both observations on the SAME connection (the
+	// locked observations feed the relation receipt's from/to envelope hashes —
+	// recomputed fresh from the locked rows, never from the stored cache).
 	judgment, ok := s.readJudgment(ctx, conn, p.JudgmentID)
 	if !ok {
 		return core.AccountingJudgment{}, "", false, auth.New(auth.CodeJudgmentNotFound, "judgment not found: "+p.JudgmentID)
 	}
+	var fromObs, toObs core.AccountingMemory
 	for _, obsID := range []string{judgment.FromID, judgment.ToID} {
-		if _, ok := s.readMemoryWithLinks(ctx, conn, obsID); !ok {
+		obs, ok := s.readMemoryWithLinks(ctx, conn, obsID)
+		if !ok {
 			return core.AccountingJudgment{}, "", false, auth.New(auth.CodeMemoryNotFound, "judgment observation not found: "+obsID)
+		}
+		if obsID == judgment.FromID {
+			fromObs = obs
+		} else {
+			toObs = obs
 		}
 	}
 
@@ -2854,7 +3013,42 @@ func (s *SQLiteStore) adjudicateJudgment(ctx context.Context, p judgmentDecision
 		}
 	}
 
-	// 12. Complete the reservation (result + event link + completion time — the
+	// 12. Atomic receipt emission (v0.4.0 Step 3): after the decision event, the
+	// projections and the (covered) predecessor supersession, BEFORE the
+	// idempotency completion, inside the SAME transaction with the captured now.
+	// relation_confirmed / relation_rejected carries the proposed/resulting
+	// judgment hashes, both locked observation envelope hashes, the resolution and
+	// the complete verified principal snapshot. The predecessor supersession is
+	// covered inside relation_confirmed — it never creates another action. A
+	// signing failure rolls the whole decision back (no event, no receipt).
+	relationAction := core.ReceiptActionRelationConfirmed
+	if p.Action == "reject" {
+		relationAction = core.ReceiptActionRelationRejected
+	}
+	receiptSnapshot := snapshot
+	if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeJudgment, judgment.ID, relationAction, core.ReceiptPayload{
+		TenantID:                 judgment.TenantID,
+		CompanyID:                judgment.CompanyID,
+		FiscalPeriodID:           judgment.FiscalPeriodID,
+		ReviewedJudgmentHash:     actual,
+		ResultingJudgmentHash:    core.ComputeJudgmentHash(resulting),
+		FromMemoryID:             judgment.FromID,
+		FromEnvelopeHash:         core.ComputeEnvelopeHash(fromObs),
+		ToMemoryID:               judgment.ToID,
+		ToEnvelopeHash:           core.ComputeEnvelopeHash(toObs),
+		Reason:                   p.Resolution,
+		PrincipalID:              receiptSnapshot.SubjectID,
+		MembershipID:             receiptSnapshot.MembershipID,
+		PrincipalRoles:           receiptPrincipalRoles(receiptSnapshot),
+		AuthenticationMethod:     string(receiptSnapshot.AuthenticationMethod),
+		AssuranceLevel:           string(receiptSnapshot.AssuranceLevel),
+		PrincipalAuthenticatedAt: receiptSnapshot.AuthenticatedAt,
+		PolicyVersion:            decision.PolicyVersion,
+	}, now); err != nil {
+		return core.AccountingJudgment{}, "", false, fmt.Errorf("persistence error: emit "+p.Action+" receipt: %w", err)
+	}
+
+	// 13. Complete the reservation (result + event link + completion time — the
 	// CHECK requires result_json and judgment_event_id to be set together) and
 	// commit; the whole decision is one atomic unit.
 	result := storedJudgmentResult{JudgmentID: judgment.ID, Judgment: resulting, JudgmentEventID: eventID}
@@ -3298,14 +3492,20 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 		}
 	}()
 
-	var from string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM observations WHERE id = ?`, memoryID).Scan(&from)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.AccountingMemory{}, fmt.Errorf("MEMORY_NOT_FOUND: %s", memoryID)
-		}
-		return core.AccountingMemory{}, err
+	// Read the FULL memory (with its current link rows) through the transaction
+	// BEFORE the transition: the supersession receipt covers the act with the
+	// envelope hashes BEFORE (status/supersedes_id as stored) and AFTER (status
+	// superseded, supersedes_id = successor) — recomputed fresh, never cached.
+	memory, ok := s.readMemoryWithLinks(ctx, tx, memoryID)
+	if !ok {
+		return core.AccountingMemory{}, fmt.Errorf("MEMORY_NOT_FOUND: %s", memoryID)
 	}
+	from := memory.Status
+	fromEnvelope := core.ComputeEnvelopeHash(memory)
+	superseded := memory
+	superseded.Status = core.StatusSuperseded
+	superseded.SupersedesID = successorID
+	toEnvelope := core.ComputeEnvelopeHash(superseded)
 
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE observations SET status = ?, authority_status = ?, supersedes_id = ? WHERE id = ?`,
@@ -3325,15 +3525,29 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	); err != nil {
 		return core.AccountingMemory{}, err
 	}
+
+	// Atomic receipt emission (v0.4.0 Step 3): inside the SAME transaction, with
+	// the transition's own timestamp (never a fresh time call). The claimed
+	// supersession act uses the transition actor as principalId. A signing
+	// failure rolls the whole supersession back (no transition, no receipt).
+	if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, memoryID, core.ReceiptActionMemorySuperseded, core.ReceiptPayload{
+		TenantID:         memory.Scope.OrganizationID,
+		CompanyID:        memory.Scope.CompanyID,
+		FiscalPeriodID:   memory.Scope.Period,
+		FromEnvelopeHash: fromEnvelope,
+		ToEnvelopeHash:   toEnvelope,
+		SuccessorID:      successorID,
+		PrincipalID:      meta.Actor,
+		PolicyVersion:    kernelPolicyVersion,
+	}, meta.Timestamp); err != nil {
+		return core.AccountingMemory{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return core.AccountingMemory{}, err
 	}
 	committed = true
-	memory, ok := s.FindByID(memoryID)
-	if !ok {
-		return core.AccountingMemory{}, fmt.Errorf("MEMORY_NOT_FOUND: %s", memoryID)
-	}
-	return memory, nil
+	return superseded, nil
 }
 
 // RelationBetween returns the relation recorded from fromID to toID (the first
@@ -3382,14 +3596,19 @@ func (s *SQLiteStore) ApplyStatusTransition(memoryID string, to core.MemoryStatu
 		}
 	}()
 
-	var from string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM observations WHERE id = ?`, memoryID).Scan(&from)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return core.AccountingMemory{}, fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
-		}
-		return core.AccountingMemory{}, err
+	// Read the FULL memory (with its current link rows) through the transaction
+	// BEFORE the transition: reject/void receipts cover the act with the envelope
+	// hashes BEFORE and AFTER (status participates in the envelope) — recomputed
+	// fresh, never cached.
+	memory, ok := s.readMemoryWithLinks(ctx, tx, memoryID)
+	if !ok {
+		return core.AccountingMemory{}, fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
 	}
+	from := memory.Status
+	fromEnvelope := core.ComputeEnvelopeHash(memory)
+	resulting := memory
+	resulting.Status = to
+	toEnvelope := core.ComputeEnvelopeHash(resulting)
 
 	if _, err := tx.ExecContext(ctx, `UPDATE observations SET status = ?, authority_status = ? WHERE id = ?`, string(to), legacyStatusFor(to), memoryID); err != nil {
 		return core.AccountingMemory{}, err
@@ -3400,15 +3619,46 @@ func (s *SQLiteStore) ApplyStatusTransition(memoryID string, to core.MemoryStatu
 	); err != nil {
 		return core.AccountingMemory{}, err
 	}
+
+	// Atomic receipt emission (v0.4.0 Step 3): ONLY the covered terminal
+	// transitions mint receipts — rejected → memory_rejected, voided →
+	// memory_voided (the closed action set has no receipt for any other
+	// transition; approvals are covered by the authenticated ApproveMemory path).
+	// The emission runs inside the SAME transaction with the transition's own
+	// timestamp; the claimed act uses the transition actor as principalId. A
+	// signing failure rolls the whole transition back (no change, no receipt).
+	switch to {
+	case core.StatusRejected:
+		if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, memoryID, core.ReceiptActionMemoryRejected, core.ReceiptPayload{
+			TenantID:              memory.Scope.OrganizationID,
+			CompanyID:             memory.Scope.CompanyID,
+			FiscalPeriodID:        memory.Scope.Period,
+			ReviewedEnvelopeHash:  fromEnvelope,
+			ResultingEnvelopeHash: toEnvelope,
+			PrincipalID:           meta.Actor,
+			PolicyVersion:         kernelPolicyVersion,
+		}, meta.Timestamp); err != nil {
+			return core.AccountingMemory{}, err
+		}
+	case core.StatusVoided:
+		if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, memoryID, core.ReceiptActionMemoryVoided, core.ReceiptPayload{
+			TenantID:              memory.Scope.OrganizationID,
+			CompanyID:             memory.Scope.CompanyID,
+			FiscalPeriodID:        memory.Scope.Period,
+			ReviewedEnvelopeHash:  fromEnvelope,
+			ResultingEnvelopeHash: toEnvelope,
+			PrincipalID:           meta.Actor,
+			PolicyVersion:         kernelPolicyVersion,
+		}, meta.Timestamp); err != nil {
+			return core.AccountingMemory{}, err
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return core.AccountingMemory{}, err
 	}
 	committed = true
-	memory, ok := s.FindByID(memoryID)
-	if !ok {
-		return core.AccountingMemory{}, fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
-	}
-	return memory, nil
+	return resulting, nil
 }
 
 // ──────────────────────────────────────────────
@@ -3600,15 +3850,25 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 		}
 	}()
 
-	var exists int
-	if err := conn.QueryRowContext(ctx, `SELECT 1 FROM observations WHERE id = ?`, memoryID).Scan(&exists); err != nil {
+	// Read the FULL memory (with its current link rows) through the transaction
+	// BEFORE the insert: the evidence receipt needs the scope and the PRE-link
+	// envelope (recomputed fresh — the stored envelope cache is not trusted).
+	memory, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+	if !ok {
 		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
 	}
-	if _, err := conn.ExecContext(ctx,
+	now := nowISO() // ONE captured timestamp for the link row and its receipt
+	fromEnvelope := core.ComputeEnvelopeHash(memory)
+	res, err := conn.ExecContext(ctx,
 		`INSERT OR IGNORE INTO `+table+` (memory_id, ref, actor, timestamp) VALUES (?, ?, ?, ?)`,
-		memoryID, ref, actor, nowISO(),
-	); err != nil {
+		memoryID, ref, actor, now,
+	)
+	if err != nil {
 		return fmt.Errorf("persistence error: add link: %w", err)
+	}
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("persistence error: link rows affected: %w", err)
 	}
 	// A link changes the canonical refs → the derived envelope cache changes.
 	// Refresh it in the SAME transaction, so a link added AFTER review produces
@@ -3618,6 +3878,32 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 	if err := refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
 		return err
 	}
+
+	// Atomic receipt emission (v0.4.0 Step 3): ONLY a genuinely NEW evidence row
+	// mints evidence_linked (a duplicate insert is a no-op and stays a no-op —
+	// no receipt). Rule links are NOT covered by the closed action set. The
+	// post-link envelope is recomputed with the merged links; the claimed act
+	// uses the link actor as principalId. A signing failure rolls the whole link
+	// back (no link row, no receipt).
+	if table == `evidence_links` && inserted == 1 {
+		linked, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+		if !ok {
+			return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+		}
+		if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeMemory, memoryID, core.ReceiptActionEvidenceLinked, core.ReceiptPayload{
+			TenantID:         memory.Scope.OrganizationID,
+			CompanyID:        memory.Scope.CompanyID,
+			FiscalPeriodID:   memory.Scope.Period,
+			FromEnvelopeHash: fromEnvelope,
+			ToEnvelopeHash:   core.ComputeEnvelopeHash(linked),
+			EvidenceRef:      ref,
+			PrincipalID:      actor,
+			PolicyVersion:    kernelPolicyVersion,
+		}, now); err != nil {
+			return err
+		}
+	}
+
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return fmt.Errorf("persistence error: commit link: %w", err)
 	}
