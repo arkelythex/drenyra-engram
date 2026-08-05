@@ -6,7 +6,8 @@
 // An Ed25519 receipt is an immutable, signed record of one covered act
 // (memory_recorded | memory_approved | memory_rejected | memory_voided |
 // relation_confirmed | relation_rejected | evidence_linked | memory_superseded |
-// memory_closed | memory_reopened).
+// memory_closed | memory_reopened | reconciliation_confirmed |
+// reconciliation_rejected).
 // It proves INTEGRITY and SIGNER POSSESSION — never accounting correctness
 // (documented: Accounting correctness: NOT ASSERTED).
 //
@@ -43,11 +44,14 @@ const (
 	SubjectTypeMemory SubjectType = "memory"
 	// SubjectTypeJudgment is an accounting judgment subject.
 	SubjectTypeJudgment SubjectType = "judgment"
+	// SubjectTypeReconciliation is a first-class reconciliation subject
+	// (v0.5.0 — adjudicated reconciliations; design §3.2).
+	SubjectTypeReconciliation SubjectType = "reconciliation"
 )
 
 // IsValidSubjectType reports whether t is a known receipt subject type.
 func IsValidSubjectType(t SubjectType) bool {
-	return t == SubjectTypeMemory || t == SubjectTypeJudgment
+	return t == SubjectTypeMemory || t == SubjectTypeJudgment || t == SubjectTypeReconciliation
 }
 
 // ReceiptAction is a covered act. The set is CLOSED — an unknown action fails
@@ -90,16 +94,27 @@ const (
 	// closed period (v0.5.0; emitted by ReopenPeriod — next batch). Defined now
 	// so the closed set and schema CHECK stay in parity.
 	ReceiptActionMemoryReopened ReceiptAction = "memory_reopened"
+	// ReceiptActionReconciliationConfirmed covers a CONFIRMED first-class
+	// reconciliation (v0.5.0): the reviewed and resulting reconciliation
+	// hashes, both endpoint observation ids and envelope hashes, the resolution
+	// and the complete verified principal snapshot. Emission is atomic with the
+	// confirmation and its reconciles relation projection.
+	ReceiptActionReconciliationConfirmed ReceiptAction = "reconciliation_confirmed"
+	// ReceiptActionReconciliationRejected covers a REJECTED first-class
+	// reconciliation (v0.5.0): same coverage as reconciliation_confirmed; a
+	// rejected proposal projects no relation.
+	ReceiptActionReconciliationRejected ReceiptAction = "reconciliation_rejected"
 )
 
-// IsValidReceiptAction reports whether a is one of the ten closed actions.
+// IsValidReceiptAction reports whether a is one of the twelve closed actions.
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
 		ReceiptActionMemoryRejected, ReceiptActionMemoryVoided,
 		ReceiptActionRelationConfirmed, ReceiptActionRelationRejected,
 		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded,
-		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened:
+		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened,
+		ReceiptActionReconciliationConfirmed, ReceiptActionReconciliationRejected:
 		return true
 	}
 	return false
@@ -110,8 +125,9 @@ func IsValidReceiptAction(a ReceiptAction) bool {
 // are byte-identical to the pre-v0.5 protocol.
 const ReceiptPayloadVersion = "receipt-payload/v0.4.0"
 
-// ReceiptPayloadVersionV05 is the payload version stamped on the v0.5.0 close
-// actions (memory_closed, memory_reopened). Canonicalization is version-agnostic
+// ReceiptPayloadVersionV05 is the payload version stamped on the v0.5.0
+// actions (memory_closed, memory_reopened, reconciliation_confirmed,
+// reconciliation_rejected). Canonicalization is version-agnostic
 // (the payload shape is unchanged — the snapshot is covered via the resulting
 // envelope hash), so verifiers accept both v0.4.0 and v0.5.0 payloads unchanged
 // (design §2.5: “verifiers continue accepting v0.4”).

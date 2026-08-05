@@ -134,7 +134,7 @@ function codeOf(fn: () => void): string | undefined {
 	}
 }
 
-const TEN_ACTIONS: readonly ReceiptAction[] = [
+const TWELVE_ACTIONS: readonly ReceiptAction[] = [
 	"memory_recorded",
 	"memory_approved",
 	"memory_rejected",
@@ -145,13 +145,19 @@ const TEN_ACTIONS: readonly ReceiptAction[] = [
 	"memory_superseded",
 	"memory_closed",
 	"memory_reopened",
+	"reconciliation_confirmed",
+	"reconciliation_rejected",
 ];
 
 describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 	it("exposes the closed subject and action sets", () => {
-		expect(RECEIPT_SUBJECT_TYPES).toEqual(["memory", "judgment"]);
-		expect(RECEIPT_ACTIONS).toEqual([...TEN_ACTIONS]);
-		expect(RECEIPT_ACTIONS.length).toBe(10);
+		expect(RECEIPT_SUBJECT_TYPES).toEqual([
+			"memory",
+			"judgment",
+			"reconciliation",
+		]);
+		expect(RECEIPT_ACTIONS).toEqual([...TWELVE_ACTIONS]);
+		expect(RECEIPT_ACTIONS.length).toBe(12);
 		expect(RECEIPT_ALGORITHM).toBe("Ed25519");
 	});
 

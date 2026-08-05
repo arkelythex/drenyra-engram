@@ -119,10 +119,10 @@ func signFixture(t *testing.T) (core.SignedReceipt, core.ReceiptPayload, ed25519
 // Closed model
 // ──────────────────────────────────────────────
 
-// TestReceiptClosedEnums freezes the two subject types, the ten actions and
-// the algorithm constants; unknown values fail closed.
+// TestReceiptClosedEnums freezes the three subject types, the twelve actions
+// and the algorithm constants; unknown values fail closed.
 func TestReceiptClosedEnums(t *testing.T) {
-	for _, s := range []core.SubjectType{core.SubjectTypeMemory, core.SubjectTypeJudgment} {
+	for _, s := range []core.SubjectType{core.SubjectTypeMemory, core.SubjectTypeJudgment, core.SubjectTypeReconciliation} {
 		if !core.IsValidSubjectType(s) {
 			t.Errorf("IsValidSubjectType(%q) = false, want true", s)
 		}
@@ -133,6 +133,7 @@ func TestReceiptClosedEnums(t *testing.T) {
 		core.ReceiptActionRelationConfirmed, core.ReceiptActionRelationRejected,
 		core.ReceiptActionEvidenceLinked, core.ReceiptActionMemorySuperseded,
 		core.ReceiptActionMemoryClosed, core.ReceiptActionMemoryReopened,
+		core.ReceiptActionReconciliationConfirmed, core.ReceiptActionReconciliationRejected,
 	} {
 		if !core.IsValidReceiptAction(a) {
 			t.Errorf("IsValidReceiptAction(%q) = false, want true", a)

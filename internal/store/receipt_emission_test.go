@@ -117,8 +117,10 @@ func (p *paritySigner) Sign(ctx context.Context, q Queryer, payload core.Receipt
 	}
 	if payload.SubjectType == core.SubjectTypeMemory {
 		row.MemoryID = payload.SubjectID
-	} else {
+	} else if payload.SubjectType == core.SubjectTypeJudgment {
 		row.JudgmentID = payload.SubjectID
+	} else {
+		row.ReconciliationID = payload.SubjectID
 	}
 	if err := p.s.InsertReceipt(ctx, q, row); err != nil {
 		return core.SignedReceipt{}, err
@@ -151,13 +153,14 @@ type storedReceipt struct {
 	ReceiptHash         string
 	MemoryID            sql.NullString
 	JudgmentID          sql.NullString
+	ReconciliationID    sql.NullString
 }
 
 func readReceipts(t *testing.T, s *SQLiteStore) []storedReceipt {
 	t.Helper()
 	rows, err := s.db.Query(`SELECT subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
 		payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version, algorithm, key_id,
-		signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id FROM receipts ORDER BY rowid`)
+		signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id, reconciliation_id FROM receipts ORDER BY rowid`)
 	if err != nil {
 		t.Fatalf("query receipts: %v", err)
 	}
@@ -168,7 +171,7 @@ func readReceipts(t *testing.T, s *SQLiteStore) []storedReceipt {
 		if err := rows.Scan(&r.SubjectType, &r.SubjectID, &r.Action, &r.TenantID, &r.CompanyID, &r.FiscalPeriodID,
 			&r.PayloadHash, &r.PreviousReceiptHash, &r.PrincipalID, &r.MembershipID, &r.PolicyVersion,
 			&r.Algorithm, &r.KeyID, &r.Signature, &r.IssuedAt, &r.PayloadJSON, &r.ReceiptHash,
-			&r.MemoryID, &r.JudgmentID); err != nil {
+			&r.MemoryID, &r.JudgmentID, &r.ReconciliationID); err != nil {
 			t.Fatalf("scan receipt: %v", err)
 		}
 		out = append(out, r)

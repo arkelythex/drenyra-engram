@@ -53,13 +53,25 @@ const (
 	CodePeriodAlreadyClosed = "PERIOD_ALREADY_CLOSED"
 )
 
-// Error is the typed approval/judgment error: a frozen code plus a human
-// message. Only ENVELOPE_MISMATCH carries ExpectedEnvelopeHash/
-// ActualEnvelopeHash, only JUDGMENT_HASH_MISMATCH carries
-// ExpectedJudgmentHash/ActualJudgmentHash and only PERIOD_CLOSED carries the
-// TenantID/CompanyID/FiscalPeriodID/CloseMemoryID tuple; all other codes leave
-// every field empty (design §6 — the judgment hash contract is versioned
-// separately and NEVER compared against envelope hashes).
+// Frozen error codes (v0.5.0 reconciliation foundation — do not rename or
+// reuse). RECONCILIATION_HASH_MISMATCH is the reconciliation-hash analogue of
+// JUDGMENT_HASH_MISMATCH: reconciliation hashes are NEVER compared against
+// envelope hashes or judgment hashes (separately versioned contracts).
+const (
+	CodeReconciliationNotFound          = "RECONCILIATION_NOT_FOUND"
+	CodeInvalidReconciliationTransition = "INVALID_RECONCILIATION_TRANSITION"
+	CodeReconciliationConflict          = "RECONCILIATION_CONFLICT"
+	CodeReconciliationHashMismatch      = "RECONCILIATION_HASH_MISMATCH"
+)
+
+// Error is the typed approval/judgment/reconciliation error: a frozen code
+// plus a human message. Only ENVELOPE_MISMATCH carries
+// ExpectedEnvelopeHash/ActualEnvelopeHash, only JUDGMENT_HASH_MISMATCH and
+// RECONCILIATION_HASH_MISMATCH carry ExpectedJudgmentHash/ActualJudgmentHash
+// (the shared hash-details carrier) and only PERIOD_CLOSED carries the
+// TenantID/CompanyID/FiscalPeriodID/CloseMemoryID tuple; all other codes
+// leave every field empty (design §6 — hash contracts are versioned
+// separately and NEVER compared against each other or envelope hashes).
 type Error struct {
 	Code                 string
 	Message              string
@@ -80,6 +92,10 @@ func (e *Error) Error() string {
 	}
 	if e.Code == CodeJudgmentHashMismatch && e.ExpectedJudgmentHash != "" && e.ActualJudgmentHash != "" {
 		return fmt.Sprintf("%s: %s (expected judgment hash %s, actual judgment hash %s)",
+			e.Code, e.Message, e.ExpectedJudgmentHash, e.ActualJudgmentHash)
+	}
+	if e.Code == CodeReconciliationHashMismatch && e.ExpectedJudgmentHash != "" && e.ActualJudgmentHash != "" {
+		return fmt.Sprintf("%s: %s (expected reconciliation hash %s, actual reconciliation hash %s)",
 			e.Code, e.Message, e.ExpectedJudgmentHash, e.ActualJudgmentHash)
 	}
 	if e.Code == CodePeriodClosed && e.TenantID != "" && e.CompanyID != "" {
@@ -121,6 +137,19 @@ func NewEnvelopeMismatch(expectedHash, actualHash, message string) error {
 func NewJudgmentHashMismatch(expectedHash, actualHash, message string) error {
 	return &Error{
 		Code:                 CodeJudgmentHashMismatch,
+		Message:              message,
+		ExpectedJudgmentHash: expectedHash,
+		ActualJudgmentHash:   actualHash,
+	}
+}
+
+// NewReconciliationHashMismatch returns a RECONCILIATION_HASH_MISMATCH error
+// carrying ONLY the expected and actual reconciliation hashes (never
+// reconciliation content) — the reconciliation-hash analogue of
+// NewJudgmentHashMismatch (design §6).
+func NewReconciliationHashMismatch(expectedHash, actualHash, message string) error {
+	return &Error{
+		Code:                 CodeReconciliationHashMismatch,
 		Message:              message,
 		ExpectedJudgmentHash: expectedHash,
 		ActualJudgmentHash:   actualHash,
@@ -182,4 +211,9 @@ var (
 	// ── v0.5.0 close foundation codes ──
 	ErrPeriodClosed        = &Error{Code: CodePeriodClosed, Message: "period is closed; an explicit controller reopen is required before writing"}
 	ErrPeriodAlreadyClosed = &Error{Code: CodePeriodAlreadyClosed, Message: "period is already closed by another close"}
+	// ── v0.5.0 reconciliation foundation codes ──
+	ErrReconciliationNotFound          = &Error{Code: CodeReconciliationNotFound, Message: "reconciliation not found"}
+	ErrInvalidReconciliationTransition = &Error{Code: CodeInvalidReconciliationTransition, Message: "invalid reconciliation transition"}
+	ErrReconciliationConflict          = &Error{Code: CodeReconciliationConflict, Message: "reconciliation conflict"}
+	ErrReconciliationHashMismatch      = &Error{Code: CodeReconciliationHashMismatch, Message: "reconciliation hash mismatch"}
 )

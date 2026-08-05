@@ -1213,16 +1213,22 @@ export async function computeJudgmentHash(
 
 /**
  * Subject kind of an Ed25519 action receipt (v0.4.0 Step 3): an immutable
- * memory observation or an accounting judgment. Mirrors core.SubjectType.
+ * memory observation, an accounting judgment, or a first-class reconciliation
+ * (v0.5.0). Mirrors core.SubjectType.
  */
-export const RECEIPT_SUBJECT_TYPES = ["memory", "judgment"] as const;
+export const RECEIPT_SUBJECT_TYPES = [
+	"memory",
+	"judgment",
+	"reconciliation",
+] as const;
 
 export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
 
 /**
  * The CLOSED set of covered acts (v0.4.0 Step 3; extended with the two
- * v0.5.0 close actions memory_closed / memory_reopened) — an unknown
- * action fails closed. Mirrors core.ReceiptAction.
+ * v0.5.0 close actions memory_closed / memory_reopened and the two v0.5.0
+ * reconciliation actions reconciliation_confirmed / reconciliation_rejected)
+ * — an unknown action fails closed. Mirrors core.ReceiptAction.
  */
 export const RECEIPT_ACTIONS = [
 	"memory_recorded",
@@ -1235,6 +1241,8 @@ export const RECEIPT_ACTIONS = [
 	"memory_superseded",
 	"memory_closed",
 	"memory_reopened",
+	"reconciliation_confirmed",
+	"reconciliation_rejected",
 ] as const;
 
 export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];

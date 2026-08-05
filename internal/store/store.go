@@ -965,20 +965,35 @@ func migrateV4ToV5(db *sql.DB) error {
 //	(a) observations gains the optional close_snapshot_json column (NULL for
 //	    non-close memories; immutable with the memory) and the observations
 //	    immutability guard is reinstalled to protect it;
-//	(b) the receipts table is REBUILT with the action CHECK extended to the two
-//	    v0.5.0 close actions (memory_closed, memory_reopened). SQLite cannot
-//	    alter a CHECK constraint, so the migration creates a byte-identical
-//	    table with the extended CHECK, copies every row, swaps the old table
-//	    out (its implicit removal fires no triggers; the table's
-//	    indexes/triggers go with it) and renames the new table into place,
-//	    then recreates the receipts indexes and triggers. Existing receipts
-//	    stay byte-valid; the DDL-level closed-action set stays in parity with
-//	    core.ReceiptAction;
-//	(c) the period_closures projection (the close write gate's authoritative
+//	(b) the first-class reconciliation BASE tables (design §3.2 and §7): the
+//	    reconciliations entity table (endpoint pair CHECKs, int64 cents,
+//	    status/adjudicator/resolution CHECKs, engine-derived variance CHECK),
+//	    the immutable reconciliation_events ledger, reconciliation_idempotency_keys
+//	    and reconciliation_relations (entity supersession routing — reconciliation
+//	    ids never enter the observation relations table). The base tables are
+//	    created BEFORE the receipts rebuild because the rebuild's row copy
+//	    resolves the reconciliation_id FK target at DML time;
+//	(c) the receipts table is REBUILT with the subject CHECK extended to
+//	    'reconciliation' and the action CHECK extended to the two v0.5.0 close
+//	    actions (memory_closed, memory_reopened) plus the two reconciliation
+//	    actions (reconciliation_confirmed, reconciliation_rejected). SQLite
+//	    cannot alter a CHECK constraint, so the migration creates a
+//	    byte-identical table with the extended CHECKs and the third typed FK
+//	    (reconciliation_id), copies every row, swaps the old table out (its
+//	    implicit removal fires no triggers; the table's indexes/triggers go
+//	    with it) and renames the new table into place, then recreates the
+//	    receipts indexes and triggers. Existing receipts stay byte-valid; the
+//	    DDL-level closed-action set stays in parity with core.ReceiptAction;
+//	(d) the period_closures projection (the close write gate's authoritative
 //	    source: one row per exact (tenant, company, fiscal period), close
 //	    memory UNIQUE, status closed|reopened) and the immutable
 //	    period_closure_events ledger with its no-update/no-delete triggers;
-//	(d) schema_version = 6 ONLY after the whole migration succeeded.
+//	(e) the reconciliation supporting indexes (incl. the open-tuple partial
+//	    unique index on (tenant, company, left, right, method) WHERE
+//	    status='proposed') and the immutability triggers (events frozen;
+//	    deletes frozen; confirmed rows only supersede with routing-only
+//	    changes; terminal rows never re-open);
+//	(f) schema_version = 6 ONLY after the whole migration succeeded.
 //
 // On any failure the transaction rolls back and the store stays v5. No IF NOT
 // EXISTS is used: a pre-existing table or trigger with a conflicting shape is a
@@ -1014,7 +1029,19 @@ func migrateV5ToV6(db *sql.DB) error {
 		return fmt.Errorf("migrate v5→v6: install v6 guard: %w", err)
 	}
 
-	// (b) The receipts table rebuild (extended action CHECK).
+	// (b) The reconciliation BASE tables — created BEFORE the receipts rebuild:
+	// the rebuild's row copy resolves the reconciliation_id FK target at DML
+	// time, so the target table must already exist. The supporting indexes and
+	// immutability triggers are installed in step (e) below.
+	for _, ddl := range []string{
+		reconciliationsDDL, reconciliationEventsDDL, reconciliationIdempotencyKeysDDL, reconciliationRelationsDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create reconciliation table: %w", err)
+		}
+	}
+
+	// (c) The receipts table rebuild (extended subject/action CHECKs).
 	if _, err := tx.ExecContext(ctx, receiptsV6DDL); err != nil {
 		return fmt.Errorf("migrate v5→v6: create receipts_v6: %w", err)
 	}
@@ -1040,7 +1067,7 @@ func migrateV5ToV6(db *sql.DB) error {
 		}
 	}
 
-	// (c) The closure projection and its immutable event ledger.
+	// (d) The closure projection and its immutable event ledger.
 	for _, ddl := range []string{
 		periodClosuresDDL, periodClosureEventsDDL, periodClosureEventsScopeIndexDDL,
 		periodClosureEventsNoUpdateDDL, periodClosureEventsNoDeleteDDL,
@@ -1050,7 +1077,25 @@ func migrateV5ToV6(db *sql.DB) error {
 		}
 	}
 
-	// (d) schema_version = 6 ONLY after the whole migration succeeded — same
+	// (e) The reconciliation supporting indexes and immutability triggers.
+	for _, ddl := range []string{
+		reconciliationOpenTupleIndexDDL, reconciliationsPairIndexDDL,
+		reconciliationsPredecessorIndexDDL, reconciliationsSuccessorIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create reconciliation index: %w", err)
+		}
+	}
+	for _, ddl := range []string{
+		reconciliationEventsNoUpdateDDL, reconciliationEventsNoDeleteDDL,
+		reconciliationsNoDeleteDDL, reconciliationsImmutableUpdateDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v5→v6: create reconciliation trigger: %w", err)
+		}
+	}
+
+	// (f) schema_version = 6 ONLY after the whole migration succeeded — same
 	// transaction, so a failure above rolls everything back.
 	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'`); err != nil {
 		return fmt.Errorf("migrate v5→v6: set schema_version: %w", err)
@@ -1074,12 +1119,12 @@ func migrateV5ToV6(db *sql.DB) error {
 const receiptsV6DDL = `
         CREATE TABLE receipts_v6 (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
-          subject_type TEXT NOT NULL CHECK(subject_type IN ('memory','judgment')),
+          subject_type TEXT NOT NULL CHECK(subject_type IN ('memory','judgment','reconciliation')),
           subject_id TEXT NOT NULL,
           action TEXT NOT NULL CHECK(action IN
             ('memory_recorded','memory_approved','memory_rejected','memory_voided',
              'relation_confirmed','relation_rejected','evidence_linked','memory_superseded',
-             'memory_closed','memory_reopened')),
+             'memory_closed','memory_reopened','reconciliation_confirmed','reconciliation_rejected')),
           tenant_id TEXT NOT NULL,
           company_id TEXT NOT NULL,
           fiscal_period_id TEXT NOT NULL,
@@ -1096,23 +1141,26 @@ const receiptsV6DDL = `
           receipt_hash TEXT NOT NULL UNIQUE,
           memory_id TEXT REFERENCES observations(id),
           judgment_id TEXT REFERENCES judgments(id),
+          reconciliation_id TEXT REFERENCES reconciliations(id),
           UNIQUE(subject_type, subject_id, action, payload_hash),
-          CHECK((memory_id IS NULL) <> (judgment_id IS NULL)),
-          CHECK(COALESCE(memory_id, judgment_id) = subject_id)
+          CHECK(((memory_id IS NULL) + (judgment_id IS NULL) + (reconciliation_id IS NULL)) = 2),
+          CHECK(COALESCE(memory_id, judgment_id, reconciliation_id) = subject_id)
         );
         `
 
 // receiptsV6CopyDDL copies every v5 receipt row byte-preserved into the staging
 // table (explicit column order — the schema must not depend on ordinal order).
+// v5 rows never carry a reconciliation subject, so reconciliation_id copies as
+// NULL.
 const receiptsV6CopyDDL = `
         INSERT INTO receipts_v6 (id, subject_type, subject_id, action, tenant_id, company_id,
           fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
           policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
-          memory_id, judgment_id)
+          memory_id, judgment_id, reconciliation_id)
         SELECT id, subject_type, subject_id, action, tenant_id, company_id,
           fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
           policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
-          memory_id, judgment_id FROM receipts;
+          memory_id, judgment_id, NULL FROM receipts;
         `
 
 // dropReceiptsDDL swaps the v5 receipts table out after the byte-preserving
@@ -1181,15 +1229,195 @@ const periodClosureEventsNoDeleteDDL = `
 // close_snapshot_json (the canonical snapshot bytes are immutable with the
 // memory).
 const immutabilityTriggerV6DDL = `
-CREATE TRIGGER observations_immutable_content
-BEFORE UPDATE OF id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
-                     what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
-                     expires_at, actor, timestamp, source, session, source_json, content_hash,
-                     evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, close_snapshot_json, revision ON observations
-BEGIN
-    SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
-END;
-`
+    CREATE TRIGGER observations_immutable_content
+    BEFORE UPDATE OF id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
+                         what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
+                         expires_at, actor, timestamp, source, session, source_json, content_hash,
+                         evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, close_snapshot_json, revision ON observations
+    BEGIN
+        SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
+    END;
+    `
+
+// First-class reconciliation (v0.5.0) — CREATE statements per
+// docs/architecture/close-intelligence-v0.5.md §3.2 and §7.
+
+// reconciliations is the first-class adjudicated-relationship entity table.
+// variance_cents is ENGINE-DERIVED (left - right) and schema-enforced; the
+// four amount columns are INTEGER-affinity int64 cents (a REAL is a type
+// violation). The open-tuple partial unique index admits exactly one
+// proposed reconciliation per (tenant, company, left, right, method).
+const reconciliationsDDL = `
+        CREATE TABLE reconciliations (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL, company_id TEXT NOT NULL, fiscal_period_id TEXT,
+          left_memory_id TEXT NOT NULL REFERENCES observations(id),
+          right_memory_id TEXT NOT NULL REFERENCES observations(id),
+          method TEXT NOT NULL, currency TEXT NOT NULL,
+          left_amount_cents INTEGER NOT NULL, right_amount_cents INTEGER NOT NULL,
+          variance_cents INTEGER NOT NULL, tolerance_cents INTEGER NOT NULL,
+          status TEXT NOT NULL CHECK(status IN
+            ('proposed','confirmed','rejected','withdrawn','superseded')),
+          proposer_system TEXT NOT NULL, proposer_actor_id TEXT NOT NULL DEFAULT '',
+          proposer_actor_kind TEXT NOT NULL CHECK(proposer_actor_kind IN ('agent','system')),
+          proposer_session TEXT NOT NULL DEFAULT '', proposal_reason TEXT NOT NULL,
+          resolution TEXT, policy_version TEXT,
+          adjudicator_subject_id TEXT, adjudicator_membership_id TEXT REFERENCES memberships(id),
+          adjudicator_roles_json TEXT, authentication_method TEXT, assurance_level TEXT,
+          principal_authenticated_at TEXT,
+          predecessor_id TEXT REFERENCES reconciliations(id), supersedes_id TEXT REFERENCES reconciliations(id),
+          proposed_at TEXT NOT NULL, decided_at TEXT,
+          CHECK(left_memory_id <> right_memory_id),
+          CHECK(typeof(left_amount_cents) = 'integer' AND typeof(right_amount_cents) = 'integer' AND
+                typeof(variance_cents) = 'integer' AND typeof(tolerance_cents) = 'integer'),
+          CHECK(variance_cents = left_amount_cents - right_amount_cents),
+          CHECK(tolerance_cents >= 0),
+          CHECK((status='proposed') = (decided_at IS NULL)),
+          CHECK(status NOT IN ('confirmed','rejected') OR adjudicator_subject_id IS NOT NULL),
+          CHECK(adjudicator_subject_id IS NULL OR status IN ('confirmed','rejected','superseded')),
+          CHECK(status NOT IN ('confirmed','rejected') OR
+            (length(trim(resolution))>0 AND length(policy_version)>0))
+        );
+        `
+
+const reconciliationOpenTupleIndexDDL = `CREATE UNIQUE INDEX uq_reconciliation_open_tuple
+          ON reconciliations(tenant_id,company_id,left_memory_id,right_memory_id,method) WHERE status='proposed';`
+
+const reconciliationsPairIndexDDL = `CREATE INDEX idx_reconciliations_pair ON reconciliations(tenant_id,company_id,left_memory_id,right_memory_id,status);`
+
+const reconciliationsPredecessorIndexDDL = `CREATE INDEX idx_reconciliations_predecessor ON reconciliations(predecessor_id);`
+
+const reconciliationsSuccessorIndexDDL = `CREATE INDEX idx_reconciliations_successor ON reconciliations(supersedes_id);`
+
+// reconciliation_events is the immutable transition log of the reconciliation
+// machine. Every legal transition writes exactly one event; confirm/reject
+// events carry the principal snapshot and the frozen policy version. The
+// action/status CHECKs mirror the reconciliation transition table.
+const reconciliationEventsDDL = `
+        CREATE TABLE reconciliation_events (
+          id TEXT PRIMARY KEY, reconciliation_id TEXT NOT NULL REFERENCES reconciliations(id),
+          request_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN ('confirm','reject','withdraw','supersede')),
+          from_status TEXT NOT NULL CHECK(from_status IN ('proposed','confirmed')),
+          to_status TEXT NOT NULL CHECK(to_status IN ('confirmed','rejected','withdrawn','superseded')),
+          reconciliation_hash TEXT NOT NULL,
+          principal_snapshot_json TEXT, policy_version TEXT,
+          reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+          CHECK((action IN ('confirm','reject')) = (principal_snapshot_json IS NOT NULL)),
+          CHECK((action IN ('confirm','reject')) = (policy_version IS NOT NULL)),
+          CHECK(
+            (action='confirm' AND from_status='proposed' AND to_status='confirmed') OR
+            (action='reject' AND from_status='proposed' AND to_status='rejected') OR
+            (action='withdraw' AND from_status='proposed' AND to_status='withdrawn') OR
+            (action='supersede' AND from_status IN ('proposed','confirmed') AND to_status='superseded')
+          )
+        );
+        `
+
+const reconciliationEventsNoUpdateDDL = `
+        CREATE TRIGGER reconciliation_events_no_update BEFORE UPDATE ON reconciliation_events BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION_EVENT'); END;
+        `
+
+const reconciliationEventsNoDeleteDDL = `
+        CREATE TRIGGER reconciliation_events_no_delete BEFORE DELETE ON reconciliation_events BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION_EVENT'); END;
+        `
+
+// reconciliation_idempotency_keys mirrors judgment_idempotency_keys for the
+// reconciliation commands: a command is keyed by (tenant_id, request_id) and
+// bound to the exact actor identity that issued it (proposer for
+// propose/withdraw, verified principal for confirm/reject). result_json and
+// reconciliation_event_id are set together when the command completed.
+const reconciliationIdempotencyKeysDDL = `
+        CREATE TABLE reconciliation_idempotency_keys (
+          tenant_id TEXT NOT NULL, request_id TEXT NOT NULL,
+          command_hash TEXT NOT NULL, actor_binding TEXT NOT NULL,
+          reconciliation_id TEXT REFERENCES reconciliations(id),
+          result_json TEXT, reconciliation_event_id TEXT REFERENCES reconciliation_events(id),
+          created_at TEXT NOT NULL, completed_at TEXT,
+          PRIMARY KEY(tenant_id,request_id),
+          CHECK((reconciliation_event_id IS NULL) = (result_json IS NULL))
+        );
+        `
+
+// reconciliation_relations routes reconciliation supersession ONLY:
+// reconciliation ids never enter the observation relations table.
+// ReconciliationSuccessorOf reads this table; the pair is the primary key
+// and the relation is frozen to 'supersedes' (a correction routes readers
+// from the superseded predecessor to the successor).
+const reconciliationRelationsDDL = `
+        CREATE TABLE reconciliation_relations (
+          from_reconciliation_id TEXT NOT NULL REFERENCES reconciliations(id),
+          to_reconciliation_id TEXT NOT NULL REFERENCES reconciliations(id),
+          relation TEXT NOT NULL CHECK(relation='supersedes'),
+          actor TEXT NOT NULL DEFAULT '',
+          timestamp TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(from_reconciliation_id, to_reconciliation_id)
+        );
+        `
+
+// reconciliations_no_delete freezes the reconciliation history: a
+// reconciliation is never deleted (IMMUTABLE_RECONCILIATION).
+const reconciliationsNoDeleteDDL = `
+        CREATE TRIGGER reconciliations_no_delete BEFORE DELETE ON reconciliations BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION'); END;
+        `
+
+// reconciliations_immutable_update enforces the design §3.2 update rules:
+//   - rejected | withdrawn | superseded rows are terminal and never re-open;
+//   - a confirmed row may ONLY be superseded: status confirmed->superseded
+//     while setting a previously-empty supersedes_id, with every proposal and
+//     adjudication field byte-equal (NULL-safe IS) — only the routing fields
+//     (status, supersedes_id) may change; the reconciliation has no updated_at
+//     (the design model carries only proposedAt/decidedAt);
+//   - proposed rows are the machine's work area (transitions and withdrawal
+//     are legitimate state-machine updates) and stay writable.
+//
+// COALESCE keeps the supersedes_id comparisons definitive (a freshly
+// confirmed row stores NULL, never the empty string).
+const reconciliationsImmutableUpdateDDL = `
+        CREATE TRIGGER reconciliations_immutable_update
+        BEFORE UPDATE ON reconciliations
+        BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION: terminal reconciliations never re-open')
+            WHERE OLD.status IN ('rejected','withdrawn','superseded');
+          SELECT RAISE(ABORT,'IMMUTABLE_RECONCILIATION: confirmed reconciliations may only be superseded with routing-only changes')
+            WHERE OLD.status = 'confirmed' AND NOT (
+              NEW.status = 'superseded'
+              AND COALESCE(OLD.supersedes_id, '') = ''
+              AND COALESCE(NEW.supersedes_id, '') <> ''
+              AND OLD.id IS NEW.id
+              AND OLD.tenant_id IS NEW.tenant_id
+              AND OLD.company_id IS NEW.company_id
+              AND OLD.fiscal_period_id IS NEW.fiscal_period_id
+              AND OLD.left_memory_id IS NEW.left_memory_id
+              AND OLD.right_memory_id IS NEW.right_memory_id
+              AND OLD.method IS NEW.method
+              AND OLD.currency IS NEW.currency
+              AND OLD.left_amount_cents IS NEW.left_amount_cents
+              AND OLD.right_amount_cents IS NEW.right_amount_cents
+              AND OLD.variance_cents IS NEW.variance_cents
+              AND OLD.tolerance_cents IS NEW.tolerance_cents
+              AND OLD.proposer_system IS NEW.proposer_system
+              AND OLD.proposer_actor_id IS NEW.proposer_actor_id
+              AND OLD.proposer_actor_kind IS NEW.proposer_actor_kind
+              AND OLD.proposer_session IS NEW.proposer_session
+              AND OLD.proposal_reason IS NEW.proposal_reason
+              AND OLD.resolution IS NEW.resolution
+              AND OLD.policy_version IS NEW.policy_version
+              AND OLD.adjudicator_subject_id IS NEW.adjudicator_subject_id
+              AND OLD.adjudicator_membership_id IS NEW.adjudicator_membership_id
+              AND OLD.adjudicator_roles_json IS NEW.adjudicator_roles_json
+              AND OLD.authentication_method IS NEW.authentication_method
+              AND OLD.assurance_level IS NEW.assurance_level
+              AND OLD.principal_authenticated_at IS NEW.principal_authenticated_at
+              AND OLD.predecessor_id IS NEW.predecessor_id
+              AND OLD.proposed_at IS NEW.proposed_at
+              AND OLD.decided_at IS NEW.decided_at
+            );
+        END;
+        `
 
 // v4 tables and supporting objects — CREATE statements verbatim from
 // docs/architecture/conflict-judgment-step2.md section 4.
@@ -4805,10 +5033,11 @@ func (s *SQLiteStore) LatestReceiptChainHead(ctx context.Context, q Queryer, sub
 	return receiptHash, nil
 }
 
-// ReceiptRow is the full stored shape of one signed receipt (the v5 receipts
-// row). Signature is the RAW signature bytes; PayloadJSON is the canonical
-// payload; ReceiptHash is the derived digest of the complete canonical signed
-// receipt; exactly one of MemoryID/JudgmentID is set and equals SubjectID.
+// ReceiptRow is the full stored shape of one signed receipt (the v5/v6
+// receipts row). Signature is the RAW signature bytes; PayloadJSON is the
+// canonical payload; ReceiptHash is the derived digest of the complete
+// canonical signed receipt; exactly one of MemoryID/JudgmentID/
+// ReconciliationID is set and equals SubjectID.
 type ReceiptRow struct {
 	SubjectType         core.SubjectType
 	SubjectID           string
@@ -4829,6 +5058,7 @@ type ReceiptRow struct {
 	ReceiptHash         string
 	MemoryID            string
 	JudgmentID          string
+	ReconciliationID    string
 }
 
 // InsertReceipt persists a signed receipt row. The schema guarantees
@@ -4838,24 +5068,27 @@ type ReceiptRow struct {
 // duplicate emission). It never starts or commits a transaction — the
 // caller's tx owns atomicity.
 func (s *SQLiteStore) InsertReceipt(ctx context.Context, q Queryer, row ReceiptRow) error {
-	var memoryID, judgmentID any
+	var memoryID, judgmentID, reconciliationID any
 	if row.MemoryID != "" {
 		memoryID = row.MemoryID
 	}
 	if row.JudgmentID != "" {
 		judgmentID = row.JudgmentID
 	}
+	if row.ReconciliationID != "" {
+		reconciliationID = row.ReconciliationID
+	}
 	if _, err := q.ExecContext(ctx, `
     		INSERT INTO receipts (
     			subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
     			payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version,
-    			algorithm, key_id, signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id
-    		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    			algorithm, key_id, signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id, reconciliation_id
+    		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(row.SubjectType), row.SubjectID, string(row.Action),
 		row.TenantID, row.CompanyID, row.FiscalPeriodID,
 		row.PayloadHash, row.PreviousReceiptHash, row.PrincipalID, row.MembershipID, row.PolicyVersion,
 		row.Algorithm, row.KeyID, row.Signature, row.IssuedAt,
-		row.PayloadJSON, row.ReceiptHash, memoryID, judgmentID,
+		row.PayloadJSON, row.ReceiptHash, memoryID, judgmentID, reconciliationID,
 	); err != nil {
 		return fmt.Errorf("insert receipt %s: %w", row.ReceiptHash, err)
 	}

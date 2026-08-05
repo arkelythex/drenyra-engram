@@ -153,8 +153,10 @@ func (s *Signer) Sign(ctx context.Context, q Queryer, payload core.ReceiptPayloa
 	}
 	if payload.SubjectType == core.SubjectTypeMemory {
 		row.MemoryID = payload.SubjectID
-	} else {
+	} else if payload.SubjectType == core.SubjectTypeJudgment {
 		row.JudgmentID = payload.SubjectID
+	} else {
+		row.ReconciliationID = payload.SubjectID
 	}
 	if err := s.store.InsertReceipt(ctx, q, row); err != nil {
 		return core.SignedReceipt{}, fmt.Errorf("sign: %w", err)

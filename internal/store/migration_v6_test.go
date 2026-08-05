@@ -58,15 +58,27 @@ func openV5Schema(t *testing.T, path string) *sql.DB {
 }
 
 func v6Tables() []string {
-	return []string{"period_closures", "period_closure_events"}
+	return []string{
+		"period_closures", "period_closure_events",
+		"reconciliations", "reconciliation_events",
+		"reconciliation_idempotency_keys", "reconciliation_relations",
+	}
 }
 
 func v6Indexes() []string {
-	return []string{"idx_period_closure_events_scope"}
+	return []string{
+		"idx_period_closure_events_scope",
+		"uq_reconciliation_open_tuple", "idx_reconciliations_pair",
+		"idx_reconciliations_predecessor", "idx_reconciliations_successor",
+	}
 }
 
 func v6Triggers() []string {
-	return []string{"period_closure_events_no_update", "period_closure_events_no_delete"}
+	return []string{
+		"period_closure_events_no_update", "period_closure_events_no_delete",
+		"reconciliation_events_no_update", "reconciliation_events_no_delete",
+		"reconciliations_no_delete", "reconciliations_immutable_update",
+	}
 }
 
 // TestFreshStoreBootstrapsV6ClosureTables verifies the full additive chain: a
@@ -233,6 +245,83 @@ func TestV5StoreMigratesToV6AdditivelyPreservingRows(t *testing.T) {
 		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&name); err != nil {
 			t.Fatalf("migrated store missing trigger %q: %v", trigger, err)
 		}
+	}
+}
+
+// TestFreshStoreBootstrapsV6ReconciliationTables verifies the first-class
+// reconciliation layer of the additive chain: fresh stores carry the four
+// reconciliation tables (entity + events + idempotency + relations), the
+// open-tuple partial unique index and the immutability triggers, the entity
+// CHECKs (distinct endpoints, int64 cents, engine-derived variance, non-negative
+// tolerance, status/adjudicator/resolution), and the receipts subject/action
+// CHECKs extended to reconciliation.
+func TestFreshStoreBootstrapsV6ReconciliationTables(t *testing.T) {
+	s := newTestStore(t)
+
+	// The reconciliations entity CHECKs are live.
+	var ddl string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reconciliations'`).Scan(&ddl); err != nil {
+		t.Fatalf("read reconciliations definition: %v", err)
+	}
+	for _, want := range []string{
+		"left_memory_id <> right_memory_id",
+		"typeof(left_amount_cents) = 'integer'",
+		"variance_cents = left_amount_cents - right_amount_cents",
+		"tolerance_cents >= 0",
+		"('proposed','confirmed','rejected','withdrawn','superseded')",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("reconciliations CHECK missing %q in:\n%s", want, ddl)
+		}
+	}
+
+	// The open-tuple partial unique index exists and covers method.
+	var idxSQL string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_reconciliation_open_tuple'`).Scan(&idxSQL); err != nil {
+		t.Fatalf("read uq_reconciliation_open_tuple: %v", err)
+	}
+	if !strings.Contains(idxSQL, "left_memory_id") || !strings.Contains(idxSQL, "right_memory_id") ||
+		!strings.Contains(idxSQL, "method") || !strings.Contains(idxSQL, "status='proposed'") {
+		t.Errorf("open-tuple index shape mismatch: %s", idxSQL)
+	}
+
+	// The receipts CHECKs accept the reconciliation subject and the two
+	// reconciliation actions.
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'receipts'`).Scan(&ddl); err != nil {
+		t.Fatalf("read receipts definition: %v", err)
+	}
+	for _, want := range []string{
+		"'reconciliation'", "'reconciliation_confirmed'", "'reconciliation_rejected'",
+	} {
+		if !strings.Contains(ddl, want) {
+			t.Errorf("receipts CHECK missing %q", want)
+		}
+	}
+}
+
+// TestReconciliationEventsImmutable verifies the no-update / no-delete
+// triggers: a corrupt or buggy caller cannot mutate reconciliation event
+// history.
+func TestReconciliationEventsImmutable(t *testing.T) {
+	s := newTestStore(t)
+	left, right := reconcileContext(t, s)
+	proposed := proposeReconciliation(t, s, baseReconcileCmd(left, right), reconciliationProposer)
+
+	if _, err := s.db.Exec(`
+		INSERT INTO reconciliation_events (id, reconciliation_id, request_id, action, from_status, to_status, reconciliation_hash, principal_snapshot_json, policy_version, reason, created_at)
+		VALUES ('rev-1', ?, 'req-1', 'withdraw', 'proposed', 'withdrawn', 'hash', NULL, NULL, '', ?)`, proposed.ReconciliationID, testT,
+	); err != nil {
+		t.Fatalf("insert reconciliation event: %v", err)
+	}
+
+	if _, err := s.db.Exec(`UPDATE reconciliation_events SET reason = 'mutated' WHERE id = 'rev-1'`); err == nil || !strings.Contains(err.Error(), "IMMUTABLE_RECONCILIATION_EVENT") {
+		t.Fatalf("UPDATE on reconciliation_events must abort with IMMUTABLE_RECONCILIATION_EVENT, got %v", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM reconciliation_events WHERE id = 'rev-1'`); err == nil || !strings.Contains(err.Error(), "IMMUTABLE_RECONCILIATION_EVENT") {
+		t.Fatalf("DELETE on reconciliation_events must abort with IMMUTABLE_RECONCILIATION_EVENT, got %v", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM reconciliations WHERE id = ?`, proposed.ReconciliationID); err == nil || !strings.Contains(err.Error(), "IMMUTABLE_RECONCILIATION") {
+		t.Fatalf("DELETE on reconciliations must abort with IMMUTABLE_RECONCILIATION, got %v", err)
 	}
 }
 
