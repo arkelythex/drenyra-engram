@@ -74,7 +74,10 @@ function satisfies(
 	roles: readonly AccountingRole[],
 	required: AccountingRole,
 ): boolean {
-	if (required === "tax_reviewer" || required === "authorized_tax_professional") {
+	if (
+		required === "tax_reviewer" ||
+		required === "authorized_tax_professional"
+	) {
 		return roles.includes(required);
 	}
 	const rr = LADDER_RANK[required];

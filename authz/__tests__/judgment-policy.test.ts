@@ -43,9 +43,7 @@ function principal(opts: {
 	});
 }
 
-function judgment(
-	overrides?: Partial<AccountingJudgment>,
-): AccountingJudgment {
+function judgment(overrides?: Partial<AccountingJudgment>): AccountingJudgment {
 	return {
 		id: "judgment-1",
 		tenantId: "tenant-1",

@@ -12,20 +12,20 @@ import (
 
 // Frozen error codes (v0.4.0 Step 1 — do not rename or reuse).
 const (
-	CodeAuthenticationRequired    = "AUTHENTICATION_REQUIRED"
-	CodePrincipalInvalid          = "PRINCIPAL_INVALID"
-	CodeMembershipInactive        = "MEMBERSHIP_INACTIVE"
-	CodeTenantScopeMismatch       = "TENANT_SCOPE_MISMATCH"
-	CodeCompanyScopeDenied        = "COMPANY_SCOPE_DENIED"
-	CodeRoleNotAuthorized         = "ROLE_NOT_AUTHORIZED"
-	CodeAssuranceTooLow           = "ASSURANCE_TOO_LOW"
-	CodeMaterialityLimitExceeded  = "MATERIALITY_LIMIT_EXCEEDED"
-	CodeReasonRequired            = "REASON_REQUIRED"
-	CodeMemoryNotFound            = "MEMORY_NOT_FOUND"
-	CodeInvalidTransition         = "INVALID_TRANSITION"
-	CodeEnvelopeMismatch          = "ENVELOPE_MISMATCH"
-	CodeAlreadyDecided            = "ALREADY_DECIDED"
-	CodeIdempotencyConflict       = "IDEMPOTENCY_CONFLICT"
+	CodeAuthenticationRequired   = "AUTHENTICATION_REQUIRED"
+	CodePrincipalInvalid         = "PRINCIPAL_INVALID"
+	CodeMembershipInactive       = "MEMBERSHIP_INACTIVE"
+	CodeTenantScopeMismatch      = "TENANT_SCOPE_MISMATCH"
+	CodeCompanyScopeDenied       = "COMPANY_SCOPE_DENIED"
+	CodeRoleNotAuthorized        = "ROLE_NOT_AUTHORIZED"
+	CodeAssuranceTooLow          = "ASSURANCE_TOO_LOW"
+	CodeMaterialityLimitExceeded = "MATERIALITY_LIMIT_EXCEEDED"
+	CodeReasonRequired           = "REASON_REQUIRED"
+	CodeMemoryNotFound           = "MEMORY_NOT_FOUND"
+	CodeInvalidTransition        = "INVALID_TRANSITION"
+	CodeEnvelopeMismatch         = "ENVELOPE_MISMATCH"
+	CodeAlreadyDecided           = "ALREADY_DECIDED"
+	CodeIdempotencyConflict      = "IDEMPOTENCY_CONFLICT"
 )
 
 // Frozen error codes (v0.4.0 Step 2 — judgment lifecycle; do not rename or

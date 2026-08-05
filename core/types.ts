@@ -265,7 +265,7 @@ export type ApprovalErrorCode =
 	| "INVALID_JUDGMENT_TRANSITION"
 	| "JUDGMENT_CONFLICT"
 	| "JUDGMENT_HASH_MISMATCH";
-    
+
 export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"AUTHENTICATION_REQUIRED",
 	"PRINCIPAL_INVALID",
@@ -355,45 +355,45 @@ export interface ApprovalEvent {
 	createdAt: string;
 }
 
-    /**
-     * Transport-independent approval error carrying the frozen code (mirror of
-     * auth.Error in internal/auth/errors.go). ONLY an ENVELOPE_MISMATCH error
-     * carries the two envelope hashes and only a JUDGMENT_HASH_MISMATCH error
-     * carries the two judgment hashes; memory/judgment content is never
-     * included, especially on cross-tenant surfaces. Judgment hashes are a
-     * separately versioned contract and are NEVER compared against envelope
-     * hashes (design §6).
-     */
-    export class ApprovalError extends Error {
-    	readonly code: ApprovalErrorCode;
-    	/** Present ONLY on ENVELOPE_MISMATCH — the hash the reviewer submitted. */
-    	readonly expectedEnvelopeHash?: string;
-    	/** Present ONLY on ENVELOPE_MISMATCH — the current envelope hash. */
-    	readonly actualEnvelopeHash?: string;
-    	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the reviewed judgment hash. */
-    	readonly expectedJudgmentHash?: string;
-    	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the current judgment hash. */
-    	readonly actualJudgmentHash?: string;
+/**
+ * Transport-independent approval error carrying the frozen code (mirror of
+ * auth.Error in internal/auth/errors.go). ONLY an ENVELOPE_MISMATCH error
+ * carries the two envelope hashes and only a JUDGMENT_HASH_MISMATCH error
+ * carries the two judgment hashes; memory/judgment content is never
+ * included, especially on cross-tenant surfaces. Judgment hashes are a
+ * separately versioned contract and are NEVER compared against envelope
+ * hashes (design §6).
+ */
+export class ApprovalError extends Error {
+	readonly code: ApprovalErrorCode;
+	/** Present ONLY on ENVELOPE_MISMATCH — the hash the reviewer submitted. */
+	readonly expectedEnvelopeHash?: string;
+	/** Present ONLY on ENVELOPE_MISMATCH — the current envelope hash. */
+	readonly actualEnvelopeHash?: string;
+	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the reviewed judgment hash. */
+	readonly expectedJudgmentHash?: string;
+	/** Present ONLY on JUDGMENT_HASH_MISMATCH — the current judgment hash. */
+	readonly actualJudgmentHash?: string;
 
-    	constructor(
-    		code: ApprovalErrorCode,
-    		message: string,
-    		hashes?: {
-    			expectedEnvelopeHash?: string;
-    			actualEnvelopeHash?: string;
-    			expectedJudgmentHash?: string;
-    			actualJudgmentHash?: string;
-    		},
-    	) {
-    		super(message);
-    		this.name = "ApprovalError";
-    		this.code = code;
-    		this.expectedEnvelopeHash = hashes?.expectedEnvelopeHash;
-    		this.actualEnvelopeHash = hashes?.actualEnvelopeHash;
-    		this.expectedJudgmentHash = hashes?.expectedJudgmentHash;
-    		this.actualJudgmentHash = hashes?.actualJudgmentHash;
-    	}
-    }
+	constructor(
+		code: ApprovalErrorCode,
+		message: string,
+		hashes?: {
+			expectedEnvelopeHash?: string;
+			actualEnvelopeHash?: string;
+			expectedJudgmentHash?: string;
+			actualJudgmentHash?: string;
+		},
+	) {
+		super(message);
+		this.name = "ApprovalError";
+		this.code = code;
+		this.expectedEnvelopeHash = hashes?.expectedEnvelopeHash;
+		this.actualEnvelopeHash = hashes?.actualEnvelopeHash;
+		this.expectedJudgmentHash = hashes?.expectedJudgmentHash;
+		this.actualJudgmentHash = hashes?.actualJudgmentHash;
+	}
+}
 
 // ──────────────────────────────────────────────
 // Content / source / validity
@@ -903,303 +903,302 @@ export function assertValidMemory(memory: AccountingMemory): void {
 	}
 }
 
+// ──────────────────────────────────────────────
+// v0.4.0 Step 2 — accounting judgment vocabulary
+// ──────────────────────────────────────────────
 
-    // ──────────────────────────────────────────────
-    // v0.4.0 Step 2 — accounting judgment vocabulary
-    // ──────────────────────────────────────────────
+/**
+ * Lifecycle state of an accounting judgment (v0.4.0 Step 2). Mirrors
+ * core.JudgmentStatus. Legal machine: proposed → confirmed | rejected |
+ * withdrawn | superseded; confirmed → superseded ONLY; rejected/withdrawn/
+ * superseded are terminal.
+ */
+export const JUDGMENT_STATUSES = [
+	"proposed",
+	"confirmed",
+	"rejected",
+	"withdrawn",
+	"superseded",
+] as const;
 
-    /**
-     * Lifecycle state of an accounting judgment (v0.4.0 Step 2). Mirrors
-     * core.JudgmentStatus. Legal machine: proposed → confirmed | rejected |
-     * withdrawn | superseded; confirmed → superseded ONLY; rejected/withdrawn/
-     * superseded are terminal.
-     */
-    export const JUDGMENT_STATUSES = [
-    	"proposed",
-    	"confirmed",
-    	"rejected",
-    	"withdrawn",
-    	"superseded",
-    ] as const;
+export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
 
-    export type JudgmentStatus = (typeof JUDGMENT_STATUSES)[number];
+/**
+ * An adjudication act over two immutable observations (v0.4.0 Step 2) — NOT
+ * a KindDecision memory. Agents/systems may propose and withdraw their own
+ * proposals (proposer is provenance ONLY, never authority); only a
+ * VerifiedApprovalPrincipal may confirm or reject. Mirrors
+ * core.AccountingJudgment.
+ */
+export interface AccountingJudgment {
+	id: string;
+	tenantId: string;
+	companyId: string;
+	/** Set only when both observations share a fiscal period. */
+	fiscalPeriodId?: string;
+	fromId: string;
+	toId: string;
+	relation: MemoryRelation;
+	status: JudgmentStatus;
+	/** Provenance only — agent|system; never authority. */
+	proposer: MemorySource;
+	proposalReason: string;
+	/** Empty until confirmed/rejected. */
+	resolution?: string;
+	/** Absent until an authenticated decision. */
+	adjudicator?: PrincipalSnapshot;
+	/** Empty until an authenticated decision. */
+	policyVersion?: string;
+	/** Correction target declared by the successor. */
+	predecessorId?: string;
+	/** Successor routing stored on the old row. */
+	supersedesId?: string;
+	proposedAt: string;
+	updatedAt: string;
+	/** Set when decided (confirmed/rejected/superseded). */
+	decidedAt?: string;
+}
 
-    /**
-     * An adjudication act over two immutable observations (v0.4.0 Step 2) — NOT
-     * a KindDecision memory. Agents/systems may propose and withdraw their own
-     * proposals (proposer is provenance ONLY, never authority); only a
-     * VerifiedApprovalPrincipal may confirm or reject. Mirrors
-     * core.AccountingJudgment.
-     */
-    export interface AccountingJudgment {
-    	id: string;
-    	tenantId: string;
-    	companyId: string;
-    	/** Set only when both observations share a fiscal period. */
-    	fiscalPeriodId?: string;
-    	fromId: string;
-    	toId: string;
-    	relation: MemoryRelation;
-    	status: JudgmentStatus;
-    	/** Provenance only — agent|system; never authority. */
-    	proposer: MemorySource;
-    	proposalReason: string;
-    	/** Empty until confirmed/rejected. */
-    	resolution?: string;
-    	/** Absent until an authenticated decision. */
-    	adjudicator?: PrincipalSnapshot;
-    	/** Empty until an authenticated decision. */
-    	policyVersion?: string;
-    	/** Correction target declared by the successor. */
-    	predecessorId?: string;
-    	/** Successor routing stored on the old row. */
-    	supersedesId?: string;
-    	proposedAt: string;
-    	updatedAt: string;
-    	/** Set when decided (confirmed/rejected/superseded). */
-    	decidedAt?: string;
-    }
+/**
+ * Proposal command (v0.4.0 Step 2). Deliberately carries NO subject,
+ * membership, role, actor-kind or assurance fields (compile-level contract):
+ * the proposer Source arrives separately as provenance-only caller context,
+ * and authority never travels in the transport payload. Mirrors
+ * core.ProposeJudgmentCommand.
+ */
+export interface ProposeJudgmentCommand {
+	fromId: string;
+	toId: string;
+	relation: MemoryRelation;
+	/** Proposer's justification (REQUIRED, non-whitespace). */
+	reason: string;
+	/** Idempotency key scoped to (tenant, requestId). */
+	requestId: string;
+	/** Names an existing judgment this proposal corrects. */
+	predecessorId?: string;
+}
 
-    /**
-     * Proposal command (v0.4.0 Step 2). Deliberately carries NO subject,
-     * membership, role, actor-kind or assurance fields (compile-level contract):
-     * the proposer Source arrives separately as provenance-only caller context,
-     * and authority never travels in the transport payload. Mirrors
-     * core.ProposeJudgmentCommand.
-     */
-    export interface ProposeJudgmentCommand {
-    	fromId: string;
-    	toId: string;
-    	relation: MemoryRelation;
-    	/** Proposer's justification (REQUIRED, non-whitespace). */
-    	reason: string;
-    	/** Idempotency key scoped to (tenant, requestId). */
-    	requestId: string;
-    	/** Names an existing judgment this proposal corrects. */
-    	predecessorId?: string;
-    }
+/**
+ * Confirmation command (v0.4.0 Step 2). Resolution is the professional
+ * human resolution (REQUIRED); expectedJudgmentHash is the reviewed
+ * proposed hash the adjudicator actually saw. Mirrors
+ * core.ConfirmJudgmentCommand.
+ */
+export interface ConfirmJudgmentCommand {
+	judgmentId: string;
+	resolution: string;
+	expectedJudgmentHash: string;
+	requestId: string;
+}
 
-    /**
-     * Confirmation command (v0.4.0 Step 2). Resolution is the professional
-     * human resolution (REQUIRED); expectedJudgmentHash is the reviewed
-     * proposed hash the adjudicator actually saw. Mirrors
-     * core.ConfirmJudgmentCommand.
-     */
-    export interface ConfirmJudgmentCommand {
-    	judgmentId: string;
-    	resolution: string;
-    	expectedJudgmentHash: string;
-    	requestId: string;
-    }
+/**
+ * Rejection command (v0.4.0 Step 2). Reason is the human reason, stored as
+ * the resolution (REQUIRED); expectedJudgmentHash is the reviewed proposed
+ * hash the adjudicator actually saw. Mirrors core.RejectJudgmentCommand.
+ */
+export interface RejectJudgmentCommand {
+	judgmentId: string;
+	reason: string;
+	expectedJudgmentHash: string;
+	requestId: string;
+}
 
-    /**
-     * Rejection command (v0.4.0 Step 2). Reason is the human reason, stored as
-     * the resolution (REQUIRED); expectedJudgmentHash is the reviewed proposed
-     * hash the adjudicator actually saw. Mirrors core.RejectJudgmentCommand.
-     */
-    export interface RejectJudgmentCommand {
-    	judgmentId: string;
-    	reason: string;
-    	expectedJudgmentHash: string;
-    	requestId: string;
-    }
+/**
+ * Withdrawal command (v0.4.0 Step 2): withdraws the caller's OWN proposed
+ * judgment. Mirrors core.WithdrawJudgmentCommand.
+ */
+export interface WithdrawJudgmentCommand {
+	judgmentId: string;
+	requestId: string;
+}
 
-    /**
-     * Withdrawal command (v0.4.0 Step 2): withdraws the caller's OWN proposed
-     * judgment. Mirrors core.WithdrawJudgmentCommand.
-     */
-    export interface WithdrawJudgmentCommand {
-    	judgmentId: string;
-    	requestId: string;
-    }
+/**
+ * Proposal result (v0.4.0 Step 2). A proposal writes NO judgment event
+ * (the events CHECK admits only confirm|reject|withdraw|supersede), so the
+ * result carries the entity alone; a same-request retry replays the same
+ * judgment with idempotentReplay=true. Mirrors core.ProposeJudgmentResult.
+ */
+export interface ProposeJudgmentResult {
+	judgmentId: string;
+	judgment: AccountingJudgment;
+	/** True when re-derived from the completed idempotency reservation. */
+	idempotentReplay: boolean;
+}
 
-    /**
-     * Proposal result (v0.4.0 Step 2). A proposal writes NO judgment event
-     * (the events CHECK admits only confirm|reject|withdraw|supersede), so the
-     * result carries the entity alone; a same-request retry replays the same
-     * judgment with idempotentReplay=true. Mirrors core.ProposeJudgmentResult.
-     */
-    export interface ProposeJudgmentResult {
-    	judgmentId: string;
-    	judgment: AccountingJudgment;
-    	/** True when re-derived from the completed idempotency reservation. */
-    	idempotentReplay: boolean;
-    }
+/** Confirmation result (v0.4.0 Step 2). Mirrors core.ConfirmJudgmentResult. */
+export interface ConfirmJudgmentResult {
+	judgmentId: string;
+	judgment: AccountingJudgment;
+	/** The immutable 'confirm' event written for this decision. */
+	judgmentEventId: string;
+	idempotentReplay: boolean;
+}
 
-    /** Confirmation result (v0.4.0 Step 2). Mirrors core.ConfirmJudgmentResult. */
-    export interface ConfirmJudgmentResult {
-    	judgmentId: string;
-    	judgment: AccountingJudgment;
-    	/** The immutable 'confirm' event written for this decision. */
-    	judgmentEventId: string;
-    	idempotentReplay: boolean;
-    }
+/** Rejection result (v0.4.0 Step 2). Mirrors core.RejectJudgmentResult. */
+export interface RejectJudgmentResult {
+	judgmentId: string;
+	judgment: AccountingJudgment;
+	/** The immutable 'reject' event written for this decision. */
+	judgmentEventId: string;
+	idempotentReplay: boolean;
+}
 
-    /** Rejection result (v0.4.0 Step 2). Mirrors core.RejectJudgmentResult. */
-    export interface RejectJudgmentResult {
-    	judgmentId: string;
-    	judgment: AccountingJudgment;
-    	/** The immutable 'reject' event written for this decision. */
-    	judgmentEventId: string;
-    	idempotentReplay: boolean;
-    }
+/** Withdrawal result (v0.4.0 Step 2). Mirrors core.WithdrawJudgmentResult. */
+export interface WithdrawJudgmentResult {
+	judgmentId: string;
+	judgment: AccountingJudgment;
+	/** The immutable 'withdraw' event written for this withdrawal. */
+	judgmentEventId: string;
+	idempotentReplay: boolean;
+}
 
-    /** Withdrawal result (v0.4.0 Step 2). Mirrors core.WithdrawJudgmentResult. */
-    export interface WithdrawJudgmentResult {
-    	judgmentId: string;
-    	judgment: AccountingJudgment;
-    	/** The immutable 'withdraw' event written for this withdrawal. */
-    	judgmentEventId: string;
-    	idempotentReplay: boolean;
-    }
+/**
+ * Immutable judgment transition event (v0.4.0 Step 2). Every decision
+ * (confirm/reject/withdraw/supersede) writes exactly one event; proposals
+ * write none. Confirm/reject events carry the adjudicator snapshot and the
+ * frozen policy version. Mirrors the judgment_events table (design §4).
+ */
+export interface JudgmentEvent {
+	id: string;
+	requestId: string;
+	judgmentId: string;
+	tenantId: string;
+	/** Frozen to confirm | reject | withdraw | supersede. */
+	action: "confirm" | "reject" | "withdraw" | "supersede";
+	fromStatus: JudgmentStatus;
+	toStatus: JudgmentStatus;
+	/** Hash of the resulting state (reviewed shape for supersede). */
+	judgmentHash: string;
+	/** Present ONLY on confirm/reject — the adjudicator snapshot. */
+	principalSnapshot?: PrincipalSnapshot;
+	/** Present ONLY on confirm/reject — the frozen policy version. */
+	policyVersion?: string;
+	/** The human resolution (confirm) / reason (reject) / empty otherwise. */
+	reason?: string;
+	createdAt: string;
+}
 
-    /**
-     * Immutable judgment transition event (v0.4.0 Step 2). Every decision
-     * (confirm/reject/withdraw/supersede) writes exactly one event; proposals
-     * write none. Confirm/reject events carry the adjudicator snapshot and the
-     * frozen policy version. Mirrors the judgment_events table (design §4).
-     */
-    export interface JudgmentEvent {
-    	id: string;
-    	requestId: string;
-    	judgmentId: string;
-    	tenantId: string;
-    	/** Frozen to confirm | reject | withdraw | supersede. */
-    	action: "confirm" | "reject" | "withdraw" | "supersede";
-    	fromStatus: JudgmentStatus;
-    	toStatus: JudgmentStatus;
-    	/** Hash of the resulting state (reviewed shape for supersede). */
-    	judgmentHash: string;
-    	/** Present ONLY on confirm/reject — the adjudicator snapshot. */
-    	principalSnapshot?: PrincipalSnapshot;
-    	/** Present ONLY on confirm/reject — the frozen policy version. */
-    	policyVersion?: string;
-    	/** The human resolution (confirm) / reason (reject) / empty otherwise. */
-    	reason?: string;
-    	createdAt: string;
-    }
+const PROPOSABLE_RELATIONS: readonly MemoryRelation[] = [
+	"supports",
+	"contradicts",
+	"explains",
+	"reconciles",
+	"reverses",
+	"supersedes",
+];
 
-    const PROPOSABLE_RELATIONS: readonly MemoryRelation[] = [
-    	"supports",
-    	"contradicts",
-    	"explains",
-    	"reconciles",
-    	"reverses",
-    	"supersedes",
-    ];
+/**
+ * The six proposable judgment relations in fixed order. `conflicts_with` is
+ * a legacy sync/discovery marker: it can motivate a proposal but is neither
+ * accepted as a proposal relation nor removed automatically (design §3).
+ * Mirrors core.ProposableRelations.
+ */
+export function proposableRelations(): MemoryRelation[] {
+	return [...PROPOSABLE_RELATIONS];
+}
 
-    /**
-     * The six proposable judgment relations in fixed order. `conflicts_with` is
-     * a legacy sync/discovery marker: it can motivate a proposal but is neither
-     * accepted as a proposal relation nor removed automatically (design §3).
-     * Mirrors core.ProposableRelations.
-     */
-    export function proposableRelations(): MemoryRelation[] {
-    	return [...PROPOSABLE_RELATIONS];
-    }
+/**
+ * Reports whether a relation is one of the six proposable relations.
+ * related/conflicts_with/derived_from/... are never proposable. Mirrors
+ * core.IsProposableRelation.
+ */
+export function isProposableRelation(relation: MemoryRelation): boolean {
+	return PROPOSABLE_RELATIONS.includes(relation);
+}
 
-    /**
-     * Reports whether a relation is one of the six proposable relations.
-     * related/conflicts_with/derived_from/... are never proposable. Mirrors
-     * core.IsProposableRelation.
-     */
-    export function isProposableRelation(relation: MemoryRelation): boolean {
-    	return PROPOSABLE_RELATIONS.includes(relation);
-    }
+/**
+ * Canonical proposer JSON shape: keys sorted alphabetically (actorId,
+ * actorKind, model, reference, session, system), empty optional fields
+ * omitted — byte-identical with core's canonicalSource (Go).
+ */
+function canonicalJudgmentProposer(
+	source: MemorySource,
+): Record<string, string> {
+	const out: Record<string, string> = {};
+	if (source.actorId !== undefined && source.actorId !== "") {
+		out.actorId = source.actorId;
+	}
+	out.actorKind = source.actorKind;
+	if (source.model !== undefined && source.model !== "") {
+		out.model = source.model;
+	}
+	if (source.reference !== undefined && source.reference !== "") {
+		out.reference = source.reference;
+	}
+	if (source.session !== undefined && source.session !== "") {
+		out.session = source.session;
+	}
+	out.system = source.system;
+	return out;
+}
 
-    /**
-     * Canonical proposer JSON shape: keys sorted alphabetically (actorId,
-     * actorKind, model, reference, session, system), empty optional fields
-     * omitted — byte-identical with core's canonicalSource (Go).
-     */
-    function canonicalJudgmentProposer(
-    	source: MemorySource,
-    ): Record<string, string> {
-    	const out: Record<string, string> = {};
-    	if (source.actorId !== undefined && source.actorId !== "") {
-    		out.actorId = source.actorId;
-    	}
-    	out.actorKind = source.actorKind;
-    	if (source.model !== undefined && source.model !== "") {
-    		out.model = source.model;
-    	}
-    	if (source.reference !== undefined && source.reference !== "") {
-    		out.reference = source.reference;
-    	}
-    	if (source.session !== undefined && source.session !== "") {
-    		out.session = source.session;
-    	}
-    	out.system = source.system;
-    	return out;
-    }
+/**
+ * Canonical adjudicator snapshot: roles sorted and deduplicated; field order
+ * matches auth.PrincipalSnapshot (subjectId, membershipId, roles,
+ * authenticationMethod, assuranceLevel, authenticatedAt) so Go and TS
+ * produce identical JSON bytes. Mirrors core.canonicalSnapshot (Go).
+ */
+function canonicalJudgmentSnapshot(
+	snapshot: PrincipalSnapshot,
+): PrincipalSnapshot {
+	return {
+		subjectId: snapshot.subjectId,
+		membershipId: snapshot.membershipId,
+		roles: [...new Set(snapshot.roles)].sort(),
+		authenticationMethod: snapshot.authenticationMethod,
+		assuranceLevel: snapshot.assuranceLevel,
+		authenticatedAt: snapshot.authenticatedAt,
+	};
+}
 
-    /**
-     * Canonical adjudicator snapshot: roles sorted and deduplicated; field order
-     * matches auth.PrincipalSnapshot (subjectId, membershipId, roles,
-     * authenticationMethod, assuranceLevel, authenticatedAt) so Go and TS
-     * produce identical JSON bytes. Mirrors core.canonicalSnapshot (Go).
-     */
-    function canonicalJudgmentSnapshot(
-    	snapshot: PrincipalSnapshot,
-    ): PrincipalSnapshot {
-    	return {
-    		subjectId: snapshot.subjectId,
-    		membershipId: snapshot.membershipId,
-    		roles: [...new Set(snapshot.roles)].sort(),
-    		authenticationMethod: snapshot.authenticationMethod,
-    		assuranceLevel: snapshot.assuranceLevel,
-    		authenticatedAt: snapshot.authenticatedAt,
-    	};
-    }
-
-    /**
-     * Canonical SHA-256 (hex) of a judgment's REVIEWED or CONFIRMED state over
-     * canonical JSON — byte-identical with core.ComputeJudgmentHash (Go). The
-     * payload key order below is the byte contract (Go marshals its payload
-     * struct in this exact order).
-     *
-     * Documented field coverage per status:
-     * - proposed (and every non-confirmed status): id, tenantId, companyId,
-     *   fiscalPeriodId ("" when absent), fromId, toId, relation, status,
-     *   canonical proposer (sorted keys, empties omitted), proposalReason,
-     *   predecessorId ("" when absent), proposedAt. Routing fields
-     *   (supersedesId) and updatedAt NEVER participate.
-     * - confirmed: the base fields PLUS resolution, the canonical adjudicator
-     *   snapshot (sorted roles), policyVersion, status and decidedAt.
-     *
-     * Rejected/withdrawn/superseded judgments hash with the reviewed shape
-     * (decided fields never participate).
-     */
-    export async function computeJudgmentHash(
-    	judgment: AccountingJudgment,
-    ): Promise<string> {
-    	const payload: Record<string, unknown> = {
-    		id: judgment.id,
-    		tenantId: judgment.tenantId,
-    		companyId: judgment.companyId,
-    		fiscalPeriodId: judgment.fiscalPeriodId ?? "",
-    		fromId: judgment.fromId,
-    		toId: judgment.toId,
-    		relation: judgment.relation,
-    		status: judgment.status,
-    		proposer: canonicalJudgmentProposer(judgment.proposer),
-    		proposalReason: judgment.proposalReason,
-    		predecessorId: judgment.predecessorId ?? "",
-    		proposedAt: judgment.proposedAt,
-    	};
-    	if (judgment.status === "confirmed") {
-    		if (judgment.resolution !== undefined && judgment.resolution !== "") {
-    			payload.resolution = judgment.resolution;
-    		}
-    		if (judgment.adjudicator !== undefined) {
-    			payload.adjudicator = canonicalJudgmentSnapshot(judgment.adjudicator);
-    		}
-    		if (judgment.policyVersion !== undefined && judgment.policyVersion !== "") {
-    			payload.policyVersion = judgment.policyVersion;
-    		}
-    		if (judgment.decidedAt !== undefined && judgment.decidedAt !== "") {
-    			payload.decidedAt = judgment.decidedAt;
-    		}
-    	}
-    	return sha256Hex(JSON.stringify(payload));
-    }
+/**
+ * Canonical SHA-256 (hex) of a judgment's REVIEWED or CONFIRMED state over
+ * canonical JSON — byte-identical with core.ComputeJudgmentHash (Go). The
+ * payload key order below is the byte contract (Go marshals its payload
+ * struct in this exact order).
+ *
+ * Documented field coverage per status:
+ * - proposed (and every non-confirmed status): id, tenantId, companyId,
+ *   fiscalPeriodId ("" when absent), fromId, toId, relation, status,
+ *   canonical proposer (sorted keys, empties omitted), proposalReason,
+ *   predecessorId ("" when absent), proposedAt. Routing fields
+ *   (supersedesId) and updatedAt NEVER participate.
+ * - confirmed: the base fields PLUS resolution, the canonical adjudicator
+ *   snapshot (sorted roles), policyVersion, status and decidedAt.
+ *
+ * Rejected/withdrawn/superseded judgments hash with the reviewed shape
+ * (decided fields never participate).
+ */
+export async function computeJudgmentHash(
+	judgment: AccountingJudgment,
+): Promise<string> {
+	const payload: Record<string, unknown> = {
+		id: judgment.id,
+		tenantId: judgment.tenantId,
+		companyId: judgment.companyId,
+		fiscalPeriodId: judgment.fiscalPeriodId ?? "",
+		fromId: judgment.fromId,
+		toId: judgment.toId,
+		relation: judgment.relation,
+		status: judgment.status,
+		proposer: canonicalJudgmentProposer(judgment.proposer),
+		proposalReason: judgment.proposalReason,
+		predecessorId: judgment.predecessorId ?? "",
+		proposedAt: judgment.proposedAt,
+	};
+	if (judgment.status === "confirmed") {
+		if (judgment.resolution !== undefined && judgment.resolution !== "") {
+			payload.resolution = judgment.resolution;
+		}
+		if (judgment.adjudicator !== undefined) {
+			payload.adjudicator = canonicalJudgmentSnapshot(judgment.adjudicator);
+		}
+		if (judgment.policyVersion !== undefined && judgment.policyVersion !== "") {
+			payload.policyVersion = judgment.policyVersion;
+		}
+		if (judgment.decidedAt !== undefined && judgment.decidedAt !== "") {
+			payload.decidedAt = judgment.decidedAt;
+		}
+	}
+	return sha256Hex(JSON.stringify(payload));
+}

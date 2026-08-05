@@ -219,9 +219,9 @@ describe("judgment critical section (v0.4.0 Step 2)", () => {
 
 		// Confirmation inserts ONE compatibility observation relation projection
 		// whose actor is the verified subject; the judgment remains authoritative.
-		const projection = store.relations().find(
-			(record) => record.fromId === fromId && record.toId === toId,
-		);
+		const projection = store
+			.relations()
+			.find((record) => record.fromId === fromId && record.toId === toId);
 		expect(projection).toBeDefined();
 		expect(projection!.relation).toBe("contradicts");
 		expect(projection!.actor).toBe("maria.torres");
@@ -279,9 +279,9 @@ describe("judgment critical section (v0.4.0 Step 2)", () => {
 		expect(store.judgmentEvents()).toHaveLength(1);
 		expect(store.judgmentEvents()[0]!.action).toBe("reject");
 		// Rejection writes NO observation relation projection.
-		expect(
-			store.relations().some((record) => record.fromId === fromId),
-		).toBe(false);
+		expect(store.relations().some((record) => record.fromId === fromId)).toBe(
+			false,
+		);
 
 		// Terminal: a later confirm is an invalid transition.
 		await expect(

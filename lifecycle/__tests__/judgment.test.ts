@@ -84,13 +84,23 @@ function proposeCommand(
 
 describe("judgment lifecycle predicates (v0.4.0 Step 2)", () => {
 	it("allows only agent|system sources to propose", () => {
-		expect(canProposeJudgment({ system: "sire", actorKind: "agent" })).toBe(true);
-		expect(canProposeJudgment({ system: "sire", actorKind: "system" })).toBe(true);
+		expect(canProposeJudgment({ system: "sire", actorKind: "agent" })).toBe(
+			true,
+		);
+		expect(canProposeJudgment({ system: "sire", actorKind: "system" })).toBe(
+			true,
+		);
 		expect(canProposeJudgment(humanSource)).toBe(false);
 	});
 
 	it("allows confirm/reject/withdraw only from proposed", () => {
-		for (const status of ["proposed", "confirmed", "rejected", "withdrawn", "superseded"] as const) {
+		for (const status of [
+			"proposed",
+			"confirmed",
+			"rejected",
+			"withdrawn",
+			"superseded",
+		] as const) {
 			expect(canConfirmJudgment(status)).toBe(status === "proposed");
 			expect(canRejectJudgment(status)).toBe(status === "proposed");
 			expect(canWithdrawJudgment(status)).toBe(status === "proposed");
@@ -99,7 +109,12 @@ describe("judgment lifecycle predicates (v0.4.0 Step 2)", () => {
 
 	it("allows supersession only from confirmed", () => {
 		expect(canSupersedeConfirmed("confirmed")).toBe(true);
-		for (const status of ["proposed", "rejected", "withdrawn", "superseded"] as const) {
+		for (const status of [
+			"proposed",
+			"rejected",
+			"withdrawn",
+			"superseded",
+		] as const) {
 			expect(canSupersedeConfirmed(status)).toBe(false);
 		}
 	});
@@ -116,7 +131,13 @@ describe("judgment lifecycle predicates (v0.4.0 Step 2)", () => {
 		expect(isLegalJudgmentTransition("confirmed", "proposed")).toBe(false);
 		// terminal states never re-open
 		for (const from of ["rejected", "withdrawn", "superseded"] as const) {
-			for (const to of ["proposed", "confirmed", "rejected", "withdrawn", "superseded"] as const) {
+			for (const to of [
+				"proposed",
+				"confirmed",
+				"rejected",
+				"withdrawn",
+				"superseded",
+			] as const) {
 				expect(isLegalJudgmentTransition(from, to)).toBe(false);
 			}
 		}
@@ -134,11 +155,7 @@ describe("judgment orchestration guards (v0.4.0 Step 2)", () => {
 	it("rejects an incomplete proposal as MEMORY_NOT_FOUND", async () => {
 		const store = new InMemoryMemoryStore();
 		await expect(
-			proposeJudgment(
-				proposeCommand({ requestId: "  " }),
-				agentSource,
-				store,
-			),
+			proposeJudgment(proposeCommand({ requestId: "  " }), agentSource, store),
 		).rejects.toMatchObject({ code: "MEMORY_NOT_FOUND" });
 	});
 

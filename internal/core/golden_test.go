@@ -157,18 +157,18 @@ type goldenExpected struct {
 	CanonicalRoles        []string `json:"canonicalRoles"`
 
 	// v0.4.0 judgment contract (contract "judgment").
-	ProposedJudgmentHash     string `json:"proposedJudgmentHash,omitempty"`
-	ConfirmedJudgmentHash    string `json:"confirmedJudgmentHash,omitempty"`
-	SupersededJudgmentHash   string `json:"supersededJudgmentHash,omitempty"`
-	CanPropose               *bool  `json:"canPropose,omitempty"`
-	CanConfirm               *bool  `json:"canConfirm,omitempty"`
-	CanReject                *bool  `json:"canReject,omitempty"`
-	CanWithdraw              *bool  `json:"canWithdraw,omitempty"`
-	CanSupersedeConfirmed    *bool  `json:"canSupersedeConfirmed,omitempty"`
-	PredecessorCanSupersedeConfirmed *bool `json:"predecessorCanSupersedeConfirmed,omitempty"`
-	PredecessorTerminalAfterSupersede *bool `json:"predecessorTerminalAfterSupersede,omitempty"`
-	AgentConfirmErrorCode    string `json:"agentConfirmErrorCode,omitempty"`
-	Immutable                bool   `json:"immutable,omitempty"`
+	ProposedJudgmentHash              string `json:"proposedJudgmentHash,omitempty"`
+	ConfirmedJudgmentHash             string `json:"confirmedJudgmentHash,omitempty"`
+	SupersededJudgmentHash            string `json:"supersededJudgmentHash,omitempty"`
+	CanPropose                        *bool  `json:"canPropose,omitempty"`
+	CanConfirm                        *bool  `json:"canConfirm,omitempty"`
+	CanReject                         *bool  `json:"canReject,omitempty"`
+	CanWithdraw                       *bool  `json:"canWithdraw,omitempty"`
+	CanSupersedeConfirmed             *bool  `json:"canSupersedeConfirmed,omitempty"`
+	PredecessorCanSupersedeConfirmed  *bool  `json:"predecessorCanSupersedeConfirmed,omitempty"`
+	PredecessorTerminalAfterSupersede *bool  `json:"predecessorTerminalAfterSupersede,omitempty"`
+	AgentConfirmErrorCode             string `json:"agentConfirmErrorCode,omitempty"`
+	Immutable                         bool   `json:"immutable,omitempty"`
 }
 
 // TestGoldenVectorsGo runs every shared vector against the Go implementation,
@@ -591,7 +591,7 @@ func runJudgmentGolden(t *testing.T, tc goldenCase) {
 	// be superseded ONLY by the confirming correction, and once superseded it is
 	// terminal. The superseded hash is the reviewed shape with status=superseded
 	// (decided fields never participate; routing/updatedAt neither).
-		supersededHash := ""
+	supersededHash := ""
 	if tc.Predecessor != nil {
 		if tc.Principal == nil || tc.Resolution == "" || tc.DecidedAt == "" || tc.SupersededAt == "" {
 			t.Fatalf("%s: predecessor supersession requires principal, resolution, decidedAt and supersededAt", tc.Name)

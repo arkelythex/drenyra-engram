@@ -71,13 +71,13 @@ func IsValidJudgmentStatus(status JudgmentStatus) bool {
 // Routing (SupersedesID) and UpdatedAt are excluded from the judgment hash;
 // every proposal/adjudication field is immutable once decided.
 type AccountingJudgment struct {
-	ID             string `json:"id"`
-	TenantID       string `json:"tenantId"`
-	CompanyID      string `json:"companyId"`
-	FiscalPeriodID string `json:"fiscalPeriodId,omitempty"`
-	FromID         string `json:"fromId"`
-	ToID           string `json:"toId"`
-	Relation       Relation     `json:"relation"`
+	ID             string         `json:"id"`
+	TenantID       string         `json:"tenantId"`
+	CompanyID      string         `json:"companyId"`
+	FiscalPeriodID string         `json:"fiscalPeriodId,omitempty"`
+	FromID         string         `json:"fromId"`
+	ToID           string         `json:"toId"`
+	Relation       Relation       `json:"relation"`
 	Status         JudgmentStatus `json:"status"`
 	// Proposer is provenance ONLY (agent|system) — it never authorizes.
 	Proposer Source `json:"proposer"`
@@ -157,7 +157,7 @@ type WithdrawJudgmentCommand struct {
 // confirm|reject|withdraw|supersede), so the result carries the entity alone;
 // a same-request retry replays the same judgment with IdempotentReplay=true.
 type ProposeJudgmentResult struct {
-	JudgmentID string            `json:"judgmentId"`
+	JudgmentID string             `json:"judgmentId"`
 	Judgment   AccountingJudgment `json:"judgment"`
 	// IdempotentReplay is true when the result was re-derived from the completed
 	// idempotency reservation instead of a fresh proposal.
@@ -167,7 +167,7 @@ type ProposeJudgmentResult struct {
 // ConfirmJudgmentResult is the outcome of an atomic confirmation: the confirmed
 // judgment, the immutable confirm event id and the idempotency marker.
 type ConfirmJudgmentResult struct {
-	JudgmentID string `json:"judgmentId"`
+	JudgmentID string             `json:"judgmentId"`
 	Judgment   AccountingJudgment `json:"judgment"`
 	// JudgmentEventID is the immutable 'confirm' event written for this decision.
 	JudgmentEventID string `json:"judgmentEventId"`
@@ -181,7 +181,7 @@ type ConfirmJudgmentResult struct {
 // marker. Rejection stores the human reason as the resolution and writes NO
 // observation relation projection.
 type RejectJudgmentResult struct {
-	JudgmentID string `json:"judgmentId"`
+	JudgmentID string             `json:"judgmentId"`
 	Judgment   AccountingJudgment `json:"judgment"`
 	// JudgmentEventID is the immutable 'reject' event written for this decision.
 	JudgmentEventID string `json:"judgmentEventId"`
@@ -195,7 +195,7 @@ type RejectJudgmentResult struct {
 // marker. Withdrawal is the proposer's provenance continuity act — it never
 // carries an adjudicator.
 type WithdrawJudgmentResult struct {
-	JudgmentID string `json:"judgmentId"`
+	JudgmentID string             `json:"judgmentId"`
 	Judgment   AccountingJudgment `json:"judgment"`
 	// JudgmentEventID is the immutable 'withdraw' event written for this
 	// withdrawal.
@@ -372,22 +372,22 @@ func SupersedeJudgment(j *AccountingJudgment, successorID, at string) error {
 // TypeScript mirror (core/types.ts computeJudgmentHash) builds the object in
 // this exact order so Go and TS hash identical bytes.
 type judgmentHashPayload struct {
-	ID             string         `json:"id"`
-	TenantID       string         `json:"tenantId"`
-	CompanyID      string         `json:"companyId"`
-	FiscalPeriodID string         `json:"fiscalPeriodId"`
-	FromID         string         `json:"fromId"`
-	ToID           string         `json:"toId"`
-	Relation       Relation       `json:"relation"`
-	Status         JudgmentStatus `json:"status"`
-	Proposer       canonicalSource `json:"proposer"`
-	ProposalReason string         `json:"proposalReason"`
-	PredecessorID  string         `json:"predecessorId"`
-	ProposedAt     string         `json:"proposedAt"`
-	Resolution     string         `json:"resolution,omitempty"`
+	ID             string                  `json:"id"`
+	TenantID       string                  `json:"tenantId"`
+	CompanyID      string                  `json:"companyId"`
+	FiscalPeriodID string                  `json:"fiscalPeriodId"`
+	FromID         string                  `json:"fromId"`
+	ToID           string                  `json:"toId"`
+	Relation       Relation                `json:"relation"`
+	Status         JudgmentStatus          `json:"status"`
+	Proposer       canonicalSource         `json:"proposer"`
+	ProposalReason string                  `json:"proposalReason"`
+	PredecessorID  string                  `json:"predecessorId"`
+	ProposedAt     string                  `json:"proposedAt"`
+	Resolution     string                  `json:"resolution,omitempty"`
 	Adjudicator    *auth.PrincipalSnapshot `json:"adjudicator,omitempty"`
-	PolicyVersion  string         `json:"policyVersion,omitempty"`
-	DecidedAt      string         `json:"decidedAt,omitempty"`
+	PolicyVersion  string                  `json:"policyVersion,omitempty"`
+	DecidedAt      string                  `json:"decidedAt,omitempty"`
 }
 
 // canonicalSource is the canonical JSON shape of a judgment proposer: keys

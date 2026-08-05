@@ -154,24 +154,24 @@ describe("judgment model mirror (v0.4.0 Step 2)", () => {
 		);
 	});
 
-    	it("omits empty optional proposer fields from the canonical JSON", async () => {
-    		const a = baseJudgment({
-    			proposer: { system: "sire", actorKind: "agent" },
-    		});
-    		// Explicitly-empty optional fields are canonically equivalent to omitted
-    		// ones (Go parity: internal/core/judgment_test.go).
-    		const b = baseJudgment({
-    			proposer: {
-    				system: "sire",
-    				actorId: "",
-    				actorKind: "agent",
-    				model: "",
-    				reference: "",
-    				session: "",
-    			},
-    		});
-    		await expect(computeJudgmentHash(a)).resolves.toBe(
-    			await computeJudgmentHash(b),
-    		);
-    	});
+	it("omits empty optional proposer fields from the canonical JSON", async () => {
+		const a = baseJudgment({
+			proposer: { system: "sire", actorKind: "agent" },
+		});
+		// Explicitly-empty optional fields are canonically equivalent to omitted
+		// ones (Go parity: internal/core/judgment_test.go).
+		const b = baseJudgment({
+			proposer: {
+				system: "sire",
+				actorId: "",
+				actorKind: "agent",
+				model: "",
+				reference: "",
+				session: "",
+			},
+		});
+		await expect(computeJudgmentHash(a)).resolves.toBe(
+			await computeJudgmentHash(b),
+		);
+	});
 });

@@ -69,81 +69,80 @@ import {
 	canVoid,
 	initialStatus,
 } from "../lifecycle/transitions.js";
-    import { principalSnapshot } from "../auth/principal.js";
-    import { authorizeApproval } from "../authz/approval-policy.js";
-    import {
-    	authorizeJudgment,
-    	type JudgmentAuthorizationDecision,
-    } from "../authz/judgment-policy.js";
+import { principalSnapshot } from "../auth/principal.js";
+import { authorizeApproval } from "../authz/approval-policy.js";
+import {
+	authorizeJudgment,
+	type JudgmentAuthorizationDecision,
+} from "../authz/judgment-policy.js";
 
-    /**
-     * Pure authorization function passed to the atomic approval (mirror of the
-     * authz.ApprovalAuthorizationPolicy interface). Defaults to the frozen
-     * v0.4.0 policy.
-     */
-    export type ApprovalPolicyFn = (
-    	principal: VerifiedApprovalPrincipal,
-    	memory: AccountingMemory,
-    ) => ApprovalAuthorizationDecision;
+/**
+ * Pure authorization function passed to the atomic approval (mirror of the
+ * authz.ApprovalAuthorizationPolicy interface). Defaults to the frozen
+ * v0.4.0 policy.
+ */
+export type ApprovalPolicyFn = (
+	principal: VerifiedApprovalPrincipal,
+	memory: AccountingMemory,
+) => ApprovalAuthorizationDecision;
 
-    /**
-     * Pure judgment authorization function passed to the atomic decisions (mirror
-     * of the authz.JudgmentAuthorizationPolicy interface). Defaults to the frozen
-     * v0.4.0 policy.
-     */
-    export type JudgmentPolicyFn = (
-    	principal: VerifiedApprovalPrincipal,
-    	judgment: AccountingJudgment,
-    ) => JudgmentAuthorizationDecision;
+/**
+ * Pure judgment authorization function passed to the atomic decisions (mirror
+ * of the authz.JudgmentAuthorizationPolicy interface). Defaults to the frozen
+ * v0.4.0 policy.
+ */
+export type JudgmentPolicyFn = (
+	principal: VerifiedApprovalPrincipal,
+	judgment: AccountingJudgment,
+) => JudgmentAuthorizationDecision;
 
-    /**
-     * The judgment surface a store must expose (v0.4.0 Step 2). Every operation
-     * is ONE atomic transition — propose/confirm/reject/withdraw — with no
-     * read + mutate composition (mirror of the SQLiteStore BEGIN IMMEDIATE
-     * contract). Agents can never confirm/reject: those signatures REQUIRE a
-     * VerifiedApprovalPrincipal (a branded factory product).
-     */
-    export interface JudgmentStore {
-    	/**
-    	 * Atomically propose a judgment over two observations. The caller Source
-    	 * is provenance-only (agent|system), never authority.
-    	 */
-    	proposeJudgment(
-    		command: ProposeJudgmentCommand,
-    		caller: MemorySource,
-    	): Promise<ProposeJudgmentResult>;
-    	/**
-    	 * Atomically confirm a proposed judgment: idempotency reservation →
-    	 * locked re-read → status gate → fresh hash vs expected → pure policy →
-    	 * guarded transition + immutable event (+ correction supersession).
-    	 */
-    	confirmJudgment(
-    		command: ConfirmJudgmentCommand,
-    		principal: VerifiedApprovalPrincipal,
-    		policy?: JudgmentPolicyFn,
-    	): Promise<ConfirmJudgmentResult>;
-    	/** Same atomic path as confirmation, storing the human reason as the resolution. */
-    	rejectJudgment(
-    		command: RejectJudgmentCommand,
-    		principal: VerifiedApprovalPrincipal,
-    		policy?: JudgmentPolicyFn,
-    	): Promise<RejectJudgmentResult>;
-    	/**
-    	 * Atomically withdraw the caller's OWN proposed judgment (same exact
-    	 * proposer identity; provenance continuity, never authority).
-    	 */
-    	withdrawJudgment(
-    		command: WithdrawJudgmentCommand,
-    		caller: MemorySource,
-    	): Promise<WithdrawJudgmentResult>;
-    	/** Every stored judgment (map insertion order). */
-    	judgments(): AccountingJudgment[];
-    	/** Immutable judgment transition events (confirm/reject/withdraw/supersede). */
-    	judgmentEvents(): JudgmentEvent[];
-    	/** Successor of a superseded judgment (routes readers onward). */
-    	judgmentSuccessorOf(judgmentId: string): AccountingJudgment | undefined;
-    }
-
+/**
+ * The judgment surface a store must expose (v0.4.0 Step 2). Every operation
+ * is ONE atomic transition — propose/confirm/reject/withdraw — with no
+ * read + mutate composition (mirror of the SQLiteStore BEGIN IMMEDIATE
+ * contract). Agents can never confirm/reject: those signatures REQUIRE a
+ * VerifiedApprovalPrincipal (a branded factory product).
+ */
+export interface JudgmentStore {
+	/**
+	 * Atomically propose a judgment over two observations. The caller Source
+	 * is provenance-only (agent|system), never authority.
+	 */
+	proposeJudgment(
+		command: ProposeJudgmentCommand,
+		caller: MemorySource,
+	): Promise<ProposeJudgmentResult>;
+	/**
+	 * Atomically confirm a proposed judgment: idempotency reservation →
+	 * locked re-read → status gate → fresh hash vs expected → pure policy →
+	 * guarded transition + immutable event (+ correction supersession).
+	 */
+	confirmJudgment(
+		command: ConfirmJudgmentCommand,
+		principal: VerifiedApprovalPrincipal,
+		policy?: JudgmentPolicyFn,
+	): Promise<ConfirmJudgmentResult>;
+	/** Same atomic path as confirmation, storing the human reason as the resolution. */
+	rejectJudgment(
+		command: RejectJudgmentCommand,
+		principal: VerifiedApprovalPrincipal,
+		policy?: JudgmentPolicyFn,
+	): Promise<RejectJudgmentResult>;
+	/**
+	 * Atomically withdraw the caller's OWN proposed judgment (same exact
+	 * proposer identity; provenance continuity, never authority).
+	 */
+	withdrawJudgment(
+		command: WithdrawJudgmentCommand,
+		caller: MemorySource,
+	): Promise<WithdrawJudgmentResult>;
+	/** Every stored judgment (map insertion order). */
+	judgments(): AccountingJudgment[];
+	/** Immutable judgment transition events (confirm/reject/withdraw/supersede). */
+	judgmentEvents(): JudgmentEvent[];
+	/** Successor of a superseded judgment (routes readers onward). */
+	judgmentSuccessorOf(judgmentId: string): AccountingJudgment | undefined;
+}
 
 /** Storage surface consumed by search and lifecycle modules. */
 export interface MemoryStore {
@@ -775,7 +774,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const key = `${tenantId}\u0000${command.requestId}`;
 		const existing = this.judgmentIdempotency.get(key);
 		if (existing !== undefined) {
-			if (existing.commandHash !== commandHash || existing.binding !== binding) {
+			if (
+				existing.commandHash !== commandHash ||
+				existing.binding !== binding
+			) {
 				throw new ApprovalError(
 					"IDEMPOTENCY_CONFLICT",
 					"request id already used with a different proposal or proposer",
@@ -980,7 +982,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const key = `${principal.tenantId}\u0000${command.requestId}`;
 		const existing = this.judgmentIdempotency.get(key);
 		if (existing !== undefined) {
-			if (existing.commandHash !== commandHash || existing.binding !== binding) {
+			if (
+				existing.commandHash !== commandHash ||
+				existing.binding !== binding
+			) {
 				throw new ApprovalError(
 					"IDEMPOTENCY_CONFLICT",
 					"request id already used with a different command or principal",
@@ -1069,7 +1074,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 			// predecessor must be confirmed (or already superseded by THIS very
 			// proposal at propose time).
 			let supersededHash = "";
-			if (judgment.predecessorId !== undefined && judgment.predecessorId !== "") {
+			if (
+				judgment.predecessorId !== undefined &&
+				judgment.predecessorId !== ""
+			) {
 				const pred = this.judgmentsById.get(judgment.predecessorId);
 				if (pred === undefined) {
 					throw new ApprovalError(
@@ -1085,7 +1093,7 @@ export class InMemoryMemoryStore implements MemoryStore {
 							supersedesId: judgment.id,
 							updatedAt: now,
 						});
-					break;
+						break;
 					case "superseded":
 						if (pred.supersedesId !== judgment.id) {
 							throw new ApprovalError(
@@ -1212,7 +1220,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const key = `${principal.tenantId}\u0000${command.requestId}`;
 		const existing = this.judgmentIdempotency.get(key);
 		if (existing !== undefined) {
-			if (existing.commandHash !== commandHash || existing.binding !== binding) {
+			if (
+				existing.commandHash !== commandHash ||
+				existing.binding !== binding
+			) {
 				throw new ApprovalError(
 					"IDEMPOTENCY_CONFLICT",
 					"request id already used with a different command or principal",
@@ -1342,7 +1353,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		command: WithdrawJudgmentCommand,
 		caller: MemorySource,
 	): Promise<WithdrawJudgmentResult> {
-		if (command.judgmentId.trim().length === 0 || command.requestId.trim().length === 0) {
+		if (
+			command.judgmentId.trim().length === 0 ||
+			command.requestId.trim().length === 0
+		) {
 			throw new ApprovalError(
 				"JUDGMENT_NOT_FOUND",
 				"withdraw command is incomplete (judgmentId and requestId are required)",
@@ -1369,7 +1383,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const key = `${judgment.tenantId}\u0000${command.requestId}`;
 		const existing = this.judgmentIdempotency.get(key);
 		if (existing !== undefined) {
-			if (existing.commandHash !== commandHash || existing.binding !== binding) {
+			if (
+				existing.commandHash !== commandHash ||
+				existing.binding !== binding
+			) {
 				throw new ApprovalError(
 					"IDEMPOTENCY_CONFLICT",
 					"request id already used with a different command or proposer",
@@ -1567,11 +1584,9 @@ function judgmentDecideCommandHash(
 	expectedHash: string,
 	resolution: string,
 ): string {
-	const canonical = [
-		judgmentId,
-		expectedHash.toLowerCase(),
-		resolution,
-	].join("\u0000");
+	const canonical = [judgmentId, expectedHash.toLowerCase(), resolution].join(
+		"\u0000",
+	);
 	return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 

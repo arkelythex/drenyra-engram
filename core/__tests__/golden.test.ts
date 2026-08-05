@@ -287,14 +287,18 @@ function buildJudgment(j: GoldenJudgment): AccountingJudgment {
 		id: j.id,
 		tenantId: j.tenantId,
 		companyId: j.companyId,
-		...(j.fiscalPeriodId === undefined ? {} : { fiscalPeriodId: j.fiscalPeriodId }),
+		...(j.fiscalPeriodId === undefined
+			? {}
+			: { fiscalPeriodId: j.fiscalPeriodId }),
 		fromId: j.fromId,
 		toId: j.toId,
 		relation: j.relation,
 		status: j.status,
 		proposer: { ...j.proposer },
 		proposalReason: j.proposalReason,
-		...(j.predecessorId === undefined ? {} : { predecessorId: j.predecessorId }),
+		...(j.predecessorId === undefined
+			? {}
+			: { predecessorId: j.predecessorId }),
 		proposedAt: j.proposedAt,
 		updatedAt: j.updatedAt,
 	};
@@ -379,7 +383,11 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 					// The approval gate: agents never approve; humans approve pending_review.
 					const agentApproves = (() => {
 						try {
-							approve(memory, { actor: "a", actorKind: "agent", timestamp: "t" });
+							approve(memory, {
+								actor: "a",
+								actorKind: "agent",
+								timestamp: "t",
+							});
 							return true;
 						} catch {
 							return false;
@@ -387,14 +395,20 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 					})();
 					const humanApproves = (() => {
 						try {
-							approve(memory, { actor: "h", actorKind: "human", timestamp: "t" });
+							approve(memory, {
+								actor: "h",
+								actorKind: "human",
+								timestamp: "t",
+							});
 							return true;
 						} catch {
 							return false;
 						}
 					})();
 
-					expect(initialStatus(input.fiscalEffect)).toBe(tc.expected.initialStatus);
+					expect(initialStatus(input.fiscalEffect)).toBe(
+						tc.expected.initialStatus,
+					);
 					expect(agentApproves).toBe(tc.expected.canApproveAgent);
 					expect(humanApproves).toBe(tc.expected.canApproveHuman);
 
@@ -406,7 +420,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				}
 				case "approval-policy": {
 					if (tc.principal === undefined || tc.memory === undefined) {
-						throw new Error(`${tc.name}: approval-policy vector requires principal and memory`);
+						throw new Error(
+							`${tc.name}: approval-policy vector requires principal and memory`,
+						);
 					}
 					const decision = authorizeApproval(
 						principalFromVector(tc.principal),
@@ -419,7 +435,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				}
 				case "approval-envelope": {
 					if (tc.memory === undefined) {
-						throw new Error(`${tc.name}: approval-envelope vector requires memory`);
+						throw new Error(
+							`${tc.name}: approval-envelope vector requires memory`,
+						);
 					}
 					const memory = buildGoldenMemory(tc.memory);
 					memory.contentHash = await computeContentHash(memory);
@@ -451,7 +469,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				}
 				case "principal-snapshot": {
 					if (tc.principal === undefined) {
-						throw new Error(`${tc.name}: principal-snapshot vector requires principal`);
+						throw new Error(
+							`${tc.name}: principal-snapshot vector requires principal`,
+						);
 					}
 					expect(
 						principalSnapshot(principalFromVector(tc.principal)).roles,
