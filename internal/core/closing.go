@@ -20,6 +20,8 @@ package core
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"time"
 )
 
 // CloseSnapshot is the frozen structured payload of a monthly close memory.
@@ -153,3 +155,98 @@ func closeSnapshotCanonicalContribution(s *CloseSnapshot) string {
 	// can never collide with a prior field's bytes.
 	return "close_snapshot\x00" + string(CanonicalCloseSnapshotJSON(s))
 }
+
+// ──────────────────────────────────────────────
+// CreateClose command (design §2.1)
+// ──────────────────────────────────────────────
+
+// CreateCloseInput is the canonical CreateClose application-service input
+// (docs/architecture/close-intelligence-v0.5.md §2.1): the YYYYMM period (the
+// exact company scope is a separate argument and MUST carry the same period),
+// the caller-supplied monetary totals (each requires code, currency and at
+// least one same-scope source memory — the engine never derives money from
+// prose), an optional close rationale and the provenance Source of the
+// creation (agent|system — creation is a normal save; the APPROVAL is the
+// authenticated controller act and never happens here).
+type CreateCloseInput struct {
+	// Period is the YYYYMM fiscal period the close covers; it must equal the
+	// scope's period (they are one tuple).
+	Period string
+	// Totals are the explicit monetary totals frozen into the CloseSnapshot
+	// (signed int64 cents; never float).
+	Totals []CloseTotal
+	// Reason is an optional close rationale recorded in the Why content.
+	Reason string
+	// Source is the provenance of the creation claim (agent|system; a human
+	// source is legal provenance too — it never authorizes).
+	Source Source
+}
+
+// MonthEndUTC returns the LAST DAY of the YYYYMM period at 23:59:59 UTC — the
+// canonical effectiveAt of a monthly close (design §2.1: "effectiveAt at month
+// end UTC"). A malformed period fails with INVALID_PERIOD.
+func MonthEndUTC(period string) (string, error) {
+	if !IsValidPeriod(period) {
+		return "", fmt.Errorf("INVALID_PERIOD: expected YYYYMM (six digits, month 01-12), got %q", period)
+	}
+	t, err := time.Parse("200601", period)
+	if err != nil {
+		return "", fmt.Errorf("INVALID_PERIOD: %v", err)
+	}
+	// The last day of the month is the day BEFORE the first day of the next
+	// month; the close is stamped at the final second of the month in UTC.
+	lastDay := t.AddDate(0, 1, 0).AddDate(0, 0, -1)
+	end := time.Date(lastDay.Year(), lastDay.Month(), lastDay.Day(), 23, 59, 59, 0, time.UTC)
+	return end.Format(time.RFC3339), nil
+}
+
+// ──────────────────────────────────────────────
+// ReopenPeriod command and result (design §2.3)
+// ──────────────────────────────────────────────
+
+// ReopenPeriodCommand is the explicit controller reopen command: the exact
+// company scope, the close memory the caller EXPECTS to be current (a stale
+// reference fails the guard), the human reason and the idempotency request id
+// scoped to (tenant, requestId). It deliberately carries NO principal fields
+// (ADR-003 pattern — authority arrives as the verified principal argument).
+type ReopenPeriodCommand struct {
+	// Scope is the exact company scope (with period) being reopened.
+	Scope Scope
+	// ExpectedCloseMemoryID must equal the current period_closures
+	// close_memory_id; a mismatch is INVALID_TRANSITION (the caller reviewed a
+	// stale close).
+	ExpectedCloseMemoryID string
+	// Reason is the human-readable reopen justification (REQUIRED).
+	Reason string
+	// RequestID is the idempotency key scoped to (tenant, requestId); a replay
+	// with the same id and intent returns the stored result.
+	RequestID string
+}
+
+// ReopenPeriodResult is the outcome of an atomic reopen. Status is always
+// "reopened" for a fresh reopen; a replay returns the reconstructed result
+// with IdempotentReplay=true.
+type ReopenPeriodResult struct {
+	TenantID           string `json:"tenantId"`
+	CompanyID          string `json:"companyId"`
+	FiscalPeriodID     string `json:"fiscalPeriodId"`
+	CloseMemoryID      string `json:"closeMemoryId"`
+	EventID            string `json:"eventId"`
+	Status             string `json:"status"`
+	ReopenedAt         string `json:"reopenedAt"`
+	PrincipalSubjectID string `json:"principalSubjectId"`
+	PolicyVersion      string `json:"policyVersion"`
+	IdempotentReplay   bool   `json:"idempotentReplay"`
+}
+
+// ClosureState names the three closure states of the period_closures
+// projection (design §2.2): "open" (no closure row), "closed" (an approved
+// close gates the period) and "reopened" (an explicit controller reopen
+// admitted corrections until the next close approval re-closes).
+type ClosureState string
+
+const (
+	ClosureStateOpen     ClosureState = "open"
+	ClosureStateClosed   ClosureState = "closed"
+	ClosureStateReopened ClosureState = "reopened"
+)

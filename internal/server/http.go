@@ -72,6 +72,8 @@ func classify(err error) *apiError {
 		return mapped
 	}
 	switch {
+	case closeCode(err) != "":
+		return &apiError{status: http.StatusConflict, code: closeCode(err), message: err.Error()}
 	case IsNotFound(err):
 		return &apiError{status: http.StatusNotFound, code: "NOT_FOUND", message: err.Error()}
 	case IsConflict(err):
@@ -81,6 +83,18 @@ func classify(err error) *apiError {
 	default:
 		return &apiError{status: http.StatusInternalServerError, code: "INTERNAL", message: err.Error()}
 	}
+}
+
+// closeCode is the frozen error code carried by a close-surface error, or "".
+// classify consults it BEFORE the generic prefixes so the two v0.5.0 close codes
+// keep their frozen identity on the unauthenticated routes (PERIOD_CLOSED →
+// 409, PERIOD_ALREADY_CLOSED → 409; never a generic CONFLICT).
+func closeCode(err error) string {
+	code := auth.Code(err)
+	if code == auth.CodePeriodClosed || code == auth.CodePeriodAlreadyClosed {
+		return code
+	}
+	return ""
 }
 
 // HTTPServer is the HTTP REST surface over the shared API.
@@ -98,6 +112,10 @@ type HTTPServer struct {
 	// delegate to (one BEGIN IMMEDIATE store operation per transition —
 	// propose/confirm/reject/withdraw, v0.4.0 Step 2).
 	judgmentStore JudgmentStore
+	// reopenStore is the atomic reopen surface the authenticated period-reopen
+	// route delegates to (one BEGIN IMMEDIATE store operation, v0.5.0 close
+	// foundation, design §2.3).
+	reopenStore ReopenStore
 	// legacyApprove mounts the deprecated v0.3 POST /v1/observations/{id}/approve
 	// route. Disabled by default (v0.5.0 removes it); daemons opt in explicitly
 	// for the migration window (design section 6, resolved decision 2).
@@ -118,6 +136,9 @@ func NewHTTPServer(api *API, token string) *HTTPServer {
 	}
 	if judgments, ok := api.Store.(JudgmentStore); ok {
 		h.judgmentStore = judgments
+	}
+	if reopen, ok := api.Store.(ReopenStore); ok {
+		h.reopenStore = reopen
 	}
 	return h
 }
@@ -165,6 +186,13 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/confirm", h.authenticate(h.handleJudgmentConfirm))
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/reject", h.authenticate(h.handleJudgmentReject))
 	mux.HandleFunc("POST /accounting/judgments/{judgmentId}/withdraw", h.requireToken(h.handleJudgmentWithdraw))
+	// Monthly close surfaces (v0.5.0 close foundation, design §6): creation is a
+	// NORMAL SAVE by an agent with a provenance-only source claim (shared token
+	// guard; the APPROVAL is the authenticated controller act); reopening is the
+	// EXPLICIT AUTHENTICATED controller act (principal from the credential only,
+	// strict body, Idempotency-Key).
+	mux.HandleFunc("POST /accounting/closings", h.requireToken(h.handleCloseCreate))
+	mux.HandleFunc("POST /accounting/periods/{period}/reopen", h.authenticate(h.handlePeriodReopen))
 	// Deprecated v0.3 approval surface: stays compiled but is DISABLED by default
 	// in the daemon (v0.5.0 removes it). Mounted only behind an explicit opt-in
 	// (EnableLegacyApprove) for the migration window.
@@ -506,7 +534,8 @@ func approvalErrorStatus(code string) (int, bool) {
 		return http.StatusBadRequest, true
 	case auth.CodeMemoryNotFound:
 		return http.StatusNotFound, true
-	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided, auth.CodeIdempotencyConflict:
+	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided, auth.CodeIdempotencyConflict,
+		auth.CodePeriodClosed, auth.CodePeriodAlreadyClosed:
 		return http.StatusConflict, true
 	}
 	return 0, false
@@ -537,6 +566,203 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 		return
 	}
 	writeHTTPError(w, status, e.Code, e.Message)
+}
+
+// ──────────────────────────────────────────────
+// Monthly close surfaces (v0.5.0 close foundation — design §2.1/§2.3/§6)
+// ──────────────────────────────────────────────
+
+// closeCreateInput is the STRICT close-creation body: the YYYYMM period, the
+// caller-supplied monetary totals and an optional reason. `source` is the
+// optional PROVENANCE-ONLY claim (agent|system — NEVER authority; a body field
+// can never supply authority, matching the ADR-003 gap closure). The company is
+// selected with the ?ruc= (and optional ?organizationId=) query parameters, the
+// same scope derivation as the accounting GET routes.
+type closeCreateInput struct {
+	Period string             `json:"period"`
+	Totals []core.CloseTotal  `json:"totals"`
+	Reason string             `json:"reason"`
+	Source judgmentSourceInput `json:"source"`
+}
+
+// closeReopenInput is the STRICT authenticated reopen body: exactly the expected
+// close memory id plus the human reason. It carries NO authority fields
+// (actor/actorKind/subjectId/roles are REJECTED with 400 — the principal comes
+// ONLY from the Authorization credential).
+type closeReopenInput struct {
+	ExpectedCloseMemoryID string `json:"expectedCloseMemoryId"`
+	Reason                string `json:"reason"`
+}
+
+// handleCloseCreate is the agent close-creation route (a NORMAL save by an agent
+// with a provenance-only source claim). The approval is the authenticated
+// controller act and never happens here. 201 with the pending_review close
+// memory on success.
+func (h *HTTPServer) handleCloseCreate(w http.ResponseWriter, r *http.Request) {
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input closeCreateInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	// The exact company scope comes from the query (?ruc= + optional
+	// ?organizationId=); the period lives in the strict body. httpQueryScope is
+	// not reused because the period is a body field, not a query field.
+	ruc := r.URL.Query().Get("ruc")
+	scope := core.Scope{
+		Kind:           core.ScopeKindCompany,
+		OrganizationID: r.URL.Query().Get("organizationId"),
+		CompanyID:      ruc,
+		RUC:            ruc,
+		Period:         input.Period,
+	}
+	// Provenance-only source: an omitted source defaults to the local agent
+	// claim; a supplied source may be agent|system (or an explicit human claim
+	// with an actor id). It records WHO created the close; it never authorizes.
+	src := input.Source
+	caller := core.Source{
+		System:    src.System,
+		ActorID:   src.ActorID,
+		ActorKind: core.ActorKind(src.ActorKind),
+		Session:   src.Session,
+	}
+	if strings.TrimSpace(caller.System) == "" {
+		caller.System = "http"
+	}
+	if caller.ActorKind == "" {
+		caller.ActorKind = core.ActorKindAgent
+		caller.ActorID = "drenyra-agent"
+	}
+	memory, err := CreateClose(r.Context(), h.api, scope, core.CreateCloseInput{
+		Period: input.Period,
+		Totals: input.Totals,
+		Reason: input.Reason,
+		Source: caller,
+	})
+	if err != nil {
+		writeCloseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, memory)
+}
+
+// handlePeriodReopen is the AUTHENTICATED controller reopen route: the period is
+// the path value, the company comes from ?ruc= + ?organizationId=, the strict
+// body carries only {expectedCloseMemoryId, reason} and the Idempotency-Key
+// header is the reopen's request id. 200 with the reopen result on success.
+func (h *HTTPServer) handlePeriodReopen(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeCloseError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	period := r.PathValue("period")
+	if !core.IsValidPeriod(period) {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID_PERIOD",
+			"path parameter period must be YYYYMM with month 01-12")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input closeReopenInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	ruc := r.URL.Query().Get("ruc")
+	scope := core.Scope{
+		Kind:           core.ScopeKindCompany,
+		OrganizationID: r.URL.Query().Get("organizationId"),
+		CompanyID:      ruc,
+		RUC:            ruc,
+		Period:         period,
+	}
+	if h.reopenStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "reopen store is not available")
+		return
+	}
+	result, err := ReopenPeriod(r.Context(), h.reopenStore, authz.NewApprovalPolicy(), scope,
+		input.ExpectedCloseMemoryID, input.Reason, requestID, principal)
+	if err != nil {
+		writeCloseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// closeErrorStatus maps a frozen close-surface code to its HTTP status (design
+// §6 — the close routes share the approval mapping plus the two v0.5.0 close
+// codes). An unmapped code fails closed (not ok).
+func closeErrorStatus(code string) (int, bool) {
+	switch code {
+	case auth.CodeAuthenticationRequired, auth.CodePrincipalInvalid:
+		return http.StatusUnauthorized, true
+	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
+		auth.CodeRoleNotAuthorized, auth.CodeAssuranceTooLow, auth.CodeMaterialityLimitExceeded:
+		return http.StatusForbidden, true
+	case auth.CodeReasonRequired:
+		return http.StatusBadRequest, true
+	case auth.CodeMemoryNotFound:
+		return http.StatusNotFound, true
+	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided,
+		auth.CodeIdempotencyConflict, auth.CodePeriodClosed, auth.CodePeriodAlreadyClosed:
+		return http.StatusConflict, true
+	}
+	return 0, false
+}
+
+// writeCloseError writes the close-surface error envelope. The frozen close and
+// approval codes keep their identity; the validation errors of the create route
+// (INVALID_PERIOD / INVALID_TOTAL / INVALID_SCOPE ...) map to 400; everything
+// else fails closed as an internal defect. Never include memory content.
+func writeCloseError(w http.ResponseWriter, err error) {
+	var e *auth.Error
+	if errors.As(err, &e) {
+		status, ok := closeErrorStatus(e.Code)
+		if !ok {
+			// Fail closed: an unmapped frozen code is a server defect, never a guess.
+			writeHTTPError(w, http.StatusInternalServerError, "INTERNAL",
+				"close error code "+e.Code+" is not mapped to a transport status")
+			return
+		}
+		writeHTTPError(w, status, e.Code, e.Message)
+		return
+	}
+	message := err.Error()
+	switch {
+	case strings.HasPrefix(message, "INVALID_"):
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", message)
+	case strings.Contains(message, "MEMORY_NOT_FOUND"):
+		writeHTTPError(w, http.StatusNotFound, "MEMORY_NOT_FOUND", message)
+	default:
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "close operation failed")
+	}
 }
 
 // ──────────────────────────────────────────────

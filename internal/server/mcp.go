@@ -456,6 +456,42 @@ func ToolCatalog() []map[string]any {
 				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
 			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
 		},
+		// ── accounting_close_* (v0.5.0 close foundation, design §6): creation is
+		// a NORMAL SAVE by an agent with a provenance-only source claim (the tool
+		// stamps the agent source — tool arguments never carry identity); the
+		// APPROVAL is the authenticated controller act through accounting_approve.
+		// Reopening is the explicit authenticated controller act and fails closed
+		// with AUTHENTICATION_REQUIRED on this session-less stdio server.
+		{
+			"name":        "accounting_close_create",
+			"description": "Create a monthly close memory (kind=summary, fiscalEffect=closing, topic closing/CIERRE-<period>) in pending_review (v0.5.0 close foundation, design §2.1). The agent source is stamped by the server (provenance, never authority); each total requires code, currency, signed int64 cents and at least one same-scope source memory id. Approval happens through the authenticated accounting_approve.",
+			"inputSchema": objectSchema(map[string]any{
+				"period": stringSchema("fiscal period YYYYMM the close covers (required; must equal the scope period)"),
+				"scope":  stringSchema(`JSON scope with period (required)`),
+				"totals": map[string]any{
+					"type":        "array",
+					"description": "explicit monetary totals (required): each {code, currency, amount_cents (signed int64), source_memory_ids[]}",
+					"items": objectSchema(map[string]any{
+						"code":              stringSchema("total code (e.g. igv, ventas)"),
+						"currency":          stringSchema("ISO 4217 currency code (e.g. PEN, USD)"),
+						"amount_cents":      intSchema("signed total in cents (int64; never float)"),
+						"source_memory_ids": map[string]any{"type": "array", "items": stringSchema("same-scope source memory id"), "description": "at least one same-scope source memory (required)"},
+					}, "code", "currency", "amount_cents", "source_memory_ids"),
+				},
+				"reason": stringSchema("close rationale (optional)"),
+			}, "period", "scope", "totals"),
+		},
+		{
+			"name":        "accounting_period_reopen",
+			"description": "Explicitly reopen a closed period (v0.5.0 close foundation, design §2.3) — the authenticated controller act that admits corrections. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"period":                    stringSchema("fiscal period YYYYMM being reopened"),
+				"scope":                     stringSchema(`JSON scope with period`),
+				"expected_close_memory_id":  stringSchema("close memory id that closed the period (the current closure row)"),
+				"reason":                    stringSchema("human-readable reopen justification (required)"),
+				"request_id":                stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "period", "scope", "expected_close_memory_id", "reason", "request_id"),
+		},
 		// ── accounting_judgment_* (v0.4.0 Step 2): the adjudication surface. The
 		// caller-declared accounting_judge tool is GONE (design §4): proposals and
 		// withdrawals carry a provenance-only source (agent|system — NEVER
@@ -966,6 +1002,94 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
 			"accounting_approve requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
 
+	// ── close tools (v0.5.0 close foundation, design §6): creation is a NORMAL
+	// SAVE by an agent (the server stamps the agent source — provenance, never
+	// authority); reopening is the authenticated controller act and fails closed
+	// with AUTHENTICATION_REQUIRED on this session-less stdio server (exactly
+	// like accounting_approve).
+	case "accounting_close_create":
+		var args struct {
+			Period string          `json:"period"`
+			Scope  string          `json:"scope"`
+			Totals []mcpCloseTotal `json:"totals"`
+			Reason string          `json:"reason"`
+		}
+		// Strict shape: ANY unknown field is a malformed argument shape (JSON-RPC
+		// -32602), never silently ignored — a body field can never supply
+		// authority or scope.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("period", args.Period); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		if scope.Period != "" && scope.Period != args.Period {
+			return errTextContent(auth.New(auth.CodeInvalidTransition,
+				"period argument does not match the scope period")), nil
+		}
+		totals := make([]core.CloseTotal, 0, len(args.Totals))
+		for _, t := range args.Totals {
+			totals = append(totals, core.CloseTotal{
+				Code:            t.Code,
+				Currency:        t.Currency,
+				AmountCents:     t.AmountCents,
+				SourceMemoryIDs: append([]string(nil), t.SourceMemoryIDs...),
+			})
+		}
+		// The agent source claim is stamped here (provenance ONLY — the close
+		// creation is a normal agent save; the APPROVAL is the authenticated
+		// controller act through accounting_approve).
+		memory, err := CreateClose(context.Background(), m.api, scope, core.CreateCloseInput{
+			Period: args.Period,
+			Totals: totals,
+			Reason: args.Reason,
+			Source: core.Source{System: "mcp", ActorID: "drenyra-agent", ActorKind: core.ActorKindAgent},
+		})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(memory)), nil
+
+	case "accounting_period_reopen":
+		var args struct {
+			Period                string `json:"period"`
+			Scope                 string `json:"scope"`
+			ExpectedCloseMemoryID string `json:"expected_close_memory_id"`
+			Reason                string `json:"reason"`
+			RequestID             string `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority — is a malformed argument shape (JSON-RPC -32602),
+		// never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("period", args.Period); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_close_memory_id", args.ExpectedCloseMemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may reopen only when the HTTP middleware supplies a bound principal
+		// to the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_period_reopen requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
 	// ── adjudication tools (v0.4.0 Step 2, design §7): proposals and
 	// withdrawals carry a provenance-only source; confirm/reject have NO
 	// identity arguments at all and fail closed with AUTHENTICATION_REQUIRED on
@@ -1287,6 +1411,17 @@ func decodeArguments(raw json.RawMessage, dst any) error {
 		return &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: " + err.Error()}
 	}
 	return nil
+}
+
+// mcpCloseTotal is the snake_case MCP wire shape of one caller-supplied close
+// total (the MCP argument vocabulary is snake_case; the engine model is
+// camelCase core.CloseTotal). amount_cents is a signed int64 JSON integer —
+// never float.
+type mcpCloseTotal struct {
+	Code            string   `json:"code"`
+	Currency        string   `json:"currency"`
+	AmountCents     int64    `json:"amount_cents"`
+	SourceMemoryIDs []string `json:"source_memory_ids"`
 }
 
 // decodeArgumentsStrict unmarshals tool arguments REJECTING any unknown field —

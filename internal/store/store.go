@@ -162,7 +162,36 @@ type Store interface {
 	Relations() ([]core.RelationRecord, error)
 	TransitionLog() ([]core.StatusTransitionRecord, error)
 	Doctor() (DoctorReport, error)
+	// FindPeriodClosure returns the period_closures projection row of the exact
+	// company scope, when one exists (v0.5.0 close foundation, design §2.2/§2.3).
+	// The projection is the authoritative closure state; querying approved closing
+	// memories remains a doctor/rebuild consistency check, never the hot-path gate.
+	FindPeriodClosure(scope core.Scope) (PeriodClosureRecord, bool)
+	// ReopenPeriod is the explicit authenticated controller reopen of a CLOSED
+	// exact company period (design §2.3): ONE BEGIN IMMEDIATE transaction with
+	// (tenant, requestId) idempotency, exact-scope and expected-close guards, the
+	// frozen controller/standard-assurance policy, the projection flip to
+	// 'reopened', an immutable period_closure_events row (action 'reopened') and
+	// the memory_reopened receipt on the close memory's chain. It NEVER edits the
+	// approved close memory.
+	ReopenPeriod(ctx context.Context, cmd core.ReopenPeriodCommand, principal auth.VerifiedApprovalPrincipal, policy authz.ApprovalAuthorizationPolicy) (core.ReopenPeriodResult, error)
 	Close() error
+}
+
+// PeriodClosureRecord is the read model of one period_closures projection row
+// (v0.5.0 close foundation). Status is one of 'closed' | 'reopened'; the reopen
+// fields are empty while the period is closed.
+type PeriodClosureRecord struct {
+	TenantID             string
+	CompanyID            string
+	FiscalPeriodID       string
+	CloseMemoryID        string
+	Status               string
+	CloseApprovalEventID string
+	ClosedAt             string
+	ReopenedAt           string
+	ReopenedBySubjectID  string
+	ReopenReason         string
 }
 
 // SQLiteStore is a Store backed by a local SQLite database (modernc.org/sqlite,
@@ -1878,6 +1907,7 @@ func buildMemory(input core.SaveInput, id string, revision int, status core.Memo
 		// critical), set by the writing agent (v3 column). It does NOT
 		// participate in the envelope hash (frozen decision).
 		MaterialityLevel: materialityLevel,
+		CloseSnapshot:    core.CloneCloseSnapshot(input.CloseSnapshot),
 		ReceiptID:        input.ReceiptID,
 		Revision:         revision,
 	}
@@ -2282,6 +2312,29 @@ func (s *SQLiteStore) assertPeriodWritable(ctx context.Context, q Queryer, scope
 	return nil
 }
 
+// FindPeriodClosure returns the period_closures projection row of the exact
+// company scope, when one exists. Non-company scopes, unperioded scopes and
+// never-closed periods return ok=false.
+func (s *SQLiteStore) FindPeriodClosure(scope core.Scope) (PeriodClosureRecord, bool) {
+	if scope.Kind != core.ScopeKindCompany || scope.Period == "" {
+		return PeriodClosureRecord{}, false
+	}
+	var rec PeriodClosureRecord
+	err := s.db.QueryRow(`
+		SELECT tenant_id, company_id, fiscal_period_id, close_memory_id, status,
+			COALESCE(close_approval_event_id, ''), closed_at,
+			COALESCE(reopened_at, ''), COALESCE(reopened_by_subject_id, ''), COALESCE(reopen_reason, '')
+		FROM period_closures
+		WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ?`,
+		scope.OrganizationID, scope.CompanyID, scope.Period,
+	).Scan(&rec.TenantID, &rec.CompanyID, &rec.FiscalPeriodID, &rec.CloseMemoryID, &rec.Status,
+		&rec.CloseApprovalEventID, &rec.ClosedAt, &rec.ReopenedAt, &rec.ReopenedBySubjectID, &rec.ReopenReason)
+	if err != nil {
+		return PeriodClosureRecord{}, false
+	}
+	return rec, true
+}
+
 // IdentitySeed describes the identity rows the authenticated approval path needs
 // before a principal can approve: one company, one membership and its roles. It
 // exists so tests and the local-dev seed flow never depend on environment state
@@ -2672,6 +2725,231 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: commit approval: %w", err)
+	}
+	committed = true
+	return result, nil
+}
+
+// ──────────────────────────────────────────────
+// ReopenPeriod — explicit controller reopen (v0.5.0 close foundation)
+// ──────────────────────────────────────────────
+
+// ReopenPeriod atomically reopens a CLOSED exact company period (design §2.3):
+// the explicit authenticated controller act that admits corrections after a
+// close. It follows the approval pattern — ONE BEGIN IMMEDIATE transaction on a
+// dedicated connection:
+//
+//	idempotency by (tenant, requestId) on the immutable closure-event ledger →
+//	locked re-read of the projection row → exact-scope/expected-close/status
+//	guards → pure controller policy (closing base role + standard assurance) →
+//	guarded projection flip to 'reopened' → immutable period_closure_events row
+//	(action 'reopened') → memory_reopened receipt on the close memory's chain →
+//	commit.
+//
+// It ONLY changes the projection and the event ledger; the approved close memory
+// is never edited. A later close is a NEW revision of the same close topic
+// (CreateClose after the reopen), whose approval re-closes the projection.
+func (s *SQLiteStore) ReopenPeriod(ctx context.Context, cmd core.ReopenPeriodCommand, principal auth.VerifiedApprovalPrincipal, policy authz.ApprovalAuthorizationPolicy) (core.ReopenPeriodResult, error) {
+	scope := cmd.Scope
+	// Syntax guards (defense in depth — the service validates first): an exact
+	// company scope with a period and the complete command fail closed before any
+	// lock.
+	if err := core.AssertValidScope(scope); err != nil {
+		return core.ReopenPeriodResult{}, err
+	}
+	if scope.Kind != core.ScopeKindCompany || scope.Period == "" {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeInvalidTransition, "reopen requires an exact company scope with a YYYYMM period")
+	}
+	if strings.TrimSpace(cmd.ExpectedCloseMemoryID) == "" {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeMemoryNotFound, "expectedCloseMemoryId is required")
+	}
+	if strings.TrimSpace(cmd.Reason) == "" {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeReasonRequired, "a reason is required for reopening a period")
+	}
+	if strings.TrimSpace(cmd.RequestID) == "" {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeMemoryNotFound, "requestId (idempotency key) is required")
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// BEGIN IMMEDIATE is the write intent (design §5): SQLite's reserved writer
+	// lock is taken here, before any race-sensitive read.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := nowISO()
+
+	// 1. Idempotency: one closure event per (tenant, requestId) on the immutable
+	// ledger. A completed reopen replays its stored outcome; the close memory and
+	// the principal binding must match exactly, else the request id was reused for
+	// a different intent.
+	var (
+		storedEventID, storedCloseID, storedSubject, storedReason, storedAction, storedCreatedAt string
+	)
+	err = conn.QueryRowContext(ctx, `
+		SELECT id, close_memory_id, subject_id, reason, action, created_at
+		FROM period_closure_events WHERE tenant_id = ? AND request_id = ?`,
+		scope.OrganizationID, cmd.RequestID,
+	).Scan(&storedEventID, &storedCloseID, &storedSubject, &storedReason, &storedAction, &storedCreatedAt)
+	switch {
+	case err == nil:
+		if storedCloseID != cmd.ExpectedCloseMemoryID || storedSubject != principal.SubjectID() || storedReason != cmd.Reason {
+			return core.ReopenPeriodResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or principal")
+		}
+		if storedAction != "reopened" {
+			return core.ReopenPeriodResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used by a different closure event")
+		}
+		return core.ReopenPeriodResult{
+			TenantID:           scope.OrganizationID,
+			CompanyID:          scope.CompanyID,
+			FiscalPeriodID:     scope.Period,
+			CloseMemoryID:      storedCloseID,
+			EventID:            storedEventID,
+			Status:             string(core.ClosureStateReopened),
+			ReopenedAt:         storedCreatedAt,
+			PrincipalSubjectID: storedSubject,
+			PolicyVersion:      authz.PolicyVersion,
+			IdempotentReplay:   true,
+		}, nil
+	case errors.Is(err, sql.ErrNoRows):
+		// proceed — no prior reopen for this request id
+	default:
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: read period closure event: %w", err)
+	}
+
+	// 2. Locked re-read of the projection row through the same connection.
+	var (
+		storedTenant, storedCompany, storedPeriod, storedCloseMemoryID, storedStatus string
+	)
+	err = conn.QueryRowContext(ctx, `
+		SELECT tenant_id, company_id, fiscal_period_id, close_memory_id, status
+		FROM period_closures
+		WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ?`,
+		scope.OrganizationID, scope.CompanyID, scope.Period,
+	).Scan(&storedTenant, &storedCompany, &storedPeriod, &storedCloseMemoryID, &storedStatus)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeInvalidTransition,
+			fmt.Sprintf("period %s was never closed; only a closed period can be reopened", scope.Period))
+	case err != nil:
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: read period closure: %w", err)
+	}
+
+	// 3. Guards: the expected close must be the CURRENT closure row and the
+	// period must be closed (a reopened period is not reopened again; a re-close
+	// is a NEW close revision approved through the normal path).
+	if storedCloseMemoryID != cmd.ExpectedCloseMemoryID {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeInvalidTransition,
+			"expectedCloseMemoryId does not match the current closure row (the close changed after review)")
+	}
+	if storedStatus != "closed" {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeInvalidTransition,
+			fmt.Sprintf("period %s is not closed (status %q); only a closed period can be reopened", scope.Period, storedStatus))
+	}
+
+	// 4. Pure controller policy: closing requires controller + standard assurance
+	// (design §2.3 — the same frozen matrix as close approval). The reopen is
+	// authorized against a synthetic closing-effect memory of the exact scope; a
+	// denial rolls the reservation back and returns its frozen reason code.
+	decision := policy.Authorize(principal, core.AccountingMemory{
+		Scope: core.Scope{
+			Kind:           core.ScopeKindCompany,
+			OrganizationID: scope.OrganizationID,
+			CompanyID:      scope.CompanyID,
+			RUC:            scope.RUC,
+			Period:         scope.Period,
+		},
+		FiscalEffect: core.FiscalEffectClosing,
+	})
+	if !decision.Allowed {
+		return core.ReopenPeriodResult{}, auth.New(decision.ReasonCode, "authorization policy denied the reopen")
+	}
+
+	// 5. Guarded projection flip: exactly ONE 'closed' row becomes 'reopened'
+	// with the reopen provenance. The write lock makes a lost update impossible;
+	// the guard is a final invariant check.
+	res, err := conn.ExecContext(ctx, `
+		UPDATE period_closures SET status = 'reopened', reopened_at = ?, reopened_by_subject_id = ?, reopen_reason = ?
+		WHERE tenant_id = ? AND company_id = ? AND fiscal_period_id = ? AND status = 'closed'`,
+		now, principal.SubjectID(), cmd.Reason, scope.OrganizationID, scope.CompanyID, scope.Period,
+	)
+	if err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: reopen update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: reopen rows affected: %w", err)
+	}
+	if affected != 1 {
+		return core.ReopenPeriodResult{}, auth.New(auth.CodeInvalidTransition, "guarded reopen update did not match exactly one closed projection row")
+	}
+
+	// 6. The IMMUTABLE closure-event ledger row (action 'reopened'): one row per
+	// closure transition, never updated, never deleted (no-update/no-delete
+	// triggers). The approval_event_id stays NULL — a reopen is not an approval.
+	eventID, err := newUUID()
+	if err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: generate closure event id: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO period_closure_events (id, tenant_id, company_id, fiscal_period_id, action, close_memory_id, approval_event_id, subject_id, reason, request_id, created_at)
+		VALUES (?, ?, ?, ?, 'reopened', ?, NULL, ?, ?, ?, ?)`,
+		eventID, scope.OrganizationID, scope.CompanyID, scope.Period,
+		cmd.ExpectedCloseMemoryID, principal.SubjectID(), cmd.Reason, cmd.RequestID, now,
+	); err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: insert period closure event: %w", err)
+	}
+
+	// 7. memory_reopened receipt on the CLOSE MEMORY's receipt chain (design
+	// §2.5): payload covers the scope, reason, the verified principal snapshot and
+	// the frozen policy version; the close/event ids are covered by the envelope
+	// (subjectId = close memory) and the receipt chain. Payload version v0.5.0 for
+	// the new action. A signing failure rolls the whole reopen back (no projection
+	// flip, no event, no receipt).
+	snapshot := principal.PrincipalSnapshot()
+	if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeMemory, cmd.ExpectedCloseMemoryID, core.ReceiptActionMemoryReopened, core.ReceiptPayload{
+		Version:                  core.ReceiptPayloadVersionV05,
+		TenantID:                 scope.OrganizationID,
+		CompanyID:                scope.CompanyID,
+		FiscalPeriodID:           scope.Period,
+		Reason:                   cmd.Reason,
+		PrincipalID:              snapshot.SubjectID,
+		MembershipID:             snapshot.MembershipID,
+		PrincipalRoles:           receiptPrincipalRoles(snapshot),
+		AuthenticationMethod:     string(snapshot.AuthenticationMethod),
+		AssuranceLevel:           string(snapshot.AssuranceLevel),
+		PrincipalAuthenticatedAt: snapshot.AuthenticatedAt,
+		PolicyVersion:            decision.PolicyVersion,
+	}, now); err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: emit memory_reopened receipt: %w", err)
+	}
+
+	result := core.ReopenPeriodResult{
+		TenantID:           scope.OrganizationID,
+		CompanyID:          scope.CompanyID,
+		FiscalPeriodID:     scope.Period,
+		CloseMemoryID:      cmd.ExpectedCloseMemoryID,
+		EventID:            eventID,
+		Status:             string(core.ClosureStateReopened),
+		ReopenedAt:         now,
+		PrincipalSubjectID: snapshot.SubjectID,
+		PolicyVersion:      decision.PolicyVersion,
+		IdempotentReplay:   false,
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return core.ReopenPeriodResult{}, fmt.Errorf("persistence error: commit reopen: %w", err)
 	}
 	committed = true
 	return result, nil

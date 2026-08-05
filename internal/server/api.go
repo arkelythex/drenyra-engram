@@ -462,6 +462,12 @@ func (a *API) Judge(conflictID string, resolution string, actor core.Source) (co
 // ──────────────────────────────────────────────
 
 // PeriodSummaryOutput is the aggregated, explainable view of a fiscal period.
+// v0.5.0 close foundation (design §2.2): LatestClose is the current close memory
+// (nil when the period has none), ClosureState is the period_closures projection
+// state (open|closed|reopened) and PendingItems is the shared pending-item digest
+// (pending_review memories + active/pending/approved obligations and exceptions,
+// deduped, sorted by kind/effectiveAt/memoryId). The pre-v0.5 fields stay
+// unchanged for compatibility.
 type PeriodSummaryOutput struct {
 	Scope             core.Scope                `json:"scope"`
 	Total             int                       `json:"total"`
@@ -472,6 +478,15 @@ type PeriodSummaryOutput struct {
 	ActiveExceptions  []core.AccountingMemory   `json:"activeExceptions"`
 	Narrative         []NarrativeItem           `json:"narrative"`
 	NarrativeText     string                    `json:"narrativeText"`
+	// LatestClose is the latest revision of the period's close chain
+	// (closing/CIERRE-<period>), nil when the period has no close memory.
+	LatestClose *core.AccountingMemory `json:"latestClose,omitempty"`
+	// ClosureState is the authoritative period_closures projection state:
+	// "open" (never closed), "closed" or "reopened" (design §2.2).
+	ClosureState string `json:"closureState"`
+	// PendingItems is the shared pending-item digest (design §2.2) — the same
+	// frozen list CreateClose embeds in the CloseSnapshot.
+	PendingItems []core.ClosePendingItem `json:"pendingItems"`
 }
 
 // NarrativeItem is one line of the explainable period narrative (the killer
@@ -511,6 +526,10 @@ func (a *API) PeriodSummary(scope core.Scope) (PeriodSummaryOutput, error) {
 		ActiveObligations: []core.AccountingMemory{},
 		ActiveExceptions:  []core.AccountingMemory{},
 		Narrative:         []NarrativeItem{},
+		// v0.5.0 close foundation (design §2.2): the projection state defaults to
+		// open and is replaced by the stored row when the period was closed.
+		ClosureState: string(core.ClosureStateOpen),
+		PendingItems: []core.ClosePendingItem{},
 	}
 	for _, memory := range current {
 		out.ByKind[memory.Kind]++
@@ -540,6 +559,22 @@ func (a *API) PeriodSummary(scope core.Scope) (PeriodSummaryOutput, error) {
 
 	sortNarrativeByEffectiveAt(out.Narrative)
 
+	// v0.5.0 close foundation (design §2.2): the closure projection state, the
+	// latest close revision of the period's close chain and the shared
+	// pending-item digest. The projection is the authoritative closure source;
+	// the close memory (with its frozen snapshot) is exposed for review.
+	if closure, ok := a.Store.FindPeriodClosure(scope); ok {
+		out.ClosureState = closure.Status
+	}
+	for _, memory := range current {
+		if core.IsCloseMemory(memory) {
+			m := memory
+			out.LatestClose = &m
+			break
+		}
+	}
+	out.PendingItems = deriveClosePendingItems(out, scope.Period)
+
 	period := scope.Period
 	if period == "" {
 		period = "scope"
@@ -561,6 +596,13 @@ func (a *API) PeriodSummary(scope core.Scope) (PeriodSummaryOutput, error) {
 	}
 	out.NarrativeText = sb.String()
 	return out, nil
+}
+
+// FindPeriodClosure returns the period_closures projection record of the exact
+// company scope, when one exists (v0.5.0 close foundation — the authoritative
+// closure state consumed by PeriodSummary and CreateClose).
+func (a *API) FindPeriodClosure(scope core.Scope) (store.PeriodClosureRecord, bool) {
+	return a.Store.FindPeriodClosure(scope)
 }
 
 // isNarrativeKind reports whether a memory participates in the period

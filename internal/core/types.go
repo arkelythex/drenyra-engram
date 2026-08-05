@@ -465,7 +465,15 @@ type SaveInput struct {
 	// observations.materiality_level column; it does NOT participate in the
 	// envelope hash (frozen decision).
 	MaterialityLevel *MaterialityLevel `json:"materialityLevel,omitempty"`
-	ReceiptID        string            `json:"receiptId,omitempty"`
+	// CloseSnapshot is the OPTIONAL structured payload of a monthly close memory
+	// (kind=summary, fiscalEffect=closing — v0.5.0, design §2.1). Canonical bytes
+	// are persisted verbatim in observations.close_snapshot_json (schema v6) and
+	// PARTICIPATE in the content and envelope hashes; nil on every non-close
+	// memory (contributes the empty string, so pre-v6 envelopes are unchanged).
+	// HTTP/MCP/CLI never construct closing memories through generic save: the
+	// CreateClose service is the canonical path (design §2.1).
+	CloseSnapshot *CloseSnapshot `json:"closeSnapshot,omitempty"`
+	ReceiptID     string         `json:"receiptId,omitempty"`
 }
 
 // WriteOutcome is the save (upsert) outcome. Conflict and Unknown are the
@@ -609,20 +617,31 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 		cloned.MaterialityLevel = &ml
 	}
 	if m.CloseSnapshot != nil {
-		snap := *m.CloseSnapshot
-		snap.Counts.ByKind = copyCountMap(m.CloseSnapshot.Counts.ByKind)
-		snap.Counts.ByStatus = copyCountMap(m.CloseSnapshot.Counts.ByStatus)
-		snap.Totals = append([]CloseTotal(nil), m.CloseSnapshot.Totals...)
-		for i := range snap.Totals {
-			snap.Totals[i].SourceMemoryIDs = append([]string(nil), m.CloseSnapshot.Totals[i].SourceMemoryIDs...)
-		}
-		snap.PendingItems = append([]ClosePendingItem(nil), m.CloseSnapshot.PendingItems...)
-		snap.NarrativeMemoryIDs = append([]string(nil), m.CloseSnapshot.NarrativeMemoryIDs...)
-		cloned.CloseSnapshot = &snap
+		cloned.CloseSnapshot = CloneCloseSnapshot(m.CloseSnapshot)
 	}
 	cloned.EvidenceRefs = append([]string(nil), m.EvidenceRefs...)
 	cloned.RuleRefs = append([]string(nil), m.RuleRefs...)
 	return cloned
+}
+
+// CloneCloseSnapshot returns a defensive deep copy of a CloseSnapshot: the maps
+// and slices are copied so callers can never mutate a stored snapshot through a
+// clone (shared by CloneMemory, the store's save path and any adapter). A nil
+// snapshot stays nil (the empty contribution keeps pre-v6 envelopes unchanged).
+func CloneCloseSnapshot(s *CloseSnapshot) *CloseSnapshot {
+	if s == nil {
+		return nil
+	}
+	snap := *s
+	snap.Counts.ByKind = copyCountMap(s.Counts.ByKind)
+	snap.Counts.ByStatus = copyCountMap(s.Counts.ByStatus)
+	snap.Totals = append([]CloseTotal(nil), s.Totals...)
+	for i := range snap.Totals {
+		snap.Totals[i].SourceMemoryIDs = append([]string(nil), s.Totals[i].SourceMemoryIDs...)
+	}
+	snap.PendingItems = append([]ClosePendingItem(nil), s.PendingItems...)
+	snap.NarrativeMemoryIDs = append([]string(nil), s.NarrativeMemoryIDs...)
+	return &snap
 }
 
 // ──────────────────────────────────────────────

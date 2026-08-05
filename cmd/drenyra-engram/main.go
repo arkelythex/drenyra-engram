@@ -93,6 +93,8 @@ func run(args []string) int {
 		return cmdLinkEvidence(args[1:])
 	case "period-summary":
 		return cmdPeriodSummary(args[1:])
+	case "close":
+		return cmdClose(args[1:])
 	case "timeline":
 		return cmdTimeline(args[1:])
 	case "supersede":
@@ -1714,6 +1716,237 @@ func cmdPeriodSummary(args []string) int {
 }
 
 // ──────────────────────────────────────────────
+// close — monthly close surfaces (v0.5.0 close foundation, design §6)
+// ──────────────────────────────────────────────
+
+// cmdClose dispatches the monthly-close subcommands: create (a NORMAL agent save
+// that lands pending_review), show (inspect one close memory with its frozen
+// snapshot) and reopen (the EXPLICIT AUTHENTICATED controller act that admits
+// corrections — the principal comes from the stored CLI session like approve,
+// never from a caller flag).
+func cmdClose(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: drenyra-engram close create|show|reopen ...")
+		return 2
+	}
+	switch args[0] {
+	case "create":
+		return cmdCloseCreate(args[1:])
+	case "show":
+		return cmdCloseShow(args[1:])
+	case "reopen":
+		return cmdCloseReopen(args[1:])
+	case "help", "-h", "--help":
+		fmt.Fprintln(os.Stdout, `usage: drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]
+       drenyra-engram close show <memory-id> [--db <path>]
+       drenyra-engram close reopen <ruc> --period YYYYMM --expected-close <id> --reason <text> [--db <path>]`)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown close subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+// closeTotalSpec is one parsed --total code=currency=amountCents[=memoryId]
+// value: the explicit monetary total and its optional same-scope source memory.
+type closeTotalSpec struct {
+	code     string
+	currency string
+	cents    int64
+	sourceID string
+}
+
+// parseCloseTotal parses one --total value. The amount is a SIGNED int64 in
+// cents (never float); the optional 4th segment is the same-scope source memory
+// id the total must be backed by (the engine never derives money from prose).
+func parseCloseTotal(raw string) (closeTotalSpec, error) {
+	parts := strings.Split(raw, "=")
+	if len(parts) < 3 || len(parts) > 4 {
+		return closeTotalSpec{}, fmt.Errorf("INVALID_TOTAL: --total must be code=currency=amountCents[=memoryId], got %q", raw)
+	}
+	code := strings.TrimSpace(parts[0])
+	currency := strings.TrimSpace(parts[1])
+	amount := strings.TrimSpace(parts[2])
+	if code == "" || currency == "" || amount == "" {
+		return closeTotalSpec{}, fmt.Errorf("INVALID_TOTAL: code, currency and amountCents must be non-empty in %q", raw)
+	}
+	cents, err := strconv.ParseInt(amount, 10, 64)
+	if err != nil {
+		return closeTotalSpec{}, fmt.Errorf("INVALID_TOTAL: amountCents %q is not a signed int64: %v", amount, err)
+	}
+	sourceID := ""
+	if len(parts) == 4 {
+		sourceID = strings.TrimSpace(parts[3])
+		if sourceID == "" {
+			return closeTotalSpec{}, fmt.Errorf("INVALID_TOTAL: the source memory id segment of %q is empty", raw)
+		}
+	}
+	return closeTotalSpec{code: code, currency: currency, cents: cents, sourceID: sourceID}, nil
+}
+
+// cmdCloseCreate creates a monthly close through the canonical CreateClose
+// service: the memory lands pending_review behind the human gate and only the
+// authenticated controller approval can close the period.
+func cmdCloseCreate(args []string) int {
+	fs := flag.NewFlagSet("close create", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	period := fs.String("period", "", "fiscal period YYYYMM (REQUIRED)")
+	reason := fs.String("reason", "", "close rationale (optional)")
+	var totals multiFlag
+	fs.Var(&totals, "total", "monetary total code=currency=amountCents[=memoryId] (repeatable)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--period": true, "--reason": true, "--total": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*period) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(rest[0], *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+	var closeTotals []core.CloseTotal
+	for _, raw := range totals {
+		spec, err := parseCloseTotal(raw)
+		if err != nil {
+			return fail("%v", err)
+		}
+		sourceIDs := []string(nil)
+		if spec.sourceID != "" {
+			sourceIDs = []string{spec.sourceID}
+		}
+		closeTotals = append(closeTotals, core.CloseTotal{
+			Code:            spec.code,
+			Currency:        spec.currency,
+			AmountCents:     spec.cents,
+			SourceMemoryIDs: sourceIDs,
+		})
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	memory, err := server.CreateClose(context.Background(), api, scope, core.CreateCloseInput{
+		Period: *period,
+		Totals: closeTotals,
+		Reason: *reason,
+		// The CLI is the professional's surface: the creation claim is human
+		// provenance (actorId cli) — it records WHO drafted the close; the
+		// approval remains the authenticated controller act.
+		Source: core.Source{System: "cli", ActorID: "cli", ActorKind: core.ActorKindHuman},
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(memory)
+}
+
+// cmdCloseShow inspects one close memory by id (its frozen snapshot included).
+func cmdCloseShow(args []string) int {
+	fs := flag.NewFlagSet("close show", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram close show <memory-id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+	api := server.New(st, "cli")
+	memory, err := api.Get(rest[0])
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(memory)
+}
+
+// cmdCloseReopen is the EXPLICIT AUTHENTICATED controller reopen: the principal
+// is DERIVED from the stored CLI session (auth login), never declared by the
+// caller — there is deliberately NO --actor flag on this command. Each
+// invocation generates a fresh requestId.
+func cmdCloseReopen(args []string) int {
+	fs := flag.NewFlagSet("close reopen", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	period := fs.String("period", "", "fiscal period YYYYMM being reopened (REQUIRED)")
+	expectedClose := fs.String("expected-close", "", "REQUIRED close memory id that closed the period")
+	reason := fs.String("reason", "", "REQUIRED reopen justification")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram close reopen <ruc> --period YYYYMM --expected-close <id> --reason <text> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--period": true, "--expected-close": true, "--reason": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*period) == "" || strings.TrimSpace(*expectedClose) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(rest[0], *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	requestID, err := newRequestID()
+	if err != nil {
+		return fail("generate request id: %v", err)
+	}
+	result, err := server.ReopenPeriod(context.Background(), st, authz.NewApprovalPolicy(), scope,
+		*expectedClose, *reason, requestID, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// ──────────────────────────────────────────────
 // timeline — full revision history of a (topicKey, scope) chain
 // ──────────────────────────────────────────────
 
@@ -1808,6 +2041,9 @@ Usage:
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
+  drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
+  drenyra-engram close show <memory-id> [--db <path>]
+  drenyra-engram close reopen <ruc> --period YYYYMM --expected-close <id> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram timeline <ruc> --topic <topicKey> [--period <YYYYMM>] [--db <path>]
   drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
   drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
@@ -1828,6 +2064,8 @@ Flags:
   --expected-hash <hash>     proposed judgment hash the adjudicator actually saw (judge confirm/reject, REQUIRED)
   --predecessor <id>         id of an existing judgment the proposal corrects (judge propose, optional)
   --request-id <id>          idempotency key for judge commands (optional; a UUID is generated when absent)
+  --total <spec>   close monetary total code=currency=amountCents[=memoryId] (close create, repeatable; signed int64 cents, never float)
+  --expected-close <id> close memory id that closed the period (close reopen, REQUIRED)
   --actor <name>   actor recorded in the audit trail (default cli)
   --target <id>    replacing observation for supersede (REQUIRED)
   --addr <host:port> listen address for serve (default 127.0.0.1:8787)
@@ -1844,6 +2082,17 @@ Lifecycle (v2): memories with fiscal effect are saved pending_review and only
 approve (AUTHENTICATED human gate) moves them to approved; reject ends the
 review, void annuls without successor, supersede routes readers to --target.
 compare reports identity/scope/content deltas and a relation verdict.
+
+Monthly close (v0.5): "close create" drafts a monthly close through the
+canonical CreateClose service — kind=summary, fiscalEffect=closing, topic
+closing/CIERRE-<period>, effectiveAt at month end UTC, the frozen
+CloseSnapshot (counts, explicit totals with same-scope source memories,
+pending-item digest, canonical summary hash). The memory lands pending_review
+behind the human gate; only the AUTHENTICATED controller approval closes the
+period, after which period-scoped mutations fail with PERIOD_CLOSED until
+"close reopen" (an explicit AUTHENTICATED controller act, the same 0600
+session as approve) admits corrections. Reopening never edits the approved
+close memory; a later close is a new revision of the same close topic.
 
 Authentication (v0.4): approve requires an authenticated CLI session. "auth
 login --token <token>" validates the token against the store and stores the
