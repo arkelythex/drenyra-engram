@@ -45,14 +45,50 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
   consumer: Drenyra adapter (observability read + mission write + fiscal
   memory) live-tested 12/12 against the released binary.
 
-## Phase 3 — Ecosystem maturity (alpha → beta)
+## Phase 3 — Accounting Memory Kernel (v0.3.0) — COMPLETE
 
-- [ ] Local/cloud sync with clear semantics
-- [ ] HTTP API + TUI
-- [ ] Multi-jurisdiction institutional knowledge (Perú → LATAM)
-- [ ] v1.0 candidate when two consumers run on the released contracts
+- [x] AccountingMemory v2 model: 8 kinds, 6 statuses, 8 fiscal effects, triple
+      timestamps, structured source, canonical content hash, materiality.
+- [x] Mandatory human approval gate (`pending_review` → human `approve`).
+- [x] Store schema v2 with additive v1→v2 migration, evidence/rule links.
+- [x] 17 relations (accounting-evidence vocabulary).
+- [x] Search filters (kind/status/fiscal effect) over scope-first isolation.
+- [x] API: Approve/Reject/Void/Supersede/Judge/LinkEvidence/PeriodSummary.
+- [x] 10 MCP `accounting_*` tools; CLI approve/reject/void/link-evidence/
+      period-summary/timeline; HTTP approve/reject/void endpoints.
+- [x] Kill demo: explainable period summary of account 4011 (280 Go tests).
+
+## Phase 4 — Evidence and Judgment (V0.2 of the vision)
+
+- [ ] Evidence object store references (XML/PDF/CDR beyond refs)
+- [ ] Contradiction detection across memories
+- [ ] Receipt Ed25519 integration (receiptId currently a reference)
+- [ ] Materiality-aware period views
+
+## Phase 5 — Close Intelligence (V0.3 of the vision)
+
+- [ ] Monthly close memory (cierre) with pending items
+- [ ] Reconciliations as first-class memories (reconciles relation)
+- [ ] Period-over-period comparison
+- [ ] Automatic agent context on session start
+
+## Phase 6 — Fiscal Policy Memory (V0.4 of the vision)
+
+- [ ] Versioned rules with temporal vigencia
+- [ ] Jurisdiction dimension (Perú → LATAM)
+- [ ] Regulatory-change impact reconstruction
+- [ ] Rule used in a historical decision, reconstructible
+
+## Phase 7 — Institutional Accounting Brain (V1)
+
+- [ ] Accounting firms: shared memory with controlled sync
+- [ ] Authorized anonymized cross-company learning
+- [ ] Full knowledge graph + pattern detection
+- [ ] Specialized agents + complete audit
 
 ## Non-goals (for now)
 
 - Authorization engine (that is `arkelythex/drenyra-ai` gates + human approval)
 - Cloud offering (deferred to `arkelythex/drenyra-cloud`)
+- PostgreSQL in this repo (local-first; PostgreSQL is the Drenyra ecosystem's
+  authoritative store, ADR-002)

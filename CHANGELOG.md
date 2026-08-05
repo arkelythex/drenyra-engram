@@ -7,6 +7,74 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## v0.3.0 — unreleased (AccountingMemory v2 kernel)
+
+### Added
+
+- **AccountingMemory v2 model** (`internal/core`): eight accounting kinds
+  (`fact`, `evidence`, `decision`, `rule`, `exception`, `control`,
+  `obligation`, `summary`), six statuses (`active`, `pending_review`,
+  `approved`, `rejected`, `superseded`, `voided`), eight fiscal effects
+  (`none`, `journal_entry`, `declaration`, `closing`, `adjustment`,
+  `reclassification`, `approval`, `sunat_filing`), structured `Source`
+  (`system`, `reference`, `actorId`, `actorKind`, `model`, `session`), triple
+  timestamps (`effectiveAt`/`recordedAt`/`observedAt`), canonical
+  `contentHash` (SHA-256 of the immutable content), `confidence`,
+  `materiality` (int64 cents), `evidenceRefs`/`ruleRefs` and `receiptId`.
+- **Human approval gate**: a memory with fiscal effect lands `pending_review`
+  and only a human actor (`actorKind == human`) can `approve`/`reject` it;
+  machine approval fails closed with `GATE_REQUIRES_HUMAN`. Voiding admits
+  human/system, never agents. Supersession is explicit and atomic (status +
+  `supersedesId` + `supersedes` relation in one transaction).
+- **17 relations** (6 legacy + `supports`, `contradicts`, `explains`,
+  `derived_from`, `posted_as`, `reconciles`, `reverses`, `requires`,
+  `violates`, `approved_by`, `rejected_by`).
+- **Store schema v2** with additive v1→v2 migration (legacy `type`→`kind`,
+  `authority_status`→`status`, provenance→`source_json`; original columns
+  preserved), `evidence_links`/`rule_links` tables, `receipt_id` column and
+  sync import surfaces (`ImportObservation`, `ImportTransition`,
+  `ApplyImportedStatus`, `SupersedeExplicit`).
+- **Search filters**: kind/status/fiscal-effect filters over the mandatory
+  scope-first isolation.
+- **API v2**: `Approve`, `Reject`, `Void`, `Supersede`, `Judge` (documented
+  professional adjudication with `explains` relation), `LinkEvidence`,
+  `LinkRules`, `PeriodSummary` (the explainable period narrative — the killer
+  demo: why did account 4011 end with this balance).
+- **MCP**: 10 new `accounting_*` tools (`record`, `get`, `search`, `timeline`,
+  `compare`, `judge`, `link_evidence`, `period_summary`, `context`, `doctor`)
+  alongside the adapted `engram_*` surface (approve/reject/void replacing
+  review/promote) — 24 tools total.
+- **CLI**: `approve`, `reject`, `void`, `link-evidence`, `period-summary`,
+  `timeline` commands; `save`/`supersede` adapted to the v2 model.
+- **HTTP**: `/v1/observations/{id}/approve|reject|void` replacing
+  review/promote; supersede with structured source.
+- **Contracts**: `memory.md`, `lifecycle.md`, `provenance.md`, `scope.md`
+  frozen-for-0.2 (kinds, gate, triple timestamps, source, hash, relations).
+- **TypeScript reference mirror updated to v2**: `core/types.ts`
+  (AccountingMemory, kinds, statuses, fiscal effects, source, canonical hash
+  via WebCrypto), `lifecycle/transitions.ts` (approval-gated machine),
+  `store/memory-store.ts` (v2 save with supersession + gate), `search/
+  scope-first.ts` (kind/status/effect filters), `index.ts` and `lifecycle/
+  index.ts` re-exported; reference tests rewritten to the v2 semantics.
+- 280 Go tests green (was 106); `go test -race ./...` clean; 29 TS reference
+  tests green (typecheck clean).
+
+### Fixed
+
+- **SQLite connection deadlock**: `queryMemories` resolved evidence/rule links
+  while the scan `Rows` was still open, deadlocking under `MaxOpenConns(1)`;
+  links are now resolved after the rows close.
+- **modernc.org/sqlite tx quirks**: `defer tx.Rollback()` over an already
+  committed transaction and indexed reads sharing a write transaction could
+  hang the next connection use; transactions now use a conditional rollback
+  and chain reads run before the write transaction.
+
+### Removed
+
+- The v1 lifecycle surface (`review`/`promote`, `draft`/`reviewed`/`promoted`
+  statuses) is replaced by the v2 approval-gated machine. Legacy JSON reads
+  and the migration preserve historical data.
+
 ## v0.2.0 — 2026-08-03 (GitHub release)
 
 ### Released — Go engine Phase 2 complete (ADR-001)

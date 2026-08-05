@@ -9,7 +9,7 @@
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
 <img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
-<img src="https://img.shields.io/badge/tests-106%20Go%20%2B%2031%20TS-green" alt="Tests">
+<img src="https://img.shields.io/badge/tests-280%20Go%20%2B%2031%20TS-green" alt="Tests">
 </p>
 
 </div>
@@ -22,7 +22,12 @@
 > is contractual, never public. See the Drenyra
 > [Private Product Policy](https://github.com/arkelythex/Drenyra/blob/main/docs/products/private-product-policy.md).
 >
-> **v0.2.0 released** (2026-08-03) — Go engine Phase 2 complete: CLI (11 commands) + MCP (13 tools) + HTTP REST + local sync + chain history. Static binaries for macOS/Linux/Windows; the Go module is go-gettable at `github.com/arkelythex/drenyra-engram@v0.2.0`. See the [release notes](https://github.com/arkelythex/drenyra-engram/releases/tag/v0.2.0) and the [ROADMAP](ROADMAP.md).
+> **v0.3.0 (next)** — the AccountingMemory v2 kernel: 8 accounting kinds, the
+> human-approval gate for memories with fiscal effect, triple timestamps
+> (effectiveAt/recordedAt/observedAt), structured source, canonical content
+> hashes, 17 relations, the `accounting_*` MCP surface (10 tools) and the
+> explainable period summary (killer demo: why did account 4011 end with this
+> balance). v0.2.0 released 2026-08-03. See the [ROADMAP](ROADMAP.md).
 
 Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
 
@@ -38,19 +43,39 @@ Receipt certifica.   Receipt certifies.
 Profesional autoriza. A professional authorizes.
 ```
 
-Memory informs decisions. It never approves them.
+Memory informs decisions. It never authorizes them. `approve`/`reject` are
+the PROFESSIONAL review of a memory (the human gate), never authorization of
+a business action.
 
 ## What it provides
 
-- **Observations** — structured memories with type, scope, topic key, and content.
-- **Institutional knowledge** — policies, conventions, and precedents that outlive sessions.
-- **Mission summaries and learnings** — persisted at mission end for cross-session recovery.
-- **Relations and conflicts** — `related`, `supersedes`, `conflicts_with`, and more between memories.
-- **Vigencia** — effective/expiry semantics so stale knowledge is visible, not silently trusted.
-- **Provenance** — who/what/when/why for every observation, auditable.
-- **Scope-first search** — company/RUC/period filters are first-class, not post-filters.
-- **Local and cloud memory** — with clear sync semantics.
-- **MCP, HTTP, CLI, TUI** — same engine, multiple surfaces.
+- **AccountingMemory v2** — structured institutional accounting memory with
+  eight kinds (`fact`, `evidence`, `decision`, `rule`, `exception`,
+  `control`, `obligation`, `summary`).
+- **Human approval gate** — memories with a fiscal effect
+  (`journal_entry`, `declaration`, `closing`, `adjustment`,
+  `reclassification`, `approval`, `sunat_filing`) are saved `pending_review`
+  and only a HUMAN actor can approve them (`GATE_REQUIRES_HUMAN` otherwise).
+- **Triple timestamps** — `effectiveAt` (when it happened accounting-wise),
+  `recordedAt` (when it entered the system), `observedAt` (when detected):
+  a late event affecting a previous closed period is visible as such.
+- **Evidence-backed relations** — 17 relations (`supports`, `contradicts`,
+  `explains`, `reconciles`, `reverses`, `approved_by`, …) turn memory into
+  an accounting knowledge graph.
+- **Canonical content hashes** — `contentHash` identifies the immutable
+  content; history never mutates, supersession is explicit and atomic.
+- **Institutional knowledge** — policies, conventions, and precedents that
+  outlive sessions.
+- **Mission summaries and learnings** — persisted for cross-session recovery.
+- **Vigencia** — effective/expiry semantics so stale knowledge is visible,
+  not silently trusted.
+- **Scope-first search** — company/RUC/period filters are first-class, not
+  post-filters; cross-tenant isolation is structural.
+- **Explainable period summary** — the killer demo: why did account 4011 end
+  with this balance (facts, approved adjustments, rules applied, evidence,
+  late exceptions — ordered by accounting-effective date).
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (24 MCP tools: 14
+  `engram_*` + 10 `accounting_*`).
 
 ## Quick start
 
