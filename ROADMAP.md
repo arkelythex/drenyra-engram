@@ -119,13 +119,24 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       canonicalizes / Go verifies (golden vector). Receipt integrity never
       implies accounting correctness. Contracts: contracts/receipts.md.
       Implemented in commits 5e07d90..1eb9055.
-- [ ] **4. Verificación offline**: `drenyra-engram verify memory|judgment|
-      receipt` answering per layer — Payload canonicalization, Envelope
-      integrity, Signature, Signing-key validity, Principal provenance,
-      Tenant/company scope, Supersession chain, Evidence availability, Rule
-      availability — ending with **"Accounting correctness: NOT ASSERTED"**
-      (a valid signature proves nobody altered the act, never that the
-      professional decision is correct).
+- [x] **4. Verificación offline** (`verify memory|judgment|receipt` — DONE):
+      read-only over the local store, answering per layer — Payload
+      canonicalization, Envelope integrity, Signature, Signing-key validity,
+      Principal provenance, Tenant/company scope, Supersession chain, Evidence
+      availability, Rule availability — and ending with **"Accounting
+      correctness: NOT ASSERTED"** (a valid signature proves nobody altered the
+      act, never that the professional decision is correct). Pure layer logic
+      in internal/core with an exact TS mirror + shared parity fixture; CLI
+      `verify memory|judgment|receipt` (exit 0/1/2); AC7 (removed evidence
+      detected via envelope recompute) and AC12 (the NOT ASSERTED conclusion on
+      every report) proven. Contracts: contracts/verification.md. Implemented in
+      commits c1ddfee..36b39f1.
+
+    > **Milestone v0.4.0 COMPLETE** — all four verticals (ApprovalPrincipal
+    > autenticado, Conflictos adjudicables, Receipts Ed25519, Verificación
+    > offline) and all 12 acceptance criteria closed.
+    > See contracts/approval.md, contracts/judgment.md, contracts/receipts.md,
+    > contracts/verification.md.
 - [ ] **Acceptance criteria** (all 12 must pass to close the milestone):
       1 agent proposes a contradiction but cannot confirm it · 2 an
       authenticated human without company access cannot approve · 3 an

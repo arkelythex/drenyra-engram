@@ -140,6 +140,48 @@ atomically inside the act's transaction.
   `drenyra-ai`; Engram's act receipts are its own immutable record
   (ecosystem-boundaries.md and trust-model.md reconciled).
 
+### Step 4 — Verificación offline (DONE)
+
+`drenyra-engram verify memory|judgment|receipt` answers per layer and always
+ends with **"Accounting correctness: NOT ASSERTED"**.
+
+- **Pure layer logic** (internal/core/verify.go) with an exact TypeScript
+  mirror (core/verify.ts) and a shared Go↔TS parity fixture: payload
+  canonicalization (strict, byte-equal), envelope integrity (ReceiptHash
+  recompute), signature (Ed25519 over the canonical unsigned envelope),
+  signing-key validity (historical timing: issued before revocation passes,
+  at/after fails), tenant/company scope (against the stored subject, not
+  self-consistency), chain link (genesis + predecessor hash), principal
+  provenance (verified acts vs immutable event snapshots; claimed acts =
+  attribution continuity), supersession chain (SuccessorOf walk), evidence and
+  rule availability (envelope recompute from current links — a removed link,
+  even via direct SQL, is detected), judgment hash (ComputeJudgmentHash vs the
+  decision receipt).
+- **CLI**: `verify memory|judgment|receipt` with exit 0 (passed) / 1 (layer
+  failure, report still emitted) / 2 (usage/store errors); `receipt` accepts a
+  64-hex hash (portable identity) or a decimal row id.
+- **AC7 proven**: a memory whose evidence link row is removed fails the
+  evidence-availability layer and the current-envelope recompute diverges from
+  the receipt's resultingEnvelopeHash.
+- **AC12 proven**: every report — all-pass AND failed — ends with exactly
+  `Accounting correctness: NOT ASSERTED`. The verifier never presents
+  cryptographic integrity as accounting correctness.
+
+## Milestone v0.4.0 COMPLETE — Evidence, Conflict and Judgment
+
+All four verticals and all 12 acceptance criteria are closed:
+
+1. ApprovalPrincipal autenticado (contracts/approval.md)
+2. Conflictos adjudicables / AccountingJudgment (contracts/judgment.md)
+3. Receipts Ed25519 (contracts/receipts.md)
+4. Verificación offline (contracts/verification.md)
+
+Drenyra ya no confía en el texto `"human"`: confía en una identidad
+autenticada, una autorización reproducible, la versión exacta que fue
+revisada, y una cadena de receipts Ed25519 verificable offline que prueba que
+ningún acto fue alterado — sin jamás afirmar que la decisión contable sea
+correcta.
+
 ## v0.3.0 — Accounting Memory Kernel (released)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
