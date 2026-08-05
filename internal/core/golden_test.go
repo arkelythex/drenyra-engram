@@ -12,10 +12,17 @@
 // ("approval-policy"), the reviewed/resulting envelope pair ("approval-envelope",
 // plus the post-review stale-envelope proof via linkedAfterReviewRefs), and the
 // canonical role order of a principal snapshot ("principal-snapshot").
+// v0.4.0 Step 3 adds the Ed25519 receipt contract ("receipt"): the fixed seed
+// (32 bytes of 0x01) and its pinned canonical bytes/digests/signature — Go
+// signs and Node verifies, Node canonicalizes/signs and Go verifies (AC9/AC10).
 package core_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -42,6 +49,10 @@ type goldenCase struct {
 	// produced reviewedEnvelopeHash — a stale-envelope proof: the actual
 	// envelope must differ from the hash the reviewer saw.
 	LinkedAfterReviewRefs []string `json:"linkedAfterReviewRefs,omitempty"`
+
+	// Receipt carries the v0.4.0 Step 3 Ed25519 receipt vector (contract
+	// "receipt") — the AC9/AC10 cross-runtime contract.
+	Receipt *goldenReceipt `json:"receipt,omitempty"`
 
 	// v0.4.0 judgment vectors (contract "judgment"). Resolution/DecidedAt are
 	// the CONFIRMATION facts the harness uses to derive the confirmed state
@@ -205,6 +216,8 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runPrincipalSnapshotGolden(t, tc)
 			case "judgment":
 				runJudgmentGolden(t, tc)
+			case "receipt":
+				runReceiptGolden(t, tc)
 			default:
 				t.Fatalf("%s: unknown golden contract %q", tc.Name, tc.Contract)
 			}
@@ -665,4 +678,102 @@ func runJudgmentGolden(t *testing.T, tc goldenCase) {
 	}
 
 	t.Logf("JUDGMENT %s proposed=%s confirmed=%s superseded=%s", tc.Name, proposedHash, confirmedHash, supersededHash)
+}
+
+// ──────────────────────────────────────────────
+// v0.4.0 Step 3 — receipt contract ("receipt")
+// ──────────────────────────────────────────────
+
+// goldenReceipt is the shared v0.4.0 Step 3 Ed25519 receipt vector: the fixed
+// seed (32 bytes of 0x01) and its derived RFC 8032 keypair, the full
+// memory_approved payload, the canonical payload bytes, the payload digest, the
+// unsigned envelope bytes Ed25519 signs, the raw signature (hex), the complete
+// receipt bytes, the chain digest and the signed envelope (signature in padded
+// base64 — the model form). All hex is lowercase. Both runtimes must compute
+// byte-identical values — the vector IS the AC9/AC10 cross-runtime contract.
+type goldenReceipt struct {
+	Seed                  string              `json:"seed"`
+	PublicKey             string              `json:"publicKey"`
+	KeyID                 string              `json:"keyId"`
+	Payload               core.ReceiptPayload `json:"payload"`
+	CanonicalPayloadBytes string              `json:"canonicalPayloadBytes"`
+	PayloadHash           string              `json:"payloadHash"`
+	UnsignedEnvelopeBytes string              `json:"unsignedEnvelopeBytes"`
+	Signature             string              `json:"signature"`
+	CompleteReceiptBytes  string              `json:"completeReceiptBytes"`
+	ReceiptHash           string              `json:"receiptHash"`
+	SignedReceipt         core.SignedReceipt  `json:"signedReceipt"`
+}
+
+// runReceiptGolden runs the v0.4.0 Step 3 Ed25519 receipt vector (AC9): Go
+// reconstructs the payload and receipt from the vector, asserts its computed
+// canonical bytes, digests, key id and signature equal the vector byte-for-byte
+// (canonical payload bytes, payload hash, unsigned envelope bytes, raw
+// signature, complete receipt bytes, receipt hash) and VerifyReceipt passes
+// against the vector's public key. The SAME vector file runs from TypeScript
+// (AC10 — Node canonicalizes/signs the same payload and Go's pinned bytes
+// verify); a divergence between runtimes fails one of the two runners, never
+// silently. Accounting correctness: NOT ASSERTED.
+func runReceiptGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if tc.Receipt == nil {
+		t.Fatalf("%s: receipt vector requires receipt", tc.Name)
+	}
+	vec := tc.Receipt
+
+	seed, err := hex.DecodeString(vec.Seed)
+	if err != nil {
+		t.Fatalf("%s: decode seed: %v", tc.Name, err)
+	}
+	publicKey, err := hex.DecodeString(vec.PublicKey)
+	if err != nil {
+		t.Fatalf("%s: decode publicKey: %v", tc.Name, err)
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	derivedPub := priv.Public().(ed25519.PublicKey)
+	if !bytes.Equal(derivedPub, publicKey) {
+		t.Errorf("%s: publicKey = %s, want %s", tc.Name, hex.EncodeToString(derivedPub), vec.PublicKey)
+	}
+
+	payload := vec.Payload
+	canonical := core.CanonicalReceiptPayload(payload)
+	if got := hex.EncodeToString(canonical); got != vec.CanonicalPayloadBytes {
+		t.Errorf("%s: canonicalPayloadBytes = %s, want %s", tc.Name, got, vec.CanonicalPayloadBytes)
+	}
+	if got := core.ReceiptPayloadHash(payload); got != vec.PayloadHash {
+		t.Errorf("%s: payloadHash = %s, want %s", tc.Name, got, vec.PayloadHash)
+	}
+
+	receipt := vec.SignedReceipt
+	unsigned := core.CanonicalUnsignedEnvelope(receipt)
+	if got := hex.EncodeToString(unsigned); got != vec.UnsignedEnvelopeBytes {
+		t.Errorf("%s: unsignedEnvelopeBytes = %s, want %s", tc.Name, got, vec.UnsignedEnvelopeBytes)
+	}
+
+	// AC9: Go signs the SAME bytes with the seed — the deterministic signature
+	// must equal the vector's pinned raw signature, and the model's padded
+	// base64 equals the pinned envelope field.
+	sig := ed25519.Sign(priv, unsigned)
+	if got := hex.EncodeToString(sig); got != vec.Signature {
+		t.Errorf("%s: signature = %s, want %s", tc.Name, got, vec.Signature)
+	}
+	if got := receipt.Signature; got != base64.StdEncoding.EncodeToString(sig) {
+		t.Errorf("%s: signedReceipt.signature = %q, want %q", tc.Name, got, base64.StdEncoding.EncodeToString(sig))
+	}
+
+	if got := hex.EncodeToString(core.CompleteReceiptBytes(receipt)); got != vec.CompleteReceiptBytes {
+		t.Errorf("%s: completeReceiptBytes = %s, want %s", tc.Name, got, vec.CompleteReceiptBytes)
+	}
+	if got := core.ReceiptHash(receipt); got != vec.ReceiptHash {
+		t.Errorf("%s: receiptHash = %s, want %s", tc.Name, got, vec.ReceiptHash)
+	}
+	if got := core.ReceiptKeyID(publicKey); got != vec.KeyID {
+		t.Errorf("%s: keyId = %s, want %s", tc.Name, got, vec.KeyID)
+	}
+
+	// The vector's signature claim (TS-produced/Go-pinned) verifies in Go.
+	if err := core.VerifyReceipt(receipt, payload, publicKey); err != nil {
+		t.Errorf("%s: VerifyReceipt failed: %v", tc.Name, err)
+	}
+	t.Logf("RECEIPT %s payloadHash=%s signature=%s receiptHash=%s", tc.Name, vec.PayloadHash, vec.Signature, vec.ReceiptHash)
 }

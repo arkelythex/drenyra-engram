@@ -14,6 +14,9 @@
  * ("approval-policy"), the reviewed/resulting envelope pair ("approval-envelope",
  * plus the post-review stale-envelope proof via linkedAfterReviewRefs), and the
  * canonical role order of a principal snapshot ("principal-snapshot").
+ * v0.4.0 Step 3 adds the Ed25519 receipt contract ("receipt"): the fixed seed
+ * (32 bytes of 0x01) and its pinned canonical bytes/digests/signature - Go
+ * signs and Node verifies, Node canonicalizes/signs and Go verifies (AC9/AC10).
  */
 
 import { describe, expect, it } from "vitest";
@@ -30,6 +33,8 @@ import type {
 	MaterialityLevel,
 	MemoryStatus,
 	PrincipalSnapshot,
+	ReceiptPayload,
+	SignedReceipt,
 	VerifiedApprovalPrincipal,
 } from "../types.js";
 import {
@@ -44,7 +49,17 @@ import {
 	type FiscalEffect,
 	type MemoryRelation,
 } from "../types.js";
-import { approve, initialStatus } from "../../lifecycle/transitions.js";
+	import {
+		canonicalReceiptPayload,
+		canonicalUnsignedEnvelope,
+		completeReceiptBytes,
+		receiptHash,
+		receiptKeyId,
+		receiptPayloadHash,
+		signReceipt,
+		verifyReceipt,
+	} from "../receipt.js";
+	import { approve, initialStatus } from "../../lifecycle/transitions.js";
 import {
 	createVerifiedApprovalPrincipal,
 	principalSnapshot,
@@ -108,6 +123,30 @@ interface GoldenJudgment {
 	updatedAt: string;
 }
 
+/**
+ * The shared v0.4.0 Step 3 Ed25519 receipt vector (contract "receipt"): the
+ * fixed seed (32 bytes of 0x01) and its derived RFC 8032 keypair, the full
+ * memory_approved payload, the canonical payload bytes, the payload digest,
+ * the unsigned envelope bytes Ed25519 signs, the raw signature (hex), the
+ * complete receipt bytes, the chain digest and the signed envelope (signature
+ * in padded base64 - the model form). All hex is lowercase. Both runtimes must
+ * compute byte-identical values - the vector IS the AC9/AC10 cross-runtime
+ * contract.
+ */
+interface GoldenReceipt {
+	seed: string;
+	publicKey: string;
+	keyId: string;
+	payload: ReceiptPayload;
+	canonicalPayloadBytes: string;
+	payloadHash: string;
+	unsignedEnvelopeBytes: string;
+	signature: string;
+	completeReceiptBytes: string;
+	receiptHash: string;
+	signedReceipt: SignedReceipt;
+}
+
 interface GoldenCase {
 	name: string;
 	contract?:
@@ -115,7 +154,8 @@ interface GoldenCase {
 		| "approval-policy"
 		| "approval-envelope"
 		| "principal-snapshot"
-		| "judgment";
+		| "judgment"
+		| "receipt";
 	description?: string;
 	input: {
 		id: string;
@@ -148,6 +188,8 @@ interface GoldenCase {
 	resolution?: string;
 	decidedAt?: string;
 	supersededAt?: string;
+	/** v0.4.0 Step 3 Ed25519 receipt vector (contract "receipt"). */
+	receipt?: GoldenReceipt;
 	expected: {
 		contentHash: string;
 		identityHash: string;
@@ -659,6 +701,63 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 						});
 						expect(changedDecidedAt).not.toBe(a);
 					}
+					break;
+				}
+				case "receipt": {
+					if (tc.receipt === undefined) {
+						throw new Error(
+							`${tc.name}: receipt vector requires receipt`,
+						);
+					}
+					const vec = tc.receipt;
+					const seed = Buffer.from(vec.seed, "hex");
+					const publicKey = Buffer.from(vec.publicKey, "hex");
+
+					// AC10: Node canonicalizes the vector payload and the unsigned
+					// envelope - byte-identical with Go's pinned bytes.
+					expect(
+						Buffer.from(canonicalReceiptPayload(vec.payload), "utf8").toString(
+							"hex",
+						),
+					).toBe(vec.canonicalPayloadBytes);
+					expect(receiptPayloadHash(vec.payload)).toBe(vec.payloadHash);
+					expect(
+						Buffer.from(
+							canonicalUnsignedEnvelope(vec.signedReceipt),
+							"utf8",
+						).toString("hex"),
+					).toBe(vec.unsignedEnvelopeBytes);
+
+					// AC10: Node signs the SAME bytes with the seed via the RFC 8032
+					// JWK path (the same path core/receipt.ts uses) - the deterministic
+					// signature equals Go's pinned signature and the signed envelope
+					// matches the vector's claim byte-for-byte.
+					const { receipt: signed, publicKey: signedPublicKey } = signReceipt(
+						vec.payload,
+						seed,
+					);
+					expect(Buffer.from(signedPublicKey).toString("hex")).toBe(
+						vec.publicKey,
+					);
+					expect(Buffer.from(signed.signature, "base64").toString("hex")).toBe(
+						vec.signature,
+					);
+					expect(signed).toEqual(vec.signedReceipt);
+
+					// Complete receipt bytes, chain digest and key id.
+					expect(
+						Buffer.from(completeReceiptBytes(vec.signedReceipt), "utf8").toString(
+							"hex",
+						),
+					).toBe(vec.completeReceiptBytes);
+					expect(receiptHash(vec.signedReceipt)).toBe(vec.receiptHash);
+					expect(receiptKeyId(publicKey)).toBe(vec.keyId);
+
+					// The vector IS the AC9/AC10 proof: Go's pinned signature claim
+					// (reconstructed from the vector) verifies in Node.
+					expect(() =>
+						verifyReceipt(vec.signedReceipt, vec.payload, publicKey),
+					).not.toThrow();
 					break;
 				}
 				default: {
