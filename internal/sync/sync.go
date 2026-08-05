@@ -43,7 +43,7 @@ import (
 // Source is the read surface of the synced-away store; the SQLite store
 // satisfies it structurally (consumer-side interface, repo pattern).
 type Source interface {
-	List() ([]core.Observation, error)
+	List() ([]core.AccountingMemory, error)
 	Relations() ([]core.RelationRecord, error)
 	TransitionLog() ([]core.StatusTransitionRecord, error)
 }
@@ -54,13 +54,13 @@ type Source interface {
 // status mutation path, so replay legality fails closed.
 type Sink interface {
 	Source
-	FindByID(id string) (core.Observation, bool)
-	FindByTopicKey(topicKey string, scope core.Scope) (core.Observation, bool)
-	ImportObservation(observation core.Observation) (bool, error)
+	FindByID(id string) (core.AccountingMemory, bool)
+	FindByTopicKey(topicKey string, scope core.Scope) (core.AccountingMemory, bool)
+	ImportObservation(observation core.AccountingMemory) (bool, error)
 	ImportTransition(record core.StatusTransitionRecord) (bool, error)
 	// ApplyImportedStatus advances status WITHOUT logging (the audit row is
 	// imported separately) — sync-only, forward-only by contract.
-	ApplyImportedStatus(observationID string, to core.AuthorityStatus, meta core.TransitionMeta) (core.Observation, error)
+	ApplyImportedStatus(memoryID string, to core.MemoryStatus, meta core.TransitionMeta) (core.AccountingMemory, error)
 	Relate(fromID, toID string, relation core.Relation, meta *core.RelationMeta) error
 	RelationBetween(fromID, toID string) (string, bool)
 }
@@ -196,9 +196,13 @@ func Sync(from Source, to Sink, opts Options) (Report, error) {
 			continue // identical record already present — no-op
 		}
 		report.TransitionsImported++
-		if observation, ok := to.FindByID(record.ObservationID); ok &&
-			statusIndex(observation.AuthorityStatus) < statusIndex(record.To) {
-			if _, err := to.ApplyImportedStatus(record.ObservationID, record.To, core.TransitionMeta{
+		// Replay only when the record's target is a LEGAL v2 transition from the
+		// sink's CURRENT state (core.IsLegalV2Transition): terminal states never
+		// reopen, and a human-approved memory is never silently demoted to
+		// rejected by a stale or crafted source record.
+		if observation, ok := to.FindByID(record.MemoryID); ok &&
+			core.IsLegalV2Transition(observation.Status, record.To) {
+			if _, err := to.ApplyImportedStatus(record.MemoryID, record.To, core.TransitionMeta{
 				Actor:     record.Actor,
 				Timestamp: record.Timestamp,
 			}); err != nil {
@@ -240,8 +244,8 @@ func Sync(from Source, to Sink, opts Options) (Report, error) {
 type divergentChain struct {
 	topicKey   string
 	scope      core.Scope
-	localHead  core.Observation // sink head (current, pre-import)
-	remoteHead core.Observation // source head
+	localHead  core.AccountingMemory // sink head (current, pre-import)
+	remoteHead core.AccountingMemory // source head
 }
 
 // detectDivergentChains compares, per (topicKey, exact scope) chain, the
@@ -251,9 +255,9 @@ type divergentChain struct {
 // within the source's chain is merely LAGGING (fast-forward): the import
 // converges it, and reporting a conflict there would be a false positive
 // (with a permanent, undeletable conflicts_with relation to show for it).
-func detectDivergentChains(source []core.Observation, to Sink) []divergentChain {
+func detectDivergentChains(source []core.AccountingMemory, to Sink) []divergentChain {
 	chainIDs := make(map[string]map[string]bool)
-	heads := make(map[string]core.Observation)
+	heads := make(map[string]core.AccountingMemory)
 	for _, observation := range source {
 		key := chainKey(observation)
 		if chainIDs[key] == nil {
@@ -283,22 +287,6 @@ func detectDivergentChains(source []core.Observation, to Sink) []divergentChain 
 	return divergent
 }
 
-// statusIndex orders the legal lifecycle chain for forward-only comparisons.
-// Unknown states get a high sentinel: a corrupt status is never advanced.
-func statusIndex(status core.AuthorityStatus) int {
-	switch status {
-	case core.StatusDraft:
-		return 0
-	case core.StatusReviewed:
-		return 1
-	case core.StatusPromoted:
-		return 2
-	case core.StatusSuperseded:
-		return 3
-	}
-	return 99
-}
-
 func isImmutableConflict(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "IMPORT_CONFLICT")
 }
@@ -309,6 +297,6 @@ func nowISO() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
-func chainKey(observation core.Observation) string {
+func chainKey(observation core.AccountingMemory) string {
 	return observation.Identity.TopicKey + "\x00" + core.ScopeKey(observation.Scope)
 }

@@ -37,23 +37,25 @@ func testScope(ruc string) core.Scope {
 	}
 }
 
+// gatedInput builds a SaveInput with a real fiscal effect (adjustment) so the
+// save lands pending_review behind the human gate — the legal v2 source state
+// for an approval record.
+func gatedInput(topicKey, title, what string, scope core.Scope) core.SaveInput {
+	input := validInput(topicKey, title, what, scope)
+	input.FiscalEffect = core.FiscalEffectAdjustment
+	input.EffectiveAt = "2024-01-31T00:00:00.000Z"
+	return input
+}
+
 func validInput(topicKey, title, what string, scope core.Scope) core.SaveInput {
 	return core.SaveInput{
-		TopicKey: topicKey,
-		Title:    title,
-		Type:     "decision",
-		Scope:    scope,
-		Content: core.Content{
-			What:    what,
-			Why:     "sync test fixture",
-			Where:   "internal/sync",
-			Learned: "n/a",
-		},
-		Provenance: core.Provenance{
-			Actor:     "test",
-			Timestamp: "2026-01-15T12:00:00Z",
-			Source:    "test",
-		},
+		TopicKey:     topicKey,
+		Title:        title,
+		Kind:         core.KindDecision,
+		Scope:        scope,
+		Content:      core.Content{What: what, Why: "sync test fixture", Where: "internal/sync", Learned: "n/a"},
+		FiscalEffect: core.FiscalEffectNone,
+		Source:       core.Source{System: "go-test", ActorID: "test", ActorKind: core.ActorKindAgent},
 	}
 }
 
@@ -86,16 +88,16 @@ func TestSyncAdditivePreservesHistory(t *testing.T) {
 	}
 
 	// Both revisions exist in the sink with ORIGINAL ids and revision numbers.
-	got, ok := to.FindByID(first.Observation.Identity.ID)
+	got, ok := to.FindByID(first.Memory.Identity.ID)
 	if !ok || got.Content.What != "v1" || got.Revision != 1 {
 		t.Fatalf("sink lost revision 1: %+v ok=%v", got, ok)
 	}
-	got, ok = to.FindByID(second.Observation.Identity.ID)
+	got, ok = to.FindByID(second.Memory.Identity.ID)
 	if !ok || got.Content.What != "v2" || got.Revision != 2 {
 		t.Fatalf("sink lost revision 2: %+v ok=%v", got, ok)
 	}
-	if got.Provenance.Actor != "test" || got.Provenance.Source != "test" {
-		t.Fatalf("provenance not preserved: %+v", got.Provenance)
+	if got.Source.ActorID != "test" || got.Source.System != "go-test" {
+		t.Fatalf("provenance not preserved: %+v", got.Source)
 	}
 }
 
@@ -139,43 +141,40 @@ func TestSyncPropagatesLifecycle(t *testing.T) {
 	to := newTestStore(t)
 	scope := testScope("20100039201")
 
-	saved, err := from.Save(validInput("topic/life", "Life", "x", scope))
+	saved, err := from.Save(gatedInput("topic/life", "Life", "x", scope))
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	id := saved.Observation.Identity.ID
+	id := saved.Memory.Identity.ID
 
-	// Sync while draft.
+	// Sync while pending_review (the approval gate).
 	if _, err := Sync(from, to, Options{Actor: "test"}); err != nil {
-		t.Fatalf("sync draft: %v", err)
+		t.Fatalf("sync pending: %v", err)
 	}
 
-	// Advance the source lifecycle.
-	if _, err := core.ApplyTransition(from, id, core.StatusReviewed, core.TransitionMeta{Actor: "alice", Timestamp: "2026-01-15T12:00:00Z"}); err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	if _, err := core.ApplyTransition(from, id, core.StatusPromoted, core.TransitionMeta{Actor: "alice", Timestamp: "2026-01-15T13:00:00Z"}); err != nil {
-		t.Fatalf("promote: %v", err)
+	// Advance the source lifecycle (v2: pending_review → approved, human actor).
+	if _, err := from.ApplyStatusTransition(id, core.StatusApproved, core.TransitionMeta{Actor: "alice", ActorKind: core.ActorKindHuman, Timestamp: "2026-01-15T12:00:00Z"}); err != nil {
+		t.Fatalf("approve: %v", err)
 	}
 
 	report, err := Sync(from, to, Options{Actor: "test"})
 	if err != nil {
 		t.Fatalf("sync lifecycle: %v", err)
 	}
-	if report.TransitionsImported != 2 || report.TransitionsReplayed != 2 {
-		t.Fatalf("transitions imported/replayed = %d/%d, want 2/2", report.TransitionsImported, report.TransitionsReplayed)
+	if report.TransitionsImported != 1 || report.TransitionsReplayed != 1 {
+		t.Fatalf("transitions imported/replayed = %d/%d, want 1/1", report.TransitionsImported, report.TransitionsReplayed)
 	}
 
 	got, ok := to.FindByID(id)
-	if !ok || got.AuthorityStatus != core.StatusPromoted {
-		t.Fatalf("sink status = %q (ok=%v), want promoted", got.AuthorityStatus, ok)
+	if !ok || got.Status != core.StatusApproved {
+		t.Fatalf("sink status = %q (ok=%v), want approved", got.Status, ok)
 	}
 	log, err := to.TransitionLog()
 	if err != nil {
 		t.Fatalf("transition log: %v", err)
 	}
-	if len(log) != 2 {
-		t.Fatalf("sink transition log has %d entries, want 2", len(log))
+	if len(log) != 1 {
+		t.Fatalf("sink transition log has %d entries, want 1", len(log))
 	}
 	if log[0].Actor != "alice" || log[0].Timestamp != "2026-01-15T12:00:00Z" {
 		t.Fatalf("replay must preserve provenance: %+v", log[0])
@@ -211,20 +210,20 @@ func TestSyncDivergentChainConflict(t *testing.T) {
 	if conflict.Kind != ConflictDivergentChain {
 		t.Fatalf("conflict kind = %q, want divergent_chain", conflict.Kind)
 	}
-	if conflict.LocalID != toSaved.Observation.Identity.ID || conflict.RemoteID != fromSaved.Observation.Identity.ID {
+	if conflict.LocalID != toSaved.Memory.Identity.ID || conflict.RemoteID != fromSaved.Memory.Identity.ID {
 		t.Fatalf("conflict heads wrong: local=%s remote=%s", conflict.LocalID, conflict.RemoteID)
 	}
 
 	// Both histories preserved: the sink has BOTH heads.
-	if _, ok := to.FindByID(toSaved.Observation.Identity.ID); !ok {
+	if _, ok := to.FindByID(toSaved.Memory.Identity.ID); !ok {
 		t.Fatal("sink lost its own head")
 	}
-	if _, ok := to.FindByID(fromSaved.Observation.Identity.ID); !ok {
+	if _, ok := to.FindByID(fromSaved.Memory.Identity.ID); !ok {
 		t.Fatal("sink lost the source head")
 	}
 
 	// The divergence is visible as a conflicts_with relation.
-	relation, ok := to.RelationBetween(toSaved.Observation.Identity.ID, fromSaved.Observation.Identity.ID)
+	relation, ok := to.RelationBetween(toSaved.Memory.Identity.ID, fromSaved.Memory.Identity.ID)
 	if !ok || relation != string(core.RelationConflictsWith) {
 		t.Fatalf("conflicts_with relation = %q ok=%v, want recorded", relation, ok)
 	}
@@ -248,9 +247,10 @@ func TestSyncImmutableConflictSurfaced(t *testing.T) {
 
 	// Fabricate a conflicting row in the sink with the SAME id but different
 	// immutable content (as if the sink diverged or was tampered).
-	divergent := fromSaved.Observation
+	divergent := fromSaved.Memory
 	divergent.Content.What = "different content"
 	divergent.Content.Why = "different why"
+	divergent.ContentHash = core.ComputeContentHash(divergent)
 	if _, err := to.ImportObservation(divergent); err != nil {
 		t.Fatalf("seed sink: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestSyncImmutableConflictSurfaced(t *testing.T) {
 	}
 
 	// The sink's version is untouched.
-	got, _ := to.FindByID(fromSaved.Observation.Identity.ID)
+	got, _ := to.FindByID(fromSaved.Memory.Identity.ID)
 	if got.Content.What != "different content" {
 		t.Fatalf("sink content overwritten: %q", got.Content.What)
 	}
@@ -282,24 +282,18 @@ func TestSyncOneShotFullLifecycleNoPhantomConflicts(t *testing.T) {
 	to := newTestStore(t)
 	scope := testScope("20100039201")
 
-	saved, err := from.Save(validInput("topic/full", "Full", "x", scope))
+	saved, err := from.Save(gatedInput("topic/full", "Full", "x", scope))
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	id := saved.Observation.Identity.ID
-	// draft → reviewed → promoted (adjacent-forward).
-	for _, toStatus := range []core.AuthorityStatus{core.StatusReviewed, core.StatusPromoted} {
-		if _, err := core.ApplyTransition(from, id, toStatus, core.TransitionMeta{Actor: "alice", Timestamp: "2026-01-15T12:00:00Z"}); err != nil {
-			t.Fatalf("transition to %s: %v", toStatus, err)
-		}
+	id := saved.Memory.Identity.ID
+	// v2 lifecycle: human approve (pending_review → approved), then the second
+	// save of the chain supersedes the first automatically (immutable chain).
+	if _, err := from.ApplyStatusTransition(id, core.StatusApproved, core.TransitionMeta{Actor: "alice", ActorKind: core.ActorKindHuman, Timestamp: "2026-01-15T12:00:00Z"}); err != nil {
+		t.Fatalf("approve: %v", err)
 	}
-	// Supersede is the FINAL step (it applies promoted → superseded itself).
-	target, err := from.Save(validInput("topic/full", "Full", "replacement", scope))
-	if err != nil {
+	if _, err := from.Save(gatedInput("topic/full", "Full", "replacement", scope)); err != nil {
 		t.Fatalf("save target: %v", err)
-	}
-	if _, err := core.Supersede(core.SupersedeInput{Store: from, ObservationID: id, TargetID: target.Observation.Identity.ID, Actor: "alice", Timestamp: "2026-01-15T12:00:01Z"}); err != nil {
-		t.Fatalf("supersede: %v", err)
 	}
 
 	report, err := Sync(from, to, Options{Actor: "test"})
@@ -310,22 +304,22 @@ func TestSyncOneShotFullLifecycleNoPhantomConflicts(t *testing.T) {
 		t.Fatalf("phantom conflicts: %+v", report.Conflicts)
 	}
 	got, ok := to.FindByID(id)
-	if !ok || got.AuthorityStatus != core.StatusSuperseded {
-		t.Fatalf("sink status = %q (ok=%v), want superseded", got.AuthorityStatus, ok)
+	if !ok || got.Status != core.StatusSuperseded {
+		t.Fatalf("sink status = %q (ok=%v), want superseded", got.Status, ok)
 	}
 	log, err := to.TransitionLog()
 	if err != nil {
 		t.Fatalf("transition log: %v", err)
 	}
-	if len(log) != 3 {
-		t.Fatalf("sink log has %d records, want 3 (verbatim, no duplication)", len(log))
+	if len(log) != 2 {
+		t.Fatalf("sink log has %d records, want 2 (verbatim, no duplication)", len(log))
 	}
 	// Records arrived with the source's provenance and order.
-	if log[0].From != core.StatusDraft || log[0].To != core.StatusReviewed || log[0].Actor != "alice" {
+	if log[0].From != core.StatusPendingReview || log[0].To != core.StatusApproved || log[0].Actor != "alice" {
 		t.Fatalf("first record wrong: %+v", log[0])
 	}
-	if log[2].To != core.StatusSuperseded {
-		t.Fatalf("last record wrong: %+v", log[2])
+	if log[1].To != core.StatusSuperseded {
+		t.Fatalf("last record wrong: %+v", log[1])
 	}
 }
 
@@ -361,12 +355,12 @@ func TestSyncFastForwardNoConflict(t *testing.T) {
 	}
 	// The sink converged to the new head.
 	got, ok := to.FindByTopicKey("topic/ff", scope)
-	if !ok || got.Identity.ID != second.Observation.Identity.ID {
+	if !ok || got.Identity.ID != second.Memory.Identity.ID {
 		t.Fatalf("sink head = %+v ok=%v, want the source's new revision", got, ok)
 	}
 	// And no conflicts_with relation was recorded.
-	if relation, ok := to.RelationBetween(first.Observation.Identity.ID, second.Observation.Identity.ID); ok {
-		t.Fatalf("unexpected relation %q on a fast-forward", relation)
+	if relation, ok := to.RelationBetween(first.Memory.Identity.ID, second.Memory.Identity.ID); ok && relation == string(core.RelationConflictsWith) {
+		t.Fatalf("unexpected conflicts_with relation %q on a fast-forward", relation)
 	}
 }
 
@@ -383,24 +377,18 @@ func TestSyncDivergentLifecycleBothPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	id := saved.Observation.Identity.ID
+	id := saved.Memory.Identity.ID
 
-	// Sink gets the draft and then advances itself to promoted.
+	// Sink gets the memory and then advances itself to approved.
 	if _, err := Sync(from, to, Options{Actor: "test"}); err != nil {
-		t.Fatalf("sync draft: %v", err)
+		t.Fatalf("sync first: %v", err)
 	}
-	if _, err := core.ApplyTransition(to, id, core.StatusReviewed, core.TransitionMeta{Actor: "bob", Timestamp: "2026-01-15T10:00:00Z"}); err != nil {
-		t.Fatalf("sink review: %v", err)
-	}
-	if _, err := core.ApplyTransition(to, id, core.StatusPromoted, core.TransitionMeta{Actor: "bob", Timestamp: "2026-01-15T11:00:00Z"}); err != nil {
-		t.Fatalf("sink promote: %v", err)
+	if _, err := to.ApplyStatusTransition(id, core.StatusApproved, core.TransitionMeta{Actor: "bob", ActorKind: core.ActorKindHuman, Timestamp: "2026-01-15T10:00:00Z"}); err != nil {
+		t.Fatalf("sink approve: %v", err)
 	}
 
-	// Source only reviews (never promotes).
-	if _, err := core.ApplyTransition(from, id, core.StatusReviewed, core.TransitionMeta{Actor: "alice", Timestamp: "2026-01-15T12:00:00Z"}); err != nil {
-		t.Fatalf("source review: %v", err)
-	}
-
+	// Source stays behind (active — never approved). Its imported audit trail is
+	// EMPTY, so nothing can force the sink backward.
 	report, err := Sync(from, to, Options{Actor: "test"})
 	if err != nil {
 		t.Fatalf("sync: %v", err)
@@ -410,16 +398,15 @@ func TestSyncDivergentLifecycleBothPreserved(t *testing.T) {
 	}
 	// The sink's status is never forced backward.
 	got, _ := to.FindByID(id)
-	if got.AuthorityStatus != core.StatusPromoted {
-		t.Fatalf("sink status = %q, want unchanged promoted", got.AuthorityStatus)
+	if got.Status != core.StatusApproved {
+		t.Fatalf("sink status = %q, want unchanged approved", got.Status)
 	}
-	// Both audit histories are preserved (sink's own + the imported source one).
 	log, err := to.TransitionLog()
 	if err != nil {
 		t.Fatalf("transition log: %v", err)
 	}
-	if len(log) != 3 {
-		t.Fatalf("sink log has %d records, want 3 (bob's two + alice's imported one)", len(log))
+	if len(log) != 1 {
+		t.Fatalf("sink log has %d records, want 1 (bob's approve; the lagging source adds none)", len(log))
 	}
 }
 
@@ -437,24 +424,9 @@ func TestSyncRelationsPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save target: %v", err)
 	}
-	// draft → reviewed → promoted → supersede to record a supersedes relation.
-	reviewed, err := core.ApplyTransition(from, old.Observation.Identity.ID, core.StatusReviewed, core.TransitionMeta{Actor: "test", Timestamp: "2026-01-15T12:00:00Z"})
-	if err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	_ = reviewed
-	if _, err := core.ApplyTransition(from, old.Observation.Identity.ID, core.StatusPromoted, core.TransitionMeta{Actor: "test", Timestamp: "2026-01-15T12:00:01Z"}); err != nil {
-		t.Fatalf("promote: %v", err)
-	}
-	if _, err := core.Supersede(core.SupersedeInput{
-		Store:         from,
-		ObservationID: old.Observation.Identity.ID,
-		TargetID:      target.Observation.Identity.ID,
-		Actor:         "test",
-		Timestamp:     "2026-01-15T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("supersede: %v", err)
-	}
+	// v2: the second save of the same (topicKey, scope) chain superseded the
+	// first and recorded the supersedes relation atomically (no explicit
+	// supersede call needed — the chain save covers it).
 
 	report, err := Sync(from, to, Options{Actor: "test"})
 	if err != nil {
@@ -463,7 +435,7 @@ func TestSyncRelationsPreserved(t *testing.T) {
 	if report.RelationsImported != 1 {
 		t.Fatalf("relationsImported = %d, want 1", report.RelationsImported)
 	}
-	relation, ok := to.RelationBetween(old.Observation.Identity.ID, target.Observation.Identity.ID)
+	relation, ok := to.RelationBetween(old.Memory.Identity.ID, target.Memory.Identity.ID)
 	if !ok || relation != string(core.RelationSupersedes) {
 		t.Fatalf("supersedes relation = %q ok=%v, want synced", relation, ok)
 	}
@@ -477,27 +449,33 @@ func TestSyncRelationsPreserved(t *testing.T) {
 // store through a public API (this is why the sync engine can trust sources).
 func TestImportObservationRejectsMalformedRows(t *testing.T) {
 	st := newTestStore(t)
-	bad := core.Observation{
+	bad := core.AccountingMemory{
 		Identity: core.Identity{ID: "bad-id", TopicKey: "topic/bad"},
 		Title:    "Bad",
+		Kind:     core.KindFact,
 		Scope:    testScope("20100039201"),
 		Content:  core.Content{What: "x", Why: "y", Where: "z", Learned: "w"},
-		Provenance: core.Provenance{
-			Actor:     "test",
-			Timestamp: "2026-01-15T12:00:00Z",
-			Source:    "test",
+		Source: core.Source{
+			System:    "test",
+			ActorID:   "test",
+			ActorKind: core.ActorKindSystem,
 		},
-		Revision: 1,
+		Status:       core.StatusActive,
+		FiscalEffect: core.FiscalEffectNone,
+		EffectiveAt:  "2026-01-15T12:00:00Z",
+		RecordedAt:   "2026-01-15T12:00:00Z",
+		Revision:     1,
 	}
+	bad.ContentHash = core.ComputeContentHash(bad)
 	if _, err := st.ImportObservation(bad); err != nil {
 		t.Fatalf("baseline import: %v", err)
 	}
-	for name, mutate := range map[string]func(*core.Observation){
-		"empty id":       func(o *core.Observation) { o.Identity.ID = "" },
-		"revision zero":  func(o *core.Observation) { o.Revision = 0 },
-		"bad scope kind": func(o *core.Observation) { o.Scope.Kind = "unknown" },
-		"bad ruc":        func(o *core.Observation) { o.Scope.RUC = "123" },
-		"empty content":  func(o *core.Observation) { o.Content.What = "" },
+	for name, mutate := range map[string]func(*core.AccountingMemory){
+		"empty id":       func(o *core.AccountingMemory) { o.Identity.ID = "" },
+		"revision zero":  func(o *core.AccountingMemory) { o.Revision = 0 },
+		"bad scope kind": func(o *core.AccountingMemory) { o.Scope.Kind = "unknown" },
+		"bad ruc":        func(o *core.AccountingMemory) { o.Scope.RUC = "123" },
+		"empty content":  func(o *core.AccountingMemory) { o.Content.What = "" },
 	} {
 		row := bad
 		mutate(&row)
@@ -514,7 +492,7 @@ type failingSink struct {
 	err error
 }
 
-func (f *failingSink) ImportObservation(core.Observation) (bool, error) {
+func (f *failingSink) ImportObservation(core.AccountingMemory) (bool, error) {
 	return false, f.err
 }
 
@@ -554,11 +532,11 @@ func TestSyncSurfacesImmutableConflict(t *testing.T) {
 // non-adjacent record — what a corrupt/crafted store file would expose. The
 // public store API can no longer produce it (ImportTransition rejects it).
 type craftedSource struct {
-	observations []core.Observation
+	observations []core.AccountingMemory
 	transitions  []core.StatusTransitionRecord
 }
 
-func (s *craftedSource) List() ([]core.Observation, error) {
+func (s *craftedSource) List() ([]core.AccountingMemory, error) {
 	return s.observations, nil
 }
 
@@ -577,13 +555,14 @@ func TestSyncFailsClosedOnNonAdjacentRecord(t *testing.T) {
 	to := newTestStore(t)
 
 	source := &craftedSource{
-		observations: []core.Observation{},
+		observations: []core.AccountingMemory{},
 		transitions: []core.StatusTransitionRecord{{
-			ObservationID: "obs-crafted",
-			From:          core.StatusDraft,
-			To:            core.StatusSuperseded,
-			Actor:         "crafted",
-			Timestamp:     "2026-01-15T12:00:00Z",
+			MemoryID:  "obs-crafted",
+			From:      core.StatusActive,
+			To:        core.StatusSuperseded,
+			Actor:     "crafted",
+			ActorKind: core.ActorKindSystem,
+			Timestamp: "2026-01-15T12:00:00Z",
 		}},
 	}
 
