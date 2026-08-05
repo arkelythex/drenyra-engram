@@ -75,6 +75,7 @@ import {
 	authorizeJudgment,
 	type JudgmentAuthorizationDecision,
 } from "../authz/judgment-policy.js";
+import type { ReceiptSigner } from "../core/receipt.js";
 
 /**
  * Pure authorization function passed to the atomic approval (mirror of the
@@ -223,13 +224,21 @@ export class InMemoryMemoryStore implements MemoryStore {
 			completedAt?: string;
 		}
 	>();
-	private readonly judgmentRelations: {
-		fromJudgmentId: string;
-		toJudgmentId: string;
-		relation: "supersedes";
-		actor?: string;
-		timestamp: string;
-	}[] = [];
+    	private readonly judgmentRelations: {
+    		fromJudgmentId: string;
+    		toJudgmentId: string;
+    		relation: "supersedes";
+    		actor?: string;
+    		timestamp: string;
+    	}[] = [];
+
+    	/**
+    	 * Constructs the in-memory store. The optional ReceiptSigner (v0.4.0
+    	 * Step 3) is the store-facing signing surface: default Node construction
+    	 * loads or creates the keyring, and tests inject a caller-provided
+    	 * seed-based signer. Emission points consume it in batch 2.
+    	 */
+    	constructor(readonly receiptSigner?: ReceiptSigner) {}
 
 	async save(input: SaveMemoryInput): Promise<MemoryWriteResult> {
 		if (input.topicKey.trim().length === 0) {

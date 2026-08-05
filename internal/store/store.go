@@ -81,7 +81,14 @@ import (
 // (judgments, judgment_events, judgment_idempotency_keys,
 // judgment_relations) with their indexes and the judgment immutability
 // triggers (docs/architecture/conflict-judgment-step2.md section 4).
-const schemaVersion = 4
+//
+// v5 (v0.4.0 Step 3, keys commit): adds the signing-key lifecycle table
+// (signing_keys — public keys ONLY; private seeds stay in the user-owned
+// 0600 keyring file) and the immutable action-receipt table (receipts) with
+// their indexes and the immutability/revocation-only triggers
+// (docs/architecture/ed25519-receipts-step3.md "Signing-key lifecycle" and
+// "SQLite schema v5").
+const schemaVersion = 5
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -157,11 +164,12 @@ type SQLiteStore struct {
 
 // Open opens (creating if needed) the SQLite database at path and applies the
 // versioned schema. Fresh stores bootstrap to the v2 layout exactly, then run
-// the SAME additive migration chain used for existing stores (v2→v3→v4) — one
-// tested migration path. A v1 store is migrated additively (single
-// transaction), then the v2→v3 and v3→v4 migrations each run in their own
-// single transaction. A corrupt or unsupported store fails closed: it never
-// fabricates data (contracts/provenance.md frozen policy).
+// the SAME additive migration chain used for existing stores
+// (v2→v3→v4→v5) — one tested migration path. A v1 store is migrated
+// additively (single transaction), then the v2→v3, v3→v4 and v4→v5
+// migrations each run in their own single transaction. A corrupt or
+// unsupported store fails closed: it never fabricates data
+// (contracts/provenance.md frozen policy).
 func Open(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -187,8 +195,8 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
-	// store is migrated additively in ONE transaction, then the v2→v3 and v3→v4
-	// migrations each run in their own single transaction before use.
+	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4 and
+	// v4→v5 migrations each run in their own single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -210,6 +218,13 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 	if version == 3 {
 		if err := migrateV3ToV4(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 4
+	}
+	if version == 4 {
+		if err := migrateV4ToV5(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -739,6 +754,77 @@ func migrateV3ToV4(db *sql.DB) error {
 	return nil
 }
 
+// ──────────────────────────────────────────────
+// v4 → v5 additive migration (single transaction, fail closed)
+// ──────────────────────────────────────────────
+
+// migrateV4ToV5 upgrades a schema_version=4 store to v5 IN ONE TRANSACTION:
+// the signing-key lifecycle table (signing_keys — public keys only; private
+// seeds stay in the user-owned keyring file) and the immutable action-receipt
+// table (receipts) are created with the CREATE statements of
+// docs/architecture/ed25519-receipts-step3.md "SQLite schema v5" (every CHECK,
+// FK, the revocation-only signing_keys trigger, the receipts no-update /
+// no-delete triggers, the unique (subject_type, subject_id, action,
+// payload_hash) constraint, the evidence_linked-excluding partial singleton
+// index and the subject/time + key/time indexes), and schema_version=5 is set
+// ONLY after the whole migration succeeded. On any failure the transaction
+// rolls back and the store stays v4. No IF NOT EXISTS is used: a pre-existing
+// table or trigger with a conflicting shape is a corruption signal and fails
+// the migration closed. No historical receipt is backfilled — retrospective
+// signing would falsely claim contemporaneous issuance (design decision).
+func migrateV4ToV5(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v4→v5: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// (a) The two v5 tables.
+	for _, ddl := range []string{signingKeysDDL, receiptsDDL} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v4→v5: create table: %w", err)
+		}
+	}
+
+	// (b) The three supporting indexes.
+	for _, ddl := range []string{
+		receiptsSingletonIndexDDL, receiptsSubjectTimeIndexDDL, receiptsKeyTimeIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v4→v5: create index: %w", err)
+		}
+	}
+
+	// (c) The immutability / revocation-only triggers (deletion forbidden;
+	// signing_keys updates may only revoke; receipts never update or delete).
+	for _, ddl := range []string{
+		signingKeysNoDeleteDDL, signingKeysRevokeOnlyDDL,
+		receiptsNoUpdateDDL, receiptsNoDeleteDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v4→v5: create trigger: %w", err)
+		}
+	}
+
+	// (d) schema_version = 5 ONLY after the whole migration succeeded — same
+	// transaction, so a failure above rolls everything back.
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v4→v5: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v4→v5: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // v4 tables and supporting objects — CREATE statements verbatim from
 // docs/architecture/conflict-judgment-step2.md section 4.
 
@@ -907,6 +993,113 @@ const judgmentsImmutableUpdateDDL = `
         );
     END;
     `
+
+// v5 tables and supporting objects — CREATE statements per
+// docs/architecture/ed25519-receipts-step3.md "SQLite schema v5".
+
+// signing_keys is the PUBLIC half of the signing-key lifecycle: SQLite stores
+// only raw public keys; private Ed25519 seeds stay in the user-owned 0600
+// keyring file. Public key and creation are immutable; deletion is forbidden;
+// revocation is a one-way null → timestamp UPDATE (see the triggers below).
+const signingKeysDDL = `
+        CREATE TABLE signing_keys (
+          key_id TEXT PRIMARY KEY,
+          algorithm TEXT NOT NULL CHECK(algorithm='Ed25519'),
+          public_key TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          revoked_at TEXT
+        );
+        `
+
+// signing_keys_no_delete freezes the public-key ledger: a registered key is
+// never deleted (revocation is the only lifecycle ending).
+const signingKeysNoDeleteDDL = `
+        CREATE TRIGGER signing_keys_no_delete BEFORE DELETE ON signing_keys BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_SIGNING_KEY'); END;
+        `
+
+// signing_keys_revoke_only allows EXACTLY ONE update shape: setting a
+// previously-NULL revoked_at to a timestamp while every other column stays
+// byte-equal. Re-revocation, un-revocation (back to NULL), and any touch of
+// key_id / algorithm / public_key / created_at abort — the ledger is append-
+// only and revocation is one-way.
+const signingKeysRevokeOnlyDDL = `
+        CREATE TRIGGER signing_keys_revoke_only
+        BEFORE UPDATE ON signing_keys
+        BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_SIGNING_KEY: only a one-way null-to-timestamp revocation is allowed')
+            WHERE
+              NEW.key_id IS NOT OLD.key_id OR
+              NEW.algorithm IS NOT OLD.algorithm OR
+              NEW.public_key IS NOT OLD.public_key OR
+              NEW.created_at IS NOT OLD.created_at OR
+              OLD.revoked_at IS NOT NULL OR
+              NEW.revoked_at IS NULL;
+        END;
+        `
+
+// receipts is the immutable signed-act ledger. Every covered act stores the
+// frozen signed envelope (subject/action/scope/payload-hash/chain/principal/
+// policy/algorithm/key), the RAW signature bytes, the canonical payload JSON,
+// the derived unique receipt_hash (the chain links on it via
+// previous_receipt_hash), and exactly ONE typed FK (memory_id for memory
+// subjects, judgment_id for judgment subjects) that must equal the signed
+// subject_id. No-update and no-delete triggers make receipt rows immutable;
+// the unique (subject_type, subject_id, action, payload_hash) constraint
+// makes duplicate emission a no-op retry.
+const receiptsDDL = `
+        CREATE TABLE receipts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_type TEXT NOT NULL CHECK(subject_type IN ('memory','judgment')),
+          subject_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN
+            ('memory_recorded','memory_approved','memory_rejected','memory_voided',
+             'relation_confirmed','relation_rejected','evidence_linked','memory_superseded')),
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          fiscal_period_id TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          previous_receipt_hash TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          membership_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          algorithm TEXT NOT NULL CHECK(algorithm='Ed25519'),
+          key_id TEXT NOT NULL REFERENCES signing_keys(key_id),
+          signature BLOB NOT NULL,
+          issued_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          receipt_hash TEXT NOT NULL UNIQUE,
+          memory_id TEXT REFERENCES observations(id),
+          judgment_id TEXT REFERENCES judgments(id),
+          UNIQUE(subject_type, subject_id, action, payload_hash),
+          CHECK((memory_id IS NULL) <> (judgment_id IS NULL)),
+          CHECK(COALESCE(memory_id, judgment_id) = subject_id)
+        );
+        `
+
+// receipts_singleton guarantees at most one live receipt per (subject, action)
+// for every action except evidence_linked (evidence links legitimately grow; a
+// genuinely new link mints a new receipt, duplicates stay no-ops).
+const receiptsSingletonIndexDDL = `CREATE UNIQUE INDEX uq_receipts_singleton
+        ON receipts(subject_type, subject_id, action) WHERE action <> 'evidence_linked';`
+
+const receiptsSubjectTimeIndexDDL = `CREATE INDEX idx_receipts_subject_time
+        ON receipts(subject_type, subject_id, issued_at);`
+
+const receiptsKeyTimeIndexDDL = `CREATE INDEX idx_receipts_key_time
+        ON receipts(key_id, issued_at);`
+
+// Receipt rows are frozen: no UPDATE and no DELETE ever (immutability is
+// schema-enforced, a corrupt or buggy caller cannot mutate history).
+const receiptsNoUpdateDDL = `
+        CREATE TRIGGER receipts_no_update BEFORE UPDATE ON receipts BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECEIPT'); END;
+        `
+
+const receiptsNoDeleteDDL = `
+        CREATE TRIGGER receipts_no_delete BEFORE DELETE ON receipts BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_RECEIPT'); END;
+        `
 
 // v3 tables and supporting objects — CREATE statements verbatim from
 // docs/architecture/approval-principal-step1.md section 4.
@@ -1560,11 +1753,12 @@ func (s *SQLiteStore) linkRefs(table, memoryID string) []string {
 // Authenticated approval (v0.4.0 Step 1, ADR-003)
 // ──────────────────────────────────────────────
 
-// connQueryer is the statement surface the approval and link writers run
-// through: *sql.Conn (dedicated connection, manual BEGIN IMMEDIATE) satisfies
-// it, so every read and write of an approval stays on the SAME connection and
-// the transaction boundary is explicit.
-type connQueryer interface {
+// Queryer is the statement surface the approval, judgment, link and receipt
+// writers run through: *sql.Conn, *sql.Tx and *sql.DB satisfy it, so every read
+// and write of an atomic unit stays on the SAME connection/transaction and the
+// transaction boundary is explicit (the receipt surfaces NEVER start or commit
+// one — the caller's tx owns atomicity).
+type Queryer interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
@@ -1574,7 +1768,7 @@ type connQueryer interface {
 // evidence/rule link rows THROUGH the given connection (the approval and link
 // paths reuse the withLinks merge scoped to their own transaction — never a
 // separate pooled connection).
-func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q connQueryer, id string) (core.AccountingMemory, bool) {
+func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q Queryer, id string) (core.AccountingMemory, bool) {
 	row := q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, id)
 	memory, err := scanMemory(row)
 	if err != nil {
@@ -1587,7 +1781,7 @@ func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q connQueryer, id
 
 // linkRefsQuery returns the link rows of a memory in insertion order, scoped to
 // the given connection.
-func linkRefsQuery(ctx context.Context, q connQueryer, table, memoryID string) []string {
+func linkRefsQuery(ctx context.Context, q Queryer, table, memoryID string) []string {
 	rows, err := q.QueryContext(ctx, `SELECT ref FROM `+table+` WHERE memory_id = ? ORDER BY rowid`, memoryID)
 	if err != nil {
 		return nil
@@ -1609,7 +1803,7 @@ func linkRefsQuery(ctx context.Context, q connQueryer, table, memoryID string) [
 // persists it on the given connection. The persisted observations.envelope_hash
 // is a cache only: approval always recomputes H1 fresh inside its own locked
 // transaction (design §5 — the cache is not trusted).
-func refreshEnvelopeCache(ctx context.Context, q connQueryer, memoryID string) error {
+func refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error {
 	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID))
 	if err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache read: %w", err)
@@ -2014,7 +2208,7 @@ func scanJudgment(rs rowScanner) (core.AccountingJudgment, error) {
 
 // readJudgment reads one judgment row THROUGH the given connection, so every
 // race-sensitive read of an adjudication stays inside its own transaction.
-func (s *SQLiteStore) readJudgment(ctx context.Context, q connQueryer, id string) (core.AccountingJudgment, bool) {
+func (s *SQLiteStore) readJudgment(ctx context.Context, q Queryer, id string) (core.AccountingJudgment, bool) {
 	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments WHERE id = ?`, id)
 	j, err := scanJudgment(row)
 	if err != nil {
@@ -2338,7 +2532,7 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 // order). The pure core.SupersedeJudgment helper only covers confirmed→
 // superseded, so the proposed predecessor's routing fields are set directly
 // here (proposed rows are the machine's work area — the trigger allows it).
-func (s *SQLiteStore) supersedeProposedPredecessor(ctx context.Context, q connQueryer, pred core.AccountingJudgment, successorID, requestID, now string) (string, error) {
+func (s *SQLiteStore) supersedeProposedPredecessor(ctx context.Context, q Queryer, pred core.AccountingJudgment, successorID, requestID, now string) (string, error) {
 	superseded := pred
 	superseded.Status = core.JudgmentSuperseded
 	superseded.SupersedesID = successorID
@@ -2377,7 +2571,7 @@ func (s *SQLiteStore) supersedeProposedPredecessor(ctx context.Context, q connQu
 
 // readOpenProposal returns the OPEN proposal for the tuple — the partial unique
 // index guarantees at most one (design §3 rule 6).
-func (s *SQLiteStore) readOpenProposal(ctx context.Context, q connQueryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
+func (s *SQLiteStore) readOpenProposal(ctx context.Context, q Queryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
 	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments
 		WHERE tenant_id = ? AND company_id = ? AND from_id = ? AND to_id = ? AND relation = ? AND status = 'proposed'`,
 		tenantID, companyID, fromID, toID, string(relation))
@@ -2391,7 +2585,7 @@ func (s *SQLiteStore) readOpenProposal(ctx context.Context, q connQueryer, tenan
 // readLatestTupleJudgment returns the most recent judgment row of the tuple
 // (any status) — the replay fallback when the replayed proposal was already
 // decided before the retry arrived.
-func (s *SQLiteStore) readLatestTupleJudgment(ctx context.Context, q connQueryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
+func (s *SQLiteStore) readLatestTupleJudgment(ctx context.Context, q Queryer, tenantID, companyID, fromID, toID string, relation core.Relation) (core.AccountingJudgment, bool) {
 	row := q.QueryRowContext(ctx, `SELECT `+judgmentColumns+` FROM judgments
 		WHERE tenant_id = ? AND company_id = ? AND from_id = ? AND to_id = ? AND relation = ?
 		ORDER BY rowid DESC LIMIT 1`,
@@ -3510,6 +3704,158 @@ func (s *SQLiteStore) TransitionLog() ([]core.StatusTransitionRecord, error) {
 		return nil, err
 	}
 	return records, nil
+}
+
+// ──────────────────────────────────────────────
+// Receipt persistence surfaces (v5, v0.4.0 Step 3 keys commit)
+// ──────────────────────────────────────────────
+
+// SigningKeyRecord is the stored public-key row the signer validates against
+// (public bytes must equal the derived key, revoked keys never sign).
+type SigningKeyRecord struct {
+	Algorithm string
+	PublicKey string
+	CreatedAt string
+	RevokedAt string
+	Found     bool
+}
+
+// BeginReceiptTx begins the transaction the receipt surfaces run inside — the
+// ONLY transaction owner on this surface (the surfaces themselves never start
+// or commit one). Rotation and the batch-2 emission points commit
+// register+revoke / act+receipt atomically through it.
+func (s *SQLiteStore) BeginReceiptTx(ctx context.Context) (*sql.Tx, error) {
+	return s.db.BeginTx(ctx, nil)
+}
+
+// RegisterPublicKey records a public signing key (INSERT OR IGNORE — the key
+// may already exist; the signer validates the stored bytes BEFORE this call).
+// It never starts or commits a transaction: the caller's tx owns atomicity.
+func (s *SQLiteStore) RegisterPublicKey(ctx context.Context, q Queryer, keyID, algorithm, publicKey, createdAt string) error {
+	if _, err := q.ExecContext(ctx, `
+    		INSERT OR IGNORE INTO signing_keys (key_id, algorithm, public_key, created_at)
+    		VALUES (?, ?, ?, ?)`,
+		keyID, algorithm, publicKey, createdAt,
+	); err != nil {
+		return fmt.Errorf("register signing key %s: %w", keyID, err)
+	}
+	return nil
+}
+
+// RevokePublicKey performs the ONE legal signing_keys update: setting a
+// previously-NULL revoked_at (the revoke-only trigger aborts anything else).
+// It never starts or commits a transaction — the caller's tx owns atomicity.
+func (s *SQLiteStore) RevokePublicKey(ctx context.Context, q Queryer, keyID, revokedAt string) error {
+	res, err := q.ExecContext(ctx, `
+    		UPDATE signing_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL`,
+		revokedAt, keyID,
+	)
+	if err != nil {
+		return fmt.Errorf("revoke signing key %s: %w", keyID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return fmt.Errorf("revoke signing key %s: no unrevoked row matched", keyID)
+	}
+	return nil
+}
+
+// LookupSigningKey reads the stored public-key row for a key id. Found=false
+// when the key was never registered. The signer uses it to fail closed on a
+// revoked key and on public bytes that differ from the stored key (corruption).
+func (s *SQLiteStore) LookupSigningKey(ctx context.Context, q Queryer, keyID string) (SigningKeyRecord, error) {
+	var rec SigningKeyRecord
+	var revokedAt sql.NullString
+	err := q.QueryRowContext(ctx, `
+		SELECT algorithm, public_key, created_at, revoked_at FROM signing_keys WHERE key_id = ?`,
+		keyID,
+	).Scan(&rec.Algorithm, &rec.PublicKey, &rec.CreatedAt, &revokedAt)
+	if err == sql.ErrNoRows {
+		return SigningKeyRecord{}, nil
+	}
+	if err != nil {
+		return SigningKeyRecord{}, fmt.Errorf("lookup signing key %s: %w", keyID, err)
+	}
+	rec.RevokedAt = revokedAt.String
+	rec.Found = true
+	return rec, nil
+}
+
+// LatestReceiptChainHead returns the receipt_hash of the LATEST receipt for
+// the subject (ordered by issued_at, insertion as tie-break) — the digest the
+// next receipt copies into previousReceiptHash. Empty when no prior row
+// exists (genesis). It never starts or commits a transaction.
+func (s *SQLiteStore) LatestReceiptChainHead(ctx context.Context, q Queryer, subjectType core.SubjectType, subjectID string) (string, error) {
+	var receiptHash string
+	err := q.QueryRowContext(ctx, `
+    		SELECT receipt_hash FROM receipts
+    		WHERE subject_type = ? AND subject_id = ?
+    		ORDER BY issued_at DESC, rowid DESC LIMIT 1`,
+		string(subjectType), subjectID,
+	).Scan(&receiptHash)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read receipt chain head for %s %s: %w", subjectType, subjectID, err)
+	}
+	return receiptHash, nil
+}
+
+// ReceiptRow is the full stored shape of one signed receipt (the v5 receipts
+// row). Signature is the RAW signature bytes; PayloadJSON is the canonical
+// payload; ReceiptHash is the derived digest of the complete canonical signed
+// receipt; exactly one of MemoryID/JudgmentID is set and equals SubjectID.
+type ReceiptRow struct {
+	SubjectType         core.SubjectType
+	SubjectID           string
+	Action              core.ReceiptAction
+	TenantID            string
+	CompanyID           string
+	FiscalPeriodID      string
+	PayloadHash         string
+	PreviousReceiptHash string
+	PrincipalID         string
+	MembershipID        string
+	PolicyVersion       string
+	Algorithm           string
+	KeyID               string
+	Signature           []byte
+	IssuedAt            string
+	PayloadJSON         string
+	ReceiptHash         string
+	MemoryID            string
+	JudgmentID          string
+}
+
+// InsertReceipt persists a signed receipt row. The schema guarantees
+// immutability (no-update/no-delete triggers), chain identity (derived
+// receipt_hash UNIQUE), exactly-one-typed-FK = subject_id, and idempotent
+// retries (unique (subject_type, subject_id, action, payload_hash) aborts a
+// duplicate emission). It never starts or commits a transaction — the
+// caller's tx owns atomicity.
+func (s *SQLiteStore) InsertReceipt(ctx context.Context, q Queryer, row ReceiptRow) error {
+	var memoryID, judgmentID any
+	if row.MemoryID != "" {
+		memoryID = row.MemoryID
+	}
+	if row.JudgmentID != "" {
+		judgmentID = row.JudgmentID
+	}
+	if _, err := q.ExecContext(ctx, `
+    		INSERT INTO receipts (
+    			subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
+    			payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version,
+    			algorithm, key_id, signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id
+    		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(row.SubjectType), row.SubjectID, string(row.Action),
+		row.TenantID, row.CompanyID, row.FiscalPeriodID,
+		row.PayloadHash, row.PreviousReceiptHash, row.PrincipalID, row.MembershipID, row.PolicyVersion,
+		row.Algorithm, row.KeyID, row.Signature, row.IssuedAt,
+		row.PayloadJSON, row.ReceiptHash, memoryID, judgmentID,
+	); err != nil {
+		return fmt.Errorf("insert receipt %s: %w", row.ReceiptHash, err)
+	}
+	return nil
 }
 
 // ──────────────────────────────────────────────

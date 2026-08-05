@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module verifies the v3→v4 additive
 // migration (v0.4.0 Step 2 — adjudicable conflicts): fresh stores bootstrap to
-// schema_version=4 with the four judgment persistence tables and their indexes,
+// schema_version=5 with the four judgment persistence tables and their indexes,
 // existing v3 data survives untouched, a failing migration rolls back leaving
 // schema_version=3, and the judgment immutability surface (triggers + open-tuple
 // partial unique index) enforces exactly the updates the design §4 allows.
@@ -137,8 +137,8 @@ func TestFreshStoreBootstrapsV4JudgmentPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("schema_version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("schema_version = %d, want 5", version)
 	}
 
 	// The v3 layer survives the chain (additive migrations never drop objects).
@@ -185,7 +185,7 @@ func TestFreshStoreBootstrapsV4JudgmentPersistence(t *testing.T) {
 	}
 }
 
-func TestV3StoreMigratesToV4AdditivelyPreservingRows(t *testing.T) {
+func TestV3StoreMigratesToV5AdditivelyPreservingRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3.db")
 	db := openV3Schema(t, path)
 
@@ -206,8 +206,8 @@ func TestV3StoreMigratesToV4AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 4 {
-		t.Fatalf("schema_version after migration = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("schema_version after migration = %d, want 5", version)
 	}
 
 	// Rows survive additively with EXACTLY the envelope bytes written at v3.

@@ -45,6 +45,7 @@ import (
 	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/authz"
 	"github.com/arkelythex/drenyra-engram/internal/core"
+	"github.com/arkelythex/drenyra-engram/internal/receipts"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 	"github.com/arkelythex/drenyra-engram/internal/server"
 	"github.com/arkelythex/drenyra-engram/internal/store"
@@ -79,6 +80,8 @@ func run(args []string) int {
 		return cmdApprove(args[1:])
 	case "auth":
 		return cmdAuth(args[1:])
+	case "keys":
+		return cmdKeys(args[1:])
 	case "judge":
 		return cmdJudge(args[1:])
 	case "reject":
@@ -446,9 +449,141 @@ func cmdGatedTransition(name string, args []string, run func(*server.API, string
 	return emit(output)
 }
 
-// ──────────────────────────────────────────────
-// auth — authenticated CLI sessions (v0.4.0 Step 1, ADR-003)
-// ──────────────────────────────────────────────
+    // ──────────────────────────────────────────────
+    // keys — signing-key lifecycle (v0.4.0 Step 3 keys commit)
+    // ──────────────────────────────────────────────
+
+    // cmdKeys dispatches the signing-key lifecycle subcommands: init ensures an
+    // active key (generating the user-owned 0600 keyring on first use), show
+    // prints the active key id, its public key and lifecycle timestamps (NEVER
+    // the seed), and rotate durably activates a new key while revoking the old
+    // public key in one DB transaction.
+    func cmdKeys(args []string) int {
+    	if len(args) == 0 {
+    		fmt.Fprintln(os.Stderr, "usage: drenyra-engram keys init")
+    		fmt.Fprintln(os.Stderr, "       drenyra-engram keys show")
+    		fmt.Fprintln(os.Stderr, "       drenyra-engram keys rotate --db <path>")
+    		return 2
+    	}
+    	switch args[0] {
+    	case "init":
+    		return cmdKeysInit(args[1:])
+    	case "show":
+    		return cmdKeysShow(args[1:])
+    	case "rotate":
+    		return cmdKeysRotate(args[1:])
+    	default:
+    		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown keys subcommand %q\n", args[0])
+    		return 2
+    	}
+    }
+
+    // keyringPathForCLI is the effective keyring location: $DRENYRA_ENGRAM_SIGNING_KEY
+    // when set (tests/CI), otherwise the platform config dir.
+    func keyringPathForCLI() string {
+    	return receipts.DefaultKeyringPath()
+    }
+
+    // cmdKeysInit ensures the ACTIVE key exists (first use generates a durable
+    // 0600 keyring) and prints its key id. Generation is also triggered by the
+    // first covered mutation in batch 2; init is the explicit, idempotent CLI.
+    func cmdKeysInit(args []string) int {
+    	fs := flag.NewFlagSet("keys init", flag.ContinueOnError)
+    	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram keys init") }
+    	if err := fs.Parse(reorderFlags(args, nil)); err != nil {
+    		if err == flag.ErrHelp {
+    			return 0
+    		}
+    		return 2
+    	}
+    	if fs.NArg() != 0 {
+    		fs.Usage()
+    		return 2
+    	}
+    	kr, err := receipts.EnsureActiveKey(keyringPathForCLI())
+    	if err != nil {
+    		return fail("keys init: %v", err)
+    	}
+    	return emit(map[string]string{
+    		"keyId":     kr.ActiveKeyID,
+    		"createdAt": kr.CreatedAt(kr.ActiveKeyID),
+    	})
+    }
+
+    // cmdKeysShow prints the ACTIVE key id, its public key (hex) and lifecycle
+    // timestamps from the keyring file. The private seed is NEVER printed or
+    // exposed; the store is never opened (no side effect).
+    func cmdKeysShow(args []string) int {
+    	fs := flag.NewFlagSet("keys show", flag.ContinueOnError)
+    	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram keys show") }
+    	if err := fs.Parse(reorderFlags(args, nil)); err != nil {
+    		if err == flag.ErrHelp {
+    			return 0
+    		}
+    		return 2
+    	}
+    	if fs.NArg() != 0 {
+    		fs.Usage()
+    		return 2
+    	}
+    	kr, err := receipts.LoadKeyring(keyringPathForCLI())
+    	if err != nil {
+    		if os.IsNotExist(err) {
+    			return fail("keys show: no signing key yet — run 'drenyra-engram keys init'")
+    		}
+    		return fail("keys show: %v", err)
+    	}
+    	keyID := kr.ActiveKeyID
+    	pub, err := kr.PublicKeyFor(keyID)
+    	if err != nil {
+    		return fail("keys show: %v", err)
+    	}
+    	return emit(map[string]string{
+    		"keyId":     keyID,
+    		"publicKey": hex.EncodeToString(pub),
+    		"createdAt": kr.CreatedAt(keyID),
+    		"revokedAt": kr.RevokedAt(keyID),
+    	})
+    }
+
+    // cmdKeysRotate durably creates and activates a new key, then registers it
+    // and revokes the old public key IN ONE DB transaction (docs/architecture/
+    // ed25519-receipts-step3.md "Signing-key lifecycle"). Rotation is explicit,
+    // never scheduled; old receipts stay verifiable.
+    func cmdKeysRotate(args []string) int {
+    	fs := flag.NewFlagSet("keys rotate", flag.ContinueOnError)
+    	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+    	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram keys rotate --db <path>") }
+    	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+    		if err == flag.ErrHelp {
+    			return 0
+    		}
+    		return 2
+    	}
+    	if fs.NArg() != 0 {
+    		fs.Usage()
+    		return 2
+    	}
+    	st, err := store.Open(*dbPath)
+    	if err != nil {
+    		return fail("keys rotate: %v", err)
+    	}
+    	defer func() { _ = st.Close() }()
+    	res, err := receipts.Rotate(context.Background(), st, keyringPathForCLI())
+    	if err != nil {
+    		return fail("keys rotate: %v", err)
+    	}
+    	return emit(map[string]string{
+    		"keyId":         res.NewKeyID,
+    		"previousKeyId": res.OldKeyID,
+    		"createdAt":     res.CreatedAt,
+    		"revokedAt":     res.RevokedAt,
+    	})
+    }
+
+    // ──────────────────────────────────────────────
+    // auth — authenticated CLI sessions (v0.4.0 Step 1, ADR-003)
+    // ──────────────────────────────────────────────
 
 // cmdAuth dispatches the authenticated-session subcommands: login validates a
 // bearer token against the selected DB and stores it in a user-only config file;
@@ -1446,6 +1581,9 @@ Usage:
   drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram auth login --token <token> [--db <path>]
   drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <list>   (DRENYRA_ENV=local_dev only)
+  drenyra-engram keys init
+  drenyra-engram keys show
+  drenyra-engram keys rotate --db <path>
   drenyra-engram judge propose <from-id> <to-id> --relation <rel> --reason <text> [--predecessor <id>] [--request-id <id>] [--db <path>]   (agent provenance)
   drenyra-engram judge confirm <judgment-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
   drenyra-engram judge reject <judgment-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
@@ -1500,6 +1638,15 @@ local_dev identity + one expiring session and prints the raw token once
 use the SAME authenticated session — the verified principal is the only
 adjudicator; propose/withdraw carry agent provenance (cli/cli/agent) and
 never authorize.
+
+Signing keys (v0.4 Step 3): covered acts are signed with the ACTIVE Ed25519
+key. The private seeds live ONLY in the user-owned 0600 keyring
+(~/.config/drenyra-engram/signing-keys.json, or $DRENYRA_ENGRAM_SIGNING_KEY);
+the store keeps public keys and revocation only. "keys init" ensures an
+active key (first use generates it), "keys show" prints the active key id,
+public key and lifecycle timestamps (NEVER the seed), and "keys rotate"
+activates a new key and revokes the old one in a single DB transaction.
+Revocation blocks new signatures; receipts issued before it stay verifiable.
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
 authorize/allow/execute command. Approve/Reject are the PROFESSIONAL review
