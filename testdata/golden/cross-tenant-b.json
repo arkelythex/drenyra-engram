@@ -1,0 +1,38 @@
+{
+  "name": "cross-tenant-b",
+  "input": {
+    "id": "mem-ct-b",
+    "topicKey": "tax.igv.rate",
+    "title": "Tasa IGV",
+    "kind": "rule",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-02",
+      "ruc": "20600995804",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T00:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    }
+  },
+  "expected": {
+    "contentHash": "5ff67ecb3a7686958c71500a5144d0e886e420db9c0f7b467178254f54601cc7",
+    "identityHash": "9ed5fa2b92f659751d6e462d46d5ec226cce8487e14568961a15746b1e3fe7a9",
+    "envelopeHash": "db6fc0f0783a5186dacfb4dc03208a745ac5751519730749d16700573e4c5c63",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

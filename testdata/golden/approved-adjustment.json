@@ -1,0 +1,48 @@
+{
+  "name": "approved-adjustment-memory",
+  "description": "A gated adjustment approved by a human. The fiscal effect lands pending_review; only a human can approve.",
+  "input": {
+    "id": "mem-adjust-001",
+    "topicKey": "adjustment/AJ-2026-07-019",
+    "title": "Ajuste AJ-2026-07-019",
+    "kind": "decision",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20601234567",
+      "period": "202607"
+    },
+    "content": {
+      "what": "Ajuste S/ 1,284.30 por comprobante F001-948 posterior al cierre",
+      "why": "comprobante tardio afecta el IGV del periodo",
+      "where": "golden",
+      "learned": "los comprobantes posteriores al cierre se difieren"
+    },
+    "fiscalEffect": "adjustment",
+    "effectiveAt": "2026-07-31T12:00:00Z",
+    "recordedAt": "2026-08-04T10:00:00Z",
+    "source": {
+      "system": "drenyra-core",
+      "reference": "AJ-2026-07-019",
+      "actorId": "agent-1",
+      "actorKind": "agent",
+      "session": "sess-1"
+    },
+    "ruleRefs": [
+      "policy/igv/late-document-v3"
+    ],
+    "evidenceRefs": [
+      "xml:F001-948",
+      "cdr:F001-948"
+    ]
+  },
+  "expected": {
+    "contentHash": "2cc60a52ba2a9eb66a5f9c6c29e57a95b04abfb45123ad60a93e1b90fcaf879e",
+    "identityHash": "a80333cf354bb250d0586aff3dbfdd144e804fd06b43d71ea8145cb4b45b4339",
+    "envelopeHash": "9db29c50b46064b15a947d9dde46966c74386f0edfe1ac67c00c226761fe11f3",
+    "initialStatus": "pending_review",
+    "canApproveAgent": false,
+    "canApproveHuman": true
+  }
+}

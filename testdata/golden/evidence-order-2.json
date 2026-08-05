@@ -1,0 +1,43 @@
+{
+  "name": "evidence-order-2",
+  "input": {
+    "id": "mem-ev2",
+    "topicKey": "account/4011/evidence",
+    "title": "Tasa IGV",
+    "kind": "evidence",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T00:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    },
+    "evidenceRefs": [
+      "cdr:F001",
+      "extracto:BCP-191",
+      "xml:F001"
+    ]
+  },
+  "expected": {
+    "contentHash": "b0e4cc7f28eb006d45894faef8d05a96cbe7485ea5ec1fa485df4ade51734b3f",
+    "identityHash": "138b3c236a61376db07bcb18e5fe00a53b4ad1fd1e36a084dabc711c5d433f1d",
+    "envelopeHash": "8e7c861e5091005083b6f75cec5f319462343870c348f22576929f277328b1fb",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

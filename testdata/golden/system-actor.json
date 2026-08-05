@@ -1,0 +1,37 @@
+{
+  "name": "system-actor",
+  "input": {
+    "id": "mem-sys",
+    "topicKey": "control/duplicity",
+    "title": "Tasa IGV",
+    "kind": "control",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T00:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "sire",
+      "actorKind": "system"
+    }
+  },
+  "expected": {
+    "contentHash": "40998a593b68ed3df97d5b60cf208620b6e4ebad5f7200af99498951091df8c1",
+    "identityHash": "85fce7509856b956b8886efa0620f074421538258dcc8826df31a6ee6e7f54a1",
+    "envelopeHash": "7659f5b915154c780c034fee8dc20f157fad7f98b577674048ce1505d6ff5850",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "gated-adjustment",
+  "input": {
+    "id": "mem-gated",
+    "topicKey": "adjustment/AJ-2026-07-001",
+    "title": "Tasa IGV",
+    "kind": "decision",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "adjustment",
+    "effectiveAt": "2026-07-31T12:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    }
+  },
+  "expected": {
+    "contentHash": "9ddf88118e7b9ab60c1d4fd4da4b7c0caff31f51f54a4ce7c12536cdc396aad4",
+    "identityHash": "ebdc87fa9ac5c7e9654d624fa893e745791c6f0f456ee33dbc1ed344925350fc",
+    "envelopeHash": "719834445c1991b6a0ef333b55e4e12c50d7e8c63318ee6fd16bdaa04d632de8",
+    "initialStatus": "pending_review",
+    "canApproveAgent": false,
+    "canApproveHuman": true
+  }
+}

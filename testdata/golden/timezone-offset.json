@@ -1,0 +1,38 @@
+{
+  "name": "timezone-offset",
+  "input": {
+    "id": "mem-tz",
+    "topicKey": "tax.igv.rate",
+    "title": "Tasa IGV",
+    "kind": "rule",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T05:00:00-05:00",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    }
+  },
+  "expected": {
+    "contentHash": "c181567496890d29a4472cfe6aab56767f16b131ae75a945b4c83945799832c6",
+    "identityHash": "7a615deb7fb6ebdeaec21e4228e94c206449f079f5be6cc1a19b3b4321c67fca",
+    "envelopeHash": "2730cda5754ee4b37c32c338e4e9896bbd7bce2ee04da058220f1ce7a332972f",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

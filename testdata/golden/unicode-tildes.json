@@ -1,0 +1,38 @@
+{
+  "name": "unicode-tildes",
+  "input": {
+    "id": "mem-unicode",
+    "topicKey": "tax.igv.tasa",
+    "title": "Tasa de IGV: 18% — ímpetu, ñandú, café, Zürich, 日本語",
+    "kind": "rule",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "La tasa aplica a ñandúes, cafés y 日本語 en Zürich",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T00:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    }
+  },
+  "expected": {
+    "contentHash": "fc8f7d520e36f10a23fa3000a6fef6f2aa8afd30b3904251a5689407f84a7c74",
+    "identityHash": "79eb312bbb8dcd29e4a4d3c4c638b8df4570129e07c7a5809e432267e18bbbdb",
+    "envelopeHash": "12b8244dc6521e8192fb35a38e4fa598f224989fcebaa220afc9ab8ebadddb65",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

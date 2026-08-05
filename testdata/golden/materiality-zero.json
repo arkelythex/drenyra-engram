@@ -1,0 +1,39 @@
+{
+  "name": "materiality-zero",
+  "input": {
+    "id": "mem-mat0",
+    "topicKey": "account/4011/materiality",
+    "title": "Tasa IGV",
+    "kind": "rule",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-01-01T00:00:00Z",
+    "recordedAt": "2026-01-02T08:00:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    },
+    "materiality": 0
+  },
+  "expected": {
+    "contentHash": "b3da6091d98f32f8befcd194e6e68b98bd84c815c245e786ed58bd5e4af3a504",
+    "identityHash": "41a747bff420b7140a22cffb3d26622e4170224a82564d9220750f912276cf09",
+    "envelopeHash": "3571b9df4a8e8ed3dfaf2608964bf255292f7d51470d642d5ac3c6f458750bc9",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}

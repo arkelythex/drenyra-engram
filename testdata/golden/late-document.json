@@ -1,0 +1,39 @@
+{
+  "name": "late-document",
+  "input": {
+    "id": "mem-late",
+    "topicKey": "exception/F001-948-late",
+    "title": "Tasa IGV",
+    "kind": "exception",
+    "scope": {
+      "kind": "company",
+      "organizationId": "org-01",
+      "companyId": "cmp-01",
+      "ruc": "20100039201",
+      "period": "202601"
+    },
+    "content": {
+      "what": "Tasa base 18%",
+      "why": "estandar",
+      "where": "Peru",
+      "learned": "aplica a todas las facturas"
+    },
+    "fiscalEffect": "none",
+    "effectiveAt": "2026-07-31T00:00:00Z",
+    "recordedAt": "2026-08-04T09:30:00Z",
+    "source": {
+      "system": "golden",
+      "actorId": "agent-1",
+      "actorKind": "agent"
+    },
+    "observedAt": "2026-08-03T09:00:00Z"
+  },
+  "expected": {
+    "contentHash": "6f58ad5ce0e021fc937bdb12e4a650f519cea7f044fbc53a392aed95a8644d97",
+    "identityHash": "47a5924d0fc00c500be03b940b00443439c858c3801642ca50496b307a9f63fb",
+    "envelopeHash": "7516c761ac58f551e9798c82b0318f8ce517db1dc45e04b6d14153d6ff48a34d",
+    "initialStatus": "active",
+    "canApproveAgent": false,
+    "canApproveHuman": false
+  }
+}
