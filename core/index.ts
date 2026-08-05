@@ -7,3 +7,4 @@
  * (observation, scope, provenance, validation helpers).
  */
 export * from "./types.js";
+export * from "./receipt.js";
