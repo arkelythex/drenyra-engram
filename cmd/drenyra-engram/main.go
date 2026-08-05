@@ -39,6 +39,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,8 @@ func run(args []string) int {
 		return cmdServe(args[1:])
 	case "sync":
 		return cmdSync(args[1:])
+	case "verify":
+		return cmdVerify(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -1351,6 +1354,202 @@ func cmdSync(args []string) int {
 	return emit(report)
 }
 
+// ──────────────────────────────────────────────
+// verify — offline verification of signed receipt chains (v0.4.0 Step 4)
+// ──────────────────────────────────────────────
+
+// cmdVerify dispatches the offline verification subcommands: memory, judgment
+// and receipt. Verification is READ-ONLY over the local store — the design's
+// "offline" contract: no network, HTTP or MCP surface.
+func cmdVerify(args []string) int {
+	if len(args) == 0 {
+		printVerifyUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "memory":
+		return cmdVerifyMemory(args[1:])
+	case "judgment":
+		return cmdVerifyJudgment(args[1:])
+	case "receipt":
+		return cmdVerifyReceipt(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown verify subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+func printVerifyUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: drenyra-engram verify memory <id> [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram verify judgment <id> [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram verify receipt <hash|id> [--db <path>]")
+}
+
+// cmdVerifyMemory verifies the FULL signed chain of one memory subject (design
+// §5): the six receipt layers over every receipt, then principal provenance,
+// supersession chain, evidence availability and rule availability.
+func cmdVerifyMemory(args []string) int {
+	fs := flag.NewFlagSet("verify memory", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify memory <id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return failVerify("verify memory: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	report, err := server.VerifyMemory(context.Background(), st, rest[0])
+	if err != nil {
+		return failVerify("verify memory: %v", err)
+	}
+	return emitVerifyReport(report)
+}
+
+// cmdVerifyJudgment verifies the FULL signed chain of one judgment subject
+// (design §5): the six receipt layers, then principal provenance, judgment hash
+// and supersession chain.
+func cmdVerifyJudgment(args []string) int {
+	fs := flag.NewFlagSet("verify judgment", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify judgment <id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return failVerify("verify judgment: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	report, err := server.VerifyJudgment(context.Background(), st, rest[0])
+	if err != nil {
+		return failVerify("verify judgment: %v", err)
+	}
+	return emitVerifyReport(report)
+}
+
+// cmdVerifyReceipt verifies ONE selected receipt and its predecessor link. The
+// single argument is the portable identity when it is exactly 64 lowercase hex
+// digits and the local SQLite row id when it parses as a decimal int64;
+// anything else is a usage error (exit 2) BEFORE the store is touched.
+func cmdVerifyReceipt(args []string) int {
+	fs := flag.NewFlagSet("verify receipt", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify receipt <hash|id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	target, ok := parseReceiptTarget(rest[0])
+	if !ok {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: verify receipt: %q is neither 64 lowercase hex digits nor a decimal row id\n", rest[0])
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return failVerify("verify receipt: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	report, err := server.VerifyReceipt(context.Background(), st, target)
+	if err != nil {
+		return failVerify("verify receipt: %v", err)
+	}
+	return emitVerifyReport(report)
+}
+
+// emitVerifyReport prints the verification report as indent-2 JSON for BOTH
+// outcomes and maps the result to the exit code: 0 only when the outcome is
+// passed, 1 when any applicable layer fails. A layer failure is EVIDENCE — the
+// report is still emitted — never a store error (design §6).
+func emitVerifyReport(report core.VerificationReport) int {
+	code := 1
+	if report.Outcome == core.VerificationOutcomePassed {
+		code = 0
+	}
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		return fail("encode output: %v", err)
+	}
+	return code
+}
+
+// failVerify prints a report-building error and returns exit code 2: usage,
+// malformed/not-found target, database/query/decode failure or any other
+// inability to complete. A verifiable-but-failed subject is NOT an error here —
+// it produced a printed report with exit 1.
+func failVerify(format string, args ...any) int {
+	fmt.Fprintf(os.Stderr, "drenyra-engram: "+format+"\n", args...)
+	return 2
+}
+
+// parseReceiptTarget classifies the CLI's single receipt argument: exactly 64
+// lowercase hex digits select the portable hash; a decimal int64 selects the
+// local SQLite row id (local convenience — the hash is portable identity,
+// design §5).
+func parseReceiptTarget(raw string) (core.ReceiptTarget, bool) {
+	if isLowerHex64(raw) {
+		return core.ReceiptTarget{Hash: raw}, true
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return core.ReceiptTarget{}, false
+	}
+	return core.ReceiptTarget{ID: id}, true
+}
+
+// isLowerHex64 reports whether s is exactly 64 lowercase hex digits — the CLI's
+// portable receipt identity selector (uppercase hex is deliberately NOT a hash
+// target: it is neither lowercase hex nor a decimal row id → usage error).
+func isLowerHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // nowISO is the CLI's event timestamp: current UTC time in RFC3339, which the
 // core timestamp grammar accepts (contracts/provenance.md rule 3: every state
 // traces to actor+time).
@@ -1613,6 +1812,9 @@ Usage:
   drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
   drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
   drenyra-engram sync --from <src-db> --to <dst-db> [--actor <name>]
+  drenyra-engram verify memory <id> [--db <path>]
+  drenyra-engram verify judgment <id> [--db <path>]
+  drenyra-engram verify receipt <hash|id> [--db <path>]
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
@@ -1662,6 +1864,15 @@ active key (first use generates it), "keys show" prints the active key id,
 public key and lifecycle timestamps (NEVER the seed), and "keys rotate"
 activates a new key and revokes the old one in a single DB transaction.
 Revocation blocks new signatures; receipts issued before it stay verifiable.
+
+Verification (v0.4 Step 4): "verify" runs the OFFLINE read-only engine over
+the local store — canonical payload bytes, envelope integrity, Ed25519
+signatures, signing-key validity, tenant/company scope, chain links,
+principal provenance, supersession chains and referenced-state availability.
+Receipts verify by portable 64-hex hash or local SQLite row id. The report
+JSON is emitted for BOTH outcomes; exit 0 only when passed, 1 when any
+applicable layer fails, and 2 for malformed/unknown targets or a report that
+cannot be built. Verification never asserts accounting correctness.
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
 authorize/allow/execute command. Approve/Reject are the PROFESSIONAL review
