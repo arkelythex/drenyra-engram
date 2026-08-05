@@ -72,9 +72,9 @@ type VerificationLayer struct {
 // ReceiptVerification is the per-receipt diagnostic block: the stored receipt
 // hash, the covered action and the six receipt-layer instances.
 type ReceiptVerification struct {
-	ReceiptHash string               `json:"receiptHash"`
-	Action      ReceiptAction        `json:"action"`
-	Layers      []VerificationLayer  `json:"layers"`
+	ReceiptHash string              `json:"receiptHash"`
+	Action      ReceiptAction       `json:"action"`
+	Layers      []VerificationLayer `json:"layers"`
 }
 
 // VerificationReport is the complete offline verification result. The stable

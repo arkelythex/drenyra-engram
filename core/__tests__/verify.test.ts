@@ -107,9 +107,11 @@ function basePayload(overrides: Partial<ReceiptPayload> = {}): ReceiptPayload {
 }
 
 /** Signs the base fixture with the parity seed (Go's signFixture). */
-function signedFixture(
-	overrides: Partial<ReceiptPayload> = {},
-): { receipt: SignedReceipt; payload: ReceiptPayload; publicKey: Uint8Array } {
+function signedFixture(overrides: Partial<ReceiptPayload> = {}): {
+	receipt: SignedReceipt;
+	payload: ReceiptPayload;
+	publicKey: Uint8Array;
+} {
 	const payload = basePayload(overrides);
 	const { receipt, publicKey } = signReceipt(payload, PARITY_SEED);
 	return { receipt, payload, publicKey };
@@ -149,9 +151,7 @@ describe("decodeStoredPayload", () => {
 			'"version"',
 			'"unknownField":"x","version"',
 		);
-		expect(() => decodeStoredPayload(unknownKey)).toThrow(
-			/unknown field/,
-		);
+		expect(() => decodeStoredPayload(unknownKey)).toThrow(/unknown field/);
 	});
 
 	it("trailing data is rejected", () => {
@@ -212,7 +212,10 @@ describe("verifyEnvelopeIntegrity", () => {
 	});
 
 	it("unknown action fails closed", () => {
-		const mutated = { ...receipt, action: "memory_deleted" } as unknown as SignedReceipt;
+		const mutated = {
+			...receipt,
+			action: "memory_deleted",
+		} as unknown as SignedReceipt;
 		expect(verifyEnvelopeIntegrity(mutated, payload, stored).status).toBe(
 			"failed",
 		);
@@ -226,11 +229,7 @@ describe("verifyEnvelopeIntegrity", () => {
 	});
 
 	it("stored hash mismatch fails", () => {
-		const layer = verifyEnvelopeIntegrity(
-			receipt,
-			payload,
-			"0".repeat(64),
-		);
+		const layer = verifyEnvelopeIntegrity(receipt, payload, "0".repeat(64));
 		expect(layer.status).toBe("failed");
 		expect(layer.detail).toContain("recomputed receipt hash");
 	});
@@ -415,7 +414,9 @@ describe("verifyChainLink", () => {
 describe("verifyPrincipalProvenance", () => {
 	const approvedPayload = basePayload(); // memory_approved with the full snapshot
 
-	const approvedAct = (overrides: Partial<ActProvenance> = {}): ActProvenance => ({
+	const approvedAct = (
+		overrides: Partial<ActProvenance> = {},
+	): ActProvenance => ({
 		action: "approved",
 		timestamp: "2026-08-05T13:00:00Z",
 		principalId: "subject-1",
@@ -596,7 +597,12 @@ describe("verifySupersessionChain", () => {
 
 	it("current terminal passes and reports the current id", () => {
 		const links: SupersessionLink[] = [
-			{ subjectId: "mem-a", successorId: "mem-b", superseded: true, scope: scopeA },
+			{
+				subjectId: "mem-a",
+				successorId: "mem-b",
+				superseded: true,
+				scope: scopeA,
+			},
 			{ subjectId: "mem-b", successorId: "", superseded: false, scope: scopeA },
 		];
 		const layer = verifySupersessionChain(links, scopeA);
@@ -615,9 +621,24 @@ describe("verifySupersessionChain", () => {
 
 	it("cycle fails", () => {
 		const links: SupersessionLink[] = [
-			{ subjectId: "mem-a", successorId: "mem-b", superseded: true, scope: scopeA },
-			{ subjectId: "mem-b", successorId: "mem-a", superseded: true, scope: scopeA },
-			{ subjectId: "mem-a", successorId: "mem-b", superseded: true, scope: scopeA },
+			{
+				subjectId: "mem-a",
+				successorId: "mem-b",
+				superseded: true,
+				scope: scopeA,
+			},
+			{
+				subjectId: "mem-b",
+				successorId: "mem-a",
+				superseded: true,
+				scope: scopeA,
+			},
+			{
+				subjectId: "mem-a",
+				successorId: "mem-b",
+				superseded: true,
+				scope: scopeA,
+			},
 		];
 		const layer = verifySupersessionChain(links, scopeA);
 		expect(layer.status).toBe("failed");
@@ -626,7 +647,12 @@ describe("verifySupersessionChain", () => {
 
 	it("cross-scope link fails", () => {
 		const links: SupersessionLink[] = [
-			{ subjectId: "mem-a", successorId: "mem-b", superseded: true, scope: scopeA },
+			{
+				subjectId: "mem-a",
+				successorId: "mem-b",
+				superseded: true,
+				scope: scopeA,
+			},
 			{ subjectId: "mem-b", successorId: "", superseded: false, scope: scopeB },
 		];
 		const layer = verifySupersessionChain(links, scopeA);
@@ -636,7 +662,12 @@ describe("verifySupersessionChain", () => {
 
 	it("status/relation disagreement fails", () => {
 		const links: SupersessionLink[] = [
-			{ subjectId: "mem-a", successorId: "mem-b", superseded: false, scope: scopeA },
+			{
+				subjectId: "mem-a",
+				successorId: "mem-b",
+				superseded: false,
+				scope: scopeA,
+			},
 		];
 		const layer = verifySupersessionChain(links, scopeA);
 		expect(layer.status).toBe("failed");
@@ -745,7 +776,11 @@ describe("verifyJudgmentHash", () => {
 
 describe("aggregateLayers", () => {
 	const pass: VerificationLayer = { name: "x", status: "passed", detail: "ok" };
-	const fail: VerificationLayer = { name: "x", status: "failed", detail: "boom" };
+	const fail: VerificationLayer = {
+		name: "x",
+		status: "failed",
+		detail: "boom",
+	};
 	const skip: VerificationLayer = {
 		name: "x",
 		status: "skipped",
@@ -868,10 +903,16 @@ interface VerifyParityFixture {
 	scenarios: Record<string, VerifyParityScenario>;
 }
 
-const VERIFY_PARITY_PATH = resolve(process.cwd(), "testdata", "verify-parity.json");
+const VERIFY_PARITY_PATH = resolve(
+	process.cwd(),
+	"testdata",
+	"verify-parity.json",
+);
 
 function loadVerifyParityFixture(): VerifyParityFixture {
-	return JSON.parse(readFileSync(VERIFY_PARITY_PATH, "utf-8")) as VerifyParityFixture;
+	return JSON.parse(
+		readFileSync(VERIFY_PARITY_PATH, "utf-8"),
+	) as VerifyParityFixture;
 }
 
 /**
@@ -922,7 +963,9 @@ function buildParityReport(
 	const provInstances = fixture.payloads.map((p, i) =>
 		verifyPrincipalProvenance(p, fixture.provenance[i]!),
 	);
-	report.layers.push(aggregateLayers(LAYER_PRINCIPAL_PROVENANCE, provInstances));
+	report.layers.push(
+		aggregateLayers(LAYER_PRINCIPAL_PROVENANCE, provInstances),
+	);
 	report.layers.push(
 		verifySupersessionChain(fixture.supersessionLinks, fixture.subjectScope),
 	);

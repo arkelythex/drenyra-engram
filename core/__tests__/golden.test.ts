@@ -49,17 +49,17 @@ import {
 	type FiscalEffect,
 	type MemoryRelation,
 } from "../types.js";
-	import {
-		canonicalReceiptPayload,
-		canonicalUnsignedEnvelope,
-		completeReceiptBytes,
-		receiptHash,
-		receiptKeyId,
-		receiptPayloadHash,
-		signReceipt,
-		verifyReceipt,
-	} from "../receipt.js";
-	import { approve, initialStatus } from "../../lifecycle/transitions.js";
+import {
+	canonicalReceiptPayload,
+	canonicalUnsignedEnvelope,
+	completeReceiptBytes,
+	receiptHash,
+	receiptKeyId,
+	receiptPayloadHash,
+	signReceipt,
+	verifyReceipt,
+} from "../receipt.js";
+import { approve, initialStatus } from "../../lifecycle/transitions.js";
 import {
 	createVerifiedApprovalPrincipal,
 	principalSnapshot,
@@ -705,9 +705,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				}
 				case "receipt": {
 					if (tc.receipt === undefined) {
-						throw new Error(
-							`${tc.name}: receipt vector requires receipt`,
-						);
+						throw new Error(`${tc.name}: receipt vector requires receipt`);
 					}
 					const vec = tc.receipt;
 					const seed = Buffer.from(vec.seed, "hex");
@@ -746,9 +744,10 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 
 					// Complete receipt bytes, chain digest and key id.
 					expect(
-						Buffer.from(completeReceiptBytes(vec.signedReceipt), "utf8").toString(
-							"hex",
-						),
+						Buffer.from(
+							completeReceiptBytes(vec.signedReceipt),
+							"utf8",
+						).toString("hex"),
 					).toBe(vec.completeReceiptBytes);
 					expect(receiptHash(vec.signedReceipt)).toBe(vec.receiptHash);
 					expect(receiptKeyId(publicKey)).toBe(vec.keyId);

@@ -24,7 +24,11 @@
  * the canonical unsigned envelope) instead of wrapping `verifyReceipt`, whose
  * error codes and messages differ from the layer's detail strings.
  */
-import { createPublicKey, verify as ed25519Verify, type KeyObject } from "node:crypto";
+import {
+	createPublicKey,
+	verify as ed25519Verify,
+	type KeyObject,
+} from "node:crypto";
 
 import {
 	canonicalReceiptPayload,
@@ -496,7 +500,8 @@ export function verifySignature(
  * (`±hh`, `±hhmm` or `±hh:mm` — Go's Z07:00 leniency), and rejects fractional
  * seconds and out-of-range dates. Returns null on failure.
  */
-const RFC3339_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}(:?\d{2})?)$/;
+const RFC3339_PATTERN =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}(:?\d{2})?)$/;
 
 function parseRfc3339(value: string): Date | null {
 	const match = RFC3339_PATTERN.exec(value);
@@ -696,7 +701,11 @@ export function verifyChainLink(
 // Principal provenance
 // ──────────────────────────────────────────────
 
-function provenanceFieldFail(field: string, got: string, want: string): VerificationLayer {
+function provenanceFieldFail(
+	field: string,
+	got: string,
+	want: string,
+): VerificationLayer {
 	return layerFailed(
 		LAYER_PRINCIPAL_PROVENANCE,
 		`principal provenance mismatch: ${field} ${q(got)} differs from the immutable event ${q(want)}`,
@@ -738,8 +747,16 @@ export function verifyPrincipalProvenance(
 				],
 				["policyVersion", payload.policyVersion, act.policy],
 				["reason", payload.reason, act.reason],
-				["reviewedEnvelopeHash", payload.reviewedEnvelopeHash, act.reviewedEnvelopeHash],
-				["resultingEnvelopeHash", payload.resultingEnvelopeHash, act.resultingEnvelopeHash],
+				[
+					"reviewedEnvelopeHash",
+					payload.reviewedEnvelopeHash,
+					act.reviewedEnvelopeHash,
+				],
+				[
+					"resultingEnvelopeHash",
+					payload.resultingEnvelopeHash,
+					act.resultingEnvelopeHash,
+				],
 				["issuedAt", payload.issuedAt, act.timestamp],
 			];
 			for (const [field, got, want] of fields) {
@@ -954,7 +971,10 @@ export function verifyRuleAvailability(
 	committedEnvelope: string,
 ): VerificationLayer {
 	for (const ref of mergedRefs) {
-		if (!containsString(storedRefs, ref) && !containsString(currentLinks, ref)) {
+		if (
+			!containsString(storedRefs, ref) &&
+			!containsString(currentLinks, ref)
+		) {
 			return layerFailed(
 				LAYER_RULE_AVAILABILITY,
 				`rule ref ${ref} lacks a rule_links row (direct-SQL removal or corruption)`,
@@ -1042,7 +1062,11 @@ export function aggregateLayers(
 	if (allSkipped) {
 		return { ...layers[0], name, status: "skipped" };
 	}
-	return { name, status: "passed", detail: `all ${layers.length} receipts passed` };
+	return {
+		name,
+		status: "passed",
+		detail: `all ${layers.length} receipts passed`,
+	};
 }
 
 /**

@@ -412,11 +412,11 @@ func TestVerifyPrincipalProvenance(t *testing.T) {
 		act := core.ActProvenance{
 			Action: "approved", Timestamp: "2026-08-05T13:00:00Z",
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			Roles: []string{"controller", "accountant"},
+			Roles:                []string{"controller", "accountant"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
-			AuthenticatedAt: "2026-08-05T13:00:00Z",
-			Policy:          "approval-policy/v0.4.0",
-			Reason:          "a DIFFERENT reason",
+			AuthenticatedAt:       "2026-08-05T13:00:00Z",
+			Policy:                "approval-policy/v0.4.0",
+			Reason:                "a DIFFERENT reason",
 			ReviewedEnvelopeHash:  "h1-reviewed-envelope",
 			ResultingEnvelopeHash: "h2-resulting-envelope",
 		}
@@ -433,11 +433,11 @@ func TestVerifyPrincipalProvenance(t *testing.T) {
 		act := core.ActProvenance{
 			Action: "approved", Timestamp: "2026-08-05T13:00:00Z",
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			Roles: []string{"controller"},
+			Roles:                []string{"controller"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
-			AuthenticatedAt: "2026-08-05T13:00:00Z",
-			Policy:          "approval-policy/v0.4.0",
-			Reason:          `approved & verified "controller" review`,
+			AuthenticatedAt:       "2026-08-05T13:00:00Z",
+			Policy:                "approval-policy/v0.4.0",
+			Reason:                `approved & verified "controller" review`,
 			ReviewedEnvelopeHash:  "h1-reviewed-envelope",
 			ResultingEnvelopeHash: "h2-resulting-envelope",
 		}
@@ -470,25 +470,25 @@ func TestVerifyPrincipalProvenance(t *testing.T) {
 
 	t.Run("relation confirmed snapshot matches", func(t *testing.T) {
 		decided := core.ReceiptPayload{
-			Action:                 core.ReceiptActionRelationConfirmed,
-			PrincipalID:            "subject-1",
-			MembershipID:           "membership-1",
-			PrincipalRoles:         []string{"controller", "controller"},
-			AuthenticationMethod:   "session",
-			AssuranceLevel:         "standard",
+			Action:                   core.ReceiptActionRelationConfirmed,
+			PrincipalID:              "subject-1",
+			MembershipID:             "membership-1",
+			PrincipalRoles:           []string{"controller", "controller"},
+			AuthenticationMethod:     "session",
+			AssuranceLevel:           "standard",
 			PrincipalAuthenticatedAt: "2026-08-05T12:00:00Z",
-			PolicyVersion:          "judgment-policy/v0.4.0",
-			Reason:                 "resolution text",
-			ResultingJudgmentHash:  strings.Repeat("a", 64),
-			IssuedAt:               "2026-08-05T14:00:00Z",
+			PolicyVersion:            "judgment-policy/v0.4.0",
+			Reason:                   "resolution text",
+			ResultingJudgmentHash:    strings.Repeat("a", 64),
+			IssuedAt:                 "2026-08-05T14:00:00Z",
 		}
 		act := core.ActProvenance{
 			Action: "confirm", Timestamp: "2026-08-05T14:00:00Z",
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			Roles: []string{"controller"},
+			Roles:                []string{"controller"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
 			AuthenticatedAt: "2026-08-05T12:00:00Z",
-			Policy: "judgment-policy/v0.4.0", Reason: "resolution text",
+			Policy:          "judgment-policy/v0.4.0", Reason: "resolution text",
 			RecordedJudgmentHash: strings.Repeat("a", 64),
 		}
 		layer := core.VerifyPrincipalProvenance(decided, act)
@@ -499,22 +499,22 @@ func TestVerifyPrincipalProvenance(t *testing.T) {
 
 	t.Run("relation rejected action mapping", func(t *testing.T) {
 		rejected := core.ReceiptPayload{
-			Action: core.ReceiptActionRelationRejected,
+			Action:      core.ReceiptActionRelationRejected,
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			PrincipalRoles: []string{"controller"},
+			PrincipalRoles:       []string{"controller"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
 			PrincipalAuthenticatedAt: "2026-08-05T12:00:00Z",
-			PolicyVersion: "judgment-policy/v0.4.0", Reason: "no",
+			PolicyVersion:            "judgment-policy/v0.4.0", Reason: "no",
 			ResultingJudgmentHash: strings.Repeat("b", 64),
 			IssuedAt:              "2026-08-05T14:00:00Z",
 		}
 		act := core.ActProvenance{
 			Action: "reject", Timestamp: "2026-08-05T14:00:00Z",
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			Roles: []string{"controller"},
+			Roles:                []string{"controller"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
 			AuthenticatedAt: "2026-08-05T12:00:00Z",
-			Policy: "judgment-policy/v0.4.0", Reason: "no",
+			Policy:          "judgment-policy/v0.4.0", Reason: "no",
 			RecordedJudgmentHash: strings.Repeat("b", 64),
 		}
 		layer := core.VerifyPrincipalProvenance(rejected, act)
@@ -527,10 +527,10 @@ func TestVerifyPrincipalProvenance(t *testing.T) {
 		act := core.ActProvenance{
 			Action: "reject", Timestamp: "2026-08-05T13:00:00Z",
 			PrincipalID: "subject-1", MembershipID: "membership-1",
-			Roles: []string{"controller", "accountant"},
+			Roles:                []string{"controller", "accountant"},
 			AuthenticationMethod: "session", AssuranceLevel: "standard",
 			AuthenticatedAt: "2026-08-05T13:00:00Z",
-			Policy: "approval-policy/v0.4.0", Reason: `approved & verified "controller" review`,
+			Policy:          "approval-policy/v0.4.0", Reason: `approved & verified "controller" review`,
 			ReviewedEnvelopeHash: "h1-reviewed-envelope", ResultingEnvelopeHash: "h2-resulting-envelope",
 		}
 		layer := core.VerifyPrincipalProvenance(approvedPayload, act)
@@ -874,19 +874,19 @@ type parityScenario struct {
 }
 
 type parityFixture struct {
-	Name             string                       `json:"name"`
-	SubjectType      core.SubjectType             `json:"subjectType"`
-	SubjectID        string                       `json:"subjectId"`
-	Seed             string                       `json:"seed"`
-	SubjectScope     parityScope                  `json:"subjectScope"`
-	Keys             map[string]parityKey         `json:"keys"`
-	Receipts         []core.SignedReceipt         `json:"receipts"`
-	Payloads         []core.ReceiptPayload        `json:"payloads"`
-	Provenance       []parityProvenance           `json:"provenance"`
-	SupersessionLink []paritySupersessionLink     `json:"supersessionLinks"`
-	Evidence         parityAvailability           `json:"evidence"`
-	Rules            parityRuleAvailability       `json:"rules"`
-	Scenarios        map[string]parityScenario    `json:"scenarios"`
+	Name             string                    `json:"name"`
+	SubjectType      core.SubjectType          `json:"subjectType"`
+	SubjectID        string                    `json:"subjectId"`
+	Seed             string                    `json:"seed"`
+	SubjectScope     parityScope               `json:"subjectScope"`
+	Keys             map[string]parityKey      `json:"keys"`
+	Receipts         []core.SignedReceipt      `json:"receipts"`
+	Payloads         []core.ReceiptPayload     `json:"payloads"`
+	Provenance       []parityProvenance        `json:"provenance"`
+	SupersessionLink []paritySupersessionLink  `json:"supersessionLinks"`
+	Evidence         parityAvailability        `json:"evidence"`
+	Rules            parityRuleAvailability    `json:"rules"`
+	Scenarios        map[string]parityScenario `json:"scenarios"`
 }
 
 // buildParityReport assembles the full memory verification report exactly as
