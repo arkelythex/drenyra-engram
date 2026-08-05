@@ -2217,7 +2217,6 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
 	}
 
-
 	// 4. Predecessor (design §3.7): a predecessor must concern the same pair
 	// and relation; a CONFIRMED predecessor stays current until the correction
 	// confirms (supersession is atomic with confirmation — design §5 step 7); a
@@ -2884,6 +2883,16 @@ func (s *SQLiteStore) WithdrawJudgment(ctx context.Context, cmd core.WithdrawJud
 	committed = true
 
 	return core.WithdrawJudgmentResult{JudgmentID: judgment.ID, Judgment: withdrawn, JudgmentEventID: eventID, IdempotentReplay: false}, nil
+}
+
+// GetJudgment returns the judgment with the given id, if any — the public
+// read-only surface of the judgment store (CLI `judge show`). It reads through
+// the pool connection and never participates in an adjudication transition:
+// every race-sensitive read lives inside the ProposeJudgment/ConfirmJudgment/
+// RejectJudgment/WithdrawJudgment transactions (design §2 — no FindJudgment +
+// mutate composition anywhere).
+func (s *SQLiteStore) GetJudgment(ctx context.Context, id string) (core.AccountingJudgment, bool) {
+	return s.readJudgment(ctx, s.db, id)
 }
 
 // JudgmentSuccessorOf routes readers from a superseded judgment to its

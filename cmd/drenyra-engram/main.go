@@ -79,6 +79,8 @@ func run(args []string) int {
 		return cmdApprove(args[1:])
 	case "auth":
 		return cmdAuth(args[1:])
+	case "judge":
+		return cmdJudge(args[1:])
 	case "reject":
 		return cmdReject(args[1:])
 	case "void":
@@ -713,6 +715,314 @@ func isAccountingRole(r auth.AccountingRole) bool {
 }
 
 // ──────────────────────────────────────────────
+// judge — authenticated judgment commands (v0.4.0 Step 2, design §7)
+// ──────────────────────────────────────────────
+
+// cmdJudge dispatches the adjudication surface: propose/withdraw carry the
+// agent provenance source of the CLI caller (never authority); confirm/reject
+// derive the principal ONLY from the stored 0600 CLI session — there is
+// deliberately NO --actor/--subject/--role flag on them (caller-supplied
+// authority is gone, the ADR-003 closure for adjudication); show is read-only.
+func cmdJudge(args []string) int {
+	if len(args) == 0 {
+		printJudgeUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "propose":
+		return cmdJudgePropose(args[1:])
+	case "confirm":
+		return cmdJudgeConfirm(args[1:])
+	case "reject":
+		return cmdJudgeReject(args[1:])
+	case "withdraw":
+		return cmdJudgeWithdraw(args[1:])
+	case "show":
+		return cmdJudgeShow(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown judge subcommand %q\n", args[0])
+		return 2
+	}
+}
+
+// cliJudgeSource is the provenance-only source of the agent CLI judgment
+// caller: {system: "cli", actorId: "cli", actorKind: "agent"}. It is
+// provenance, never authority — confirm/reject derive the principal from the
+// stored session, and only that verified principal may adjudicate (design
+// §3/§7).
+func cliJudgeSource() core.Source {
+	return core.Source{System: "cli", ActorID: "cli", ActorKind: core.ActorKindAgent}
+}
+
+// cliRequestID returns the caller's --request-id or, when absent, a freshly
+// generated UUID — the design §7 rule: --request-id is optional ONLY at the
+// CLI adapter, which generates a UUID when absent.
+func cliRequestID(requestID string) (string, error) {
+	if strings.TrimSpace(requestID) != "" {
+		return requestID, nil
+	}
+	return newRequestID()
+}
+
+func printJudgeUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: drenyra-engram judge propose <from-id> <to-id> --relation <rel> --reason <text> [--predecessor <id>] [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram judge confirm <judgment-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram judge reject <judgment-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram judge withdraw <judgment-id> [--request-id <id>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram judge show <judgment-id> [--db <path>]")
+}
+
+// cmdJudgePropose proposes a judgment over two existing observations with the
+// agent provenance source of the CLI caller. The relation is validated against
+// the six proposable relations; a fresh UUID requestId is generated when the
+// caller omits --request-id.
+func cmdJudgePropose(args []string) int {
+	fs := flag.NewFlagSet("judge propose", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	relation := fs.String("relation", "", "REQUIRED proposable relation: supports|contradicts|explains|reconciles|reverses|supersedes")
+	reason := fs.String("reason", "", "REQUIRED proposer justification")
+	predecessor := fs.String("predecessor", "", "id of an existing judgment this proposal corrects (optional)")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram judge propose <from-id> <to-id> --relation <rel> --reason <text> [--predecessor <id>] [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--relation": true, "--reason": true, "--predecessor": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 2 || strings.TrimSpace(*relation) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+	if !core.IsProposableRelation(core.Relation(*relation)) {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: judge propose: invalid relation %q — expected supports|contradicts|explains|reconciles|reverses|supersedes\n", *relation)
+		return 2
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("judge propose: %v", err)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	result, err := server.ProposeJudgment(context.Background(), st, core.ProposeJudgmentCommand{
+		FromID:        rest[0],
+		ToID:          rest[1],
+		Relation:      core.Relation(*relation),
+		Reason:        *reason,
+		RequestID:     key,
+		PredecessorID: *predecessor,
+	}, cliJudgeSource())
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdJudgeConfirm confirms a proposed judgment with the professional human
+// resolution. The principal is DERIVED from the stored CLI session (auth
+// login), never declared by the caller; each invocation generates a fresh
+// requestId when --request-id is absent.
+func cmdJudgeConfirm(args []string) int {
+	fs := flag.NewFlagSet("judge confirm", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	resolution := fs.String("resolution", "", "REQUIRED professional human resolution")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED proposed judgment hash the adjudicator actually saw")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram judge confirm <judgment-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--resolution": true, "--expected-hash": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*resolution) == "" || strings.TrimSpace(*expectedHash) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("judge confirm: %v", err)
+	}
+	result, err := server.ConfirmJudgment(context.Background(), st, authz.NewJudgmentPolicy(), core.ConfirmJudgmentCommand{
+		JudgmentID:           rest[0],
+		Resolution:           *resolution,
+		ExpectedJudgmentHash: *expectedHash,
+		RequestID:            key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdJudgeReject rejects a proposed judgment with a human reason — the same
+// authenticated pattern as confirm (principal from the stored CLI session
+// only; no caller-supplied authority flags).
+func cmdJudgeReject(args []string) int {
+	fs := flag.NewFlagSet("judge reject", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	reason := fs.String("reason", "", "REQUIRED human rejection reason")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED proposed judgment hash the adjudicator actually saw")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram judge reject <judgment-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--reason": true, "--expected-hash": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*reason) == "" || strings.TrimSpace(*expectedHash) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("judge reject: %v", err)
+	}
+	result, err := server.RejectJudgment(context.Background(), st, authz.NewJudgmentPolicy(), core.RejectJudgmentCommand{
+		JudgmentID:           rest[0],
+		Reason:               *reason,
+		ExpectedJudgmentHash: *expectedHash,
+		RequestID:            key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdJudgeWithdraw withdraws the caller's OWN proposal with the same agent
+// provenance source that proposed it (provenance continuity — never
+// professional authorization; the store enforces the identity match).
+func cmdJudgeWithdraw(args []string) int {
+	fs := flag.NewFlagSet("judge withdraw", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	requestID := fs.String("request-id", "", "idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram judge withdraw <judgment-id> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("judge withdraw: %v", err)
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	result, err := server.WithdrawJudgment(context.Background(), st, core.WithdrawJudgmentCommand{
+		JudgmentID: rest[0],
+		RequestID:  key,
+	}, cliJudgeSource())
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdJudgeShow is the read-only surface of the adjudication store: it prints
+// the judgment JSON (any status) without any transition.
+func cmdJudgeShow(args []string) int {
+	fs := flag.NewFlagSet("judge show", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram judge show <judgment-id> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := store.Open(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	judgment, ok := st.GetJudgment(context.Background(), rest[0])
+	if !ok {
+		return fail("JUDGMENT_NOT_FOUND: no judgment %q", rest[0])
+	}
+	return emit(judgment)
+}
+
+// ──────────────────────────────────────────────
 // supersede — promoted → superseded with a REQUIRED target
 // ──────────────────────────────────────────────
 
@@ -1136,6 +1446,11 @@ Usage:
   drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram auth login --token <token> [--db <path>]
   drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <list>   (DRENYRA_ENV=local_dev only)
+  drenyra-engram judge propose <from-id> <to-id> --relation <rel> --reason <text> [--predecessor <id>] [--request-id <id>] [--db <path>]   (agent provenance)
+  drenyra-engram judge confirm <judgment-id> --resolution <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
+  drenyra-engram judge reject <judgment-id> --reason <text> --expected-hash <hash> [--request-id <id>] [--db <path>]   (authenticated human gate)
+  drenyra-engram judge withdraw <judgment-id> [--request-id <id>] [--db <path>]
+  drenyra-engram judge show <judgment-id> [--db <path>]
   drenyra-engram reject <id> [--actor <name>] [--db <path>]    (human gate)
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
@@ -1153,6 +1468,11 @@ Flags:
   --any            match ANY query token (default: match ALL)
   --expected-envelope <hash> envelope hash the reviewer actually saw (approve, REQUIRED)
   --reason <text>            approval justification (approve, REQUIRED)
+  --relation <rel>           proposable adjudication relation (judge propose, REQUIRED)
+  --resolution <text>        professional human resolution (judge confirm, REQUIRED)
+  --expected-hash <hash>     proposed judgment hash the adjudicator actually saw (judge confirm/reject, REQUIRED)
+  --predecessor <id>         id of an existing judgment the proposal corrects (judge propose, optional)
+  --request-id <id>          idempotency key for judge commands (optional; a UUID is generated when absent)
   --actor <name>   actor recorded in the audit trail (default cli)
   --target <id>    replacing observation for supersede (REQUIRED)
   --addr <host:port> listen address for serve (default 127.0.0.1:8787)
@@ -1176,7 +1496,10 @@ RAW token only in a user-only (0600) config file
 (~/.config/drenyra-engram/session.json, or $DRENYRA_ENGRAM_SESSION); the
 store keeps only its SHA-256 hash. "auth seed-local-dev" provisions a
 local_dev identity + one expiring session and prints the raw token once
-(DRENYRA_ENV=local_dev only; rejected in production).
+(DRENYRA_ENV=local_dev only; rejected in production). judge confirm/reject
+use the SAME authenticated session — the verified principal is the only
+adjudicator; propose/withdraw carry agent provenance (cli/cli/agent) and
+never authorize.
 
 The engine surface is non-authorizing (contracts/provenance.md): there is no
 authorize/allow/execute command. Approve/Reject are the PROFESSIONAL review
