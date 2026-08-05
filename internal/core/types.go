@@ -35,6 +35,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -262,9 +263,18 @@ type Source struct {
 
 // Validity is the vigencia window: effective/expiry. Expired memories surface
 // as stale at read time, never as current fact.
+//
+// Source records the PROVENANCE of the vigencia (frozen decision, v0.3.0):
+//   - "declared"                    — written explicitly by a v2 caller
+//   - "migrated_from_effective_at_v1" — inferred during the v1→v2 migration
+//     (the v1 effective_at doubled as the vigencia start)
+//
+// An audit can therefore distinguish a vigencia originally confirmed from one
+// inferred historically — the inference never masquerades as declared data.
 type Validity struct {
 	EffectiveAt string `json:"effectiveAt,omitempty"`
 	ExpiresAt   string `json:"expiresAt,omitempty"`
+	Source      string `json:"source,omitempty"`
 }
 
 // ──────────────────────────────────────────────
@@ -607,11 +617,34 @@ func ComputeEnvelopeHash(m AccountingMemory) string {
 		m.ObservedAt,
 		m.SupersedesID,
 		m.ReceiptID,
-		strings.Join(m.EvidenceRefs, "\x00"),
-		strings.Join(m.RuleRefs, "\x00"),
+		canonicalRefs(m.EvidenceRefs),
+		canonicalRefs(m.RuleRefs),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
+}
+
+// canonicalRefs orders and deduplicates a reference list canonically.
+// evidenceRefs / ruleRefs are SETS: their order is not semantically
+// meaningful, so two memories with the same links in different orders MUST
+// produce the same envelope hash. When ordinal or role matters, the caller
+// should use an explicit EvidenceLink entity instead of a bare ref list
+// (frozen decision, v0.3.0).
+func canonicalRefs(refs []string) string {
+	seen := make(map[string]struct{}, len(refs))
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return strings.Join(out, "\x00")
 }
 
 // ──────────────────────────────────────────────

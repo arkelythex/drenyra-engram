@@ -40,7 +40,7 @@
   "expected": {
     "contentHash": "2cc60a52ba2a9eb66a5f9c6c29e57a95b04abfb45123ad60a93e1b90fcaf879e",
     "identityHash": "a80333cf354bb250d0586aff3dbfdd144e804fd06b43d71ea8145cb4b45b4339",
-    "envelopeHash": "9db29c50b46064b15a947d9dde46966c74386f0edfe1ac67c00c226761fe11f3",
+    "envelopeHash": "bebca29912076a32a0dc9c9b68fa867b5a95606d86ff4865f1eba5632fafff7d",
     "initialStatus": "pending_review",
     "canApproveAgent": false,
     "canApproveHuman": true

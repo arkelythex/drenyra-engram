@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS observations (
     observed_at      TEXT NOT NULL DEFAULT '',
     expires_at       TEXT NOT NULL DEFAULT '',
     validity_effective_at TEXT NOT NULL DEFAULT '',
+    validity_source      TEXT NOT NULL DEFAULT '',
     actor            TEXT NOT NULL DEFAULT '',
     timestamp        TEXT NOT NULL DEFAULT '',
     source           TEXT NOT NULL DEFAULT '',
@@ -369,6 +370,7 @@ func migrateV1ToV2(db *sql.DB) error {
 	}{
 		{"kind", "TEXT"}, {"status", "TEXT"}, {"fiscal_effect", "TEXT"},
 		{"recorded_at", "TEXT"}, {"observed_at", "TEXT"}, {"validity_effective_at", "TEXT"},
+		{"validity_source", "TEXT"},
 		{"source_json", "TEXT"}, {"content_hash", "TEXT"},
 		{"identity_hash", "TEXT"}, {"envelope_hash", "TEXT"},
 		{"evidence_refs_json", "TEXT"}, {"rule_refs_json", "TEXT"},
@@ -422,7 +424,8 @@ func migrateV1ToV2(db *sql.DB) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		UPDATE observations
 		SET kind = ?, status = ?, fiscal_effect = 'none', recorded_at = ?,
-		    effective_at = ?, validity_effective_at = ?, source_json = ?, content_hash = ?
+		    effective_at = ?, validity_effective_at = ?, validity_source = ?, source_json = ?, content_hash = ?,
+		    identity_hash = ?, envelope_hash = ?
 		WHERE id = ?`)
 	if err != nil {
 		_ = rows.Close()
@@ -431,12 +434,12 @@ func migrateV1ToV2(db *sql.DB) error {
 	defer func() { _ = stmt.Close() }()
 
 	type backfillRow struct {
-		id, kind, status, recordedAt, effectiveAt, validityEffectiveAt, sourceJSON, contentHash, identityHash, envelopeHash string
+		id, kind, status, recordedAt, effectiveAt, validityEffectiveAt, validitySource, sourceJSON, contentHash, identityHash, envelopeHash string
 	}
 	batch := make([]backfillRow, 0, migrationBatchSize)
 	flush := func() error {
 		for _, r := range batch {
-			if _, err := stmt.ExecContext(ctx, r.kind, r.status, r.recordedAt, r.effectiveAt, r.validityEffectiveAt, r.sourceJSON, r.contentHash, r.id); err != nil {
+			if _, err := stmt.ExecContext(ctx, r.kind, r.status, r.recordedAt, r.effectiveAt, r.validityEffectiveAt, r.validitySource, r.sourceJSON, r.contentHash, r.identityHash, r.envelopeHash, r.id); err != nil {
 				return fmt.Errorf("migrate v1→v2: backfill row %s: %w", r.id, err)
 			}
 		}
@@ -499,6 +502,7 @@ func migrateV1ToV2(db *sql.DB) error {
 			recordedAt:          recordedAt,
 			effectiveAt:         effectiveAt,
 			validityEffectiveAt: effAt,
+			validitySource:      migratedValiditySource(effAt),
 			sourceJSON:          string(sourceJSON),
 			contentHash:         contentHash,
 			identityHash:        identityHash,
@@ -740,15 +744,15 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-			expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
+			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
 		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
 		legacyStatusFor(memory.Status), string(memory.Status), string(memory.FiscalEffect),
 		memory.EffectiveAt, memory.RecordedAt, memory.ObservedAt,
-		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity),
+		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
 		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), memory.ReceiptID, memory.SupersedesID,
@@ -839,6 +843,29 @@ func legacyStatusFor(status core.MemoryStatus) string {
 	return "reviewed"
 }
 
+// validitySource returns the vigencia provenance for WRITTEN v2 memories:
+// a caller-supplied vigencia is "declared". Migrated rows carry
+// "migrated_from_effective_at_v1" (set by the backfill).
+// migratedValiditySource marks the vigencia provenance of a v1 row: the v1
+// effective_at doubled as the vigencia start, so an inferred vigencia is
+// explicitly recorded as such — it never masquerades as declared data.
+func migratedValiditySource(effAt string) string {
+	if effAt == "" {
+		return ""
+	}
+	return "migrated_from_effective_at_v1"
+}
+
+func validitySource(v *core.Validity) string {
+	if v == nil || (v.EffectiveAt == "" && v.ExpiresAt == "") {
+		return ""
+	}
+	if v.Source != "" {
+		return v.Source
+	}
+	return "declared"
+}
+
 func validityEffectiveAt(v *core.Validity) string {
 	if v == nil {
 		return ""
@@ -895,7 +922,7 @@ func nullableInt(v *int64) any {
 
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-	expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
+	expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 	confidence, materiality, receipt_id, supersedes_id, revision`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
@@ -911,7 +938,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		revision                                                           int
 	)
 	var (
-		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal                            sql.NullString
+		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
 		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
 		supersedesID, receiptID                                                                   sql.NullString
 		confidence                                                                                sql.NullFloat64
@@ -920,7 +947,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	if err := rs.Scan(
 		&id, &topicKey, &title, &typ, &kind, &scopeKind, &orgID, &companyID, &ruc, &period,
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
-		&expiresAt, &validityEffectiveAtVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
+		&expiresAt, &validityEffectiveAtVal, &validitySourceVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
 		&confidence, &materiality, &receiptID, &supersedesID, &revision,
 	); err != nil {
 		return core.AccountingMemory{}, err
@@ -960,7 +987,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		Revision:     revision,
 	}
 	if expiresAt != "" || validityEffectiveAtVal.String != "" {
-		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt}
+		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt, Source: validitySourceVal.String}
 	}
 	if confidence.Valid {
 		v := confidence.Float64
@@ -1430,15 +1457,15 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-			expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
+			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
 		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
 		legacyStatusFor(built.Status), string(built.Status), string(built.FiscalEffect),
 		built.EffectiveAt, built.RecordedAt, built.ObservedAt,
-		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity),
+		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
 		nullableFloat(built.Confidence), nullableInt(built.Materiality), built.ReceiptID, built.SupersedesID,

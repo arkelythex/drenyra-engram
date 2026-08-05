@@ -35,7 +35,7 @@
   "expected": {
     "contentHash": "b0e4cc7f28eb006d45894faef8d05a96cbe7485ea5ec1fa485df4ade51734b3f",
     "identityHash": "138b3c236a61376db07bcb18e5fe00a53b4ad1fd1e36a084dabc711c5d433f1d",
-    "envelopeHash": "d94d38981c3e40b526bbe14a1c3c8b0cd92fdbbb90685cf6095a95b606c43859",
+    "envelopeHash": "8e7c861e5091005083b6f75cec5f319462343870c348f22576929f277328b1fb",
     "initialStatus": "active",
     "canApproveAgent": false,
     "canApproveHuman": false
