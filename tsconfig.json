@@ -28,6 +28,8 @@
     "search",
     "lifecycle",
     "authority",
+    "auth",
+    "authz",
     "index.ts",
     "vitest.config.ts"
   ],

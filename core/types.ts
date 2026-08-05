@@ -124,6 +124,158 @@ export const FISCAL_EFFECTS: readonly FiscalEffect[] = [
 export type ActorKind = "human" | "agent" | "system";
 
 // ──────────────────────────────────────────────
+// v0.4.0 approval vocabulary (ADR-003 mirror)
+// ──────────────────────────────────────────────
+
+/**
+ * Declared materiality classification of a memory (v0.4.0 Step 1). Set by the
+ * writing agent; NULL (unset) is treated as `normal` by the approval policy.
+ * The policy classifies by this level and NEVER reinterprets the `materiality`
+ * threshold (frozen decision, 2026-08-05). Mirrors core.MaterialityLevel.
+ */
+export type MaterialityLevel = "normal" | "material" | "critical";
+
+export const MATERIALITY_LEVELS: readonly MaterialityLevel[] = [
+	"normal",
+	"material",
+	"critical",
+];
+
+/**
+ * How a principal proved its identity (v0.4.0). `oidc` is recognized but not
+ * resolvable in Step 1; `session`/`service_assertion` are opaque bearer
+ * credentials resolved by SHA-256 token hash; `local_dev` is loopback-only.
+ * Mirrors auth.AuthenticationMethod.
+ */
+export type AuthenticationMethod =
+	| "oidc"
+	| "session"
+	| "service_assertion"
+	| "local_dev";
+
+export const AUTHENTICATION_METHODS: readonly AuthenticationMethod[] = [
+	"oidc",
+	"session",
+	"service_assertion",
+	"local_dev",
+];
+
+/** Strength of the authentication evidence (v0.4.0). Mirrors auth.AssuranceLevel. */
+export type AssuranceLevel = "low" | "standard" | "strong";
+
+export const ASSURANCE_LEVELS: readonly AssuranceLevel[] = [
+	"low",
+	"standard",
+	"strong",
+];
+
+/**
+ * Professional accounting role (v0.4.0). The ladder
+ * `accountant < senior_accountant < controller` is the ONLY dominance relation;
+ * tax roles are explicit and never implied. Mirrors auth.AccountingRole.
+ */
+export type AccountingRole =
+	| "accountant"
+	| "senior_accountant"
+	| "controller"
+	| "tax_reviewer"
+	| "authorized_tax_professional";
+
+export const ACCOUNTING_ROLES: readonly AccountingRole[] = [
+	"accountant",
+	"senior_accountant",
+	"controller",
+	"tax_reviewer",
+	"authorized_tax_professional",
+];
+
+/**
+ * The deliberately narrow, serializable view of a verified principal: subject,
+ * membership, canonical roles, method, assurance and time. OMITS sessionId,
+ * token material, cookies and unrelated claims — the only fields approval
+ * events may record (ADR-003). Mirrors auth.PrincipalSnapshot.
+ */
+export interface PrincipalSnapshot {
+	subjectId: string;
+	membershipId: string;
+	/** Canonicalized: sorted and deduplicated. */
+	roles: AccountingRole[];
+	authenticationMethod: AuthenticationMethod;
+	assuranceLevel: AssuranceLevel;
+	authenticatedAt: string;
+}
+
+/**
+ * The authenticated, pre-verified principal used to authorize approvals
+ * (ADR-003). Read-only shape; NEVER assembled from caller-declared claims. The
+ * only construction path is the validating factory in `auth/principal.ts`
+ * (mirror of auth.Resolver.Authenticate).
+ */
+export interface VerifiedApprovalPrincipal {
+	readonly subjectId: string;
+	readonly tenantId: string;
+	readonly membershipId: string;
+	readonly companyScopes: readonly string[];
+	readonly roles: readonly AccountingRole[];
+	readonly authenticationMethod: AuthenticationMethod;
+	readonly assuranceLevel: AssuranceLevel;
+	/** RFC3339 authentication timestamp. */
+	readonly authenticatedAt: string;
+	/** Optional session continuity id; never a token or cookie. */
+	readonly sessionId?: string;
+}
+
+/**
+ * Pure authorization decision of the versioned approval policy (v0.4.0).
+ * Mirrors authz.Decision.
+ */
+export interface ApprovalAuthorizationDecision {
+	allowed: boolean;
+	/** Exactly `approval-policy/v0.4.0`. */
+	policyVersion: string;
+	/** Frozen reason code (or `AUTHORIZED` when allowed). */
+	reasonCode: string;
+}
+
+/**
+ * Frozen approval error codes (v0.4.0 Step 1) — the single source for the
+ * HTTP/MCP mapping. Mirrors the codes in auth/errors.go.
+ */
+export type ApprovalErrorCode =
+	| "AUTHENTICATION_REQUIRED"
+	| "PRINCIPAL_INVALID"
+	| "MEMBERSHIP_INACTIVE"
+	| "TENANT_SCOPE_MISMATCH"
+	| "COMPANY_SCOPE_DENIED"
+	| "ROLE_NOT_AUTHORIZED"
+	| "ASSURANCE_TOO_LOW"
+	| "MATERIALITY_LIMIT_EXCEEDED"
+	| "REASON_REQUIRED"
+	| "MEMORY_NOT_FOUND"
+	| "INVALID_TRANSITION"
+	| "ENVELOPE_MISMATCH"
+	| "ALREADY_DECIDED"
+	| "IDEMPOTENCY_CONFLICT";
+
+export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
+	"AUTHENTICATION_REQUIRED",
+	"PRINCIPAL_INVALID",
+	"MEMBERSHIP_INACTIVE",
+	"TENANT_SCOPE_MISMATCH",
+	"COMPANY_SCOPE_DENIED",
+	"ROLE_NOT_AUTHORIZED",
+	"ASSURANCE_TOO_LOW",
+	"MATERIALITY_LIMIT_EXCEEDED",
+	"REASON_REQUIRED",
+	"MEMORY_NOT_FOUND",
+	"INVALID_TRANSITION",
+	"ENVELOPE_MISMATCH",
+	"ALREADY_DECIDED",
+	"IDEMPOTENCY_CONFLICT",
+];
+
+
+// ──────────────────────────────────────────────
 // Content / source / validity
 // ──────────────────────────────────────────────
 
@@ -224,6 +376,14 @@ export interface AccountingMemory {
 	confidence?: number;
 	/** Optional monetary threshold in int64 cents (never float). */
 	materiality?: bigint;
+	/**
+	 * Declared materiality classification (v0.4.0): `normal|material|critical`.
+	 * NULL (unset) is treated as `normal` by the approval policy; the
+	 * `materiality` threshold is never reinterpreted by policy. Not persisted
+	 * until the v3 schema batch; does NOT participate in the envelope hash
+	 * (frozen decision). Mirrors core.MaterialityLevel.
+	 */
+	materialityLevel?: MaterialityLevel;
 	/** Canonical SHA-256 (hex) of the immutable content. */
 	contentHash: string;
 	/** SHA-256 (hex) of the DOMAIN identity (scope + topicKey + effectiveAt + source reference). */
@@ -339,6 +499,9 @@ export function cloneMemory(memory: AccountingMemory): AccountingMemory {
 		...(memory.materiality === undefined
 			? {}
 			: { materiality: memory.materiality }),
+		...(memory.materialityLevel === undefined
+			? {}
+			: { materialityLevel: memory.materialityLevel }),
 		contentHash: memory.contentHash,
 		...(memory.receiptId === undefined ? {} : { receiptId: memory.receiptId }),
 		...(memory.supersedesId === undefined
@@ -592,6 +755,14 @@ export function assertValidMemory(memory: AccountingMemory): void {
 	if (memory.materiality !== undefined && memory.materiality < 0n) {
 		throw new Error(
 			"INVALID_MATERIALITY: materiality must be >= 0 (int64 cents)",
+		);
+	}
+	if (
+		memory.materialityLevel !== undefined &&
+		!MATERIALITY_LEVELS.includes(memory.materialityLevel)
+	) {
+		throw new Error(
+			`INVALID_MATERIALITY_LEVEL: unknown materiality level "${memory.materialityLevel}" — expected normal|material|critical`,
 		);
 	}
 }

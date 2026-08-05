@@ -193,6 +193,33 @@ const (
 	FiscalEffectSunatFiling FiscalEffect = "sunat_filing"
 )
 
+// MaterialityLevel is the DECLARED materiality classification of a memory
+// (v0.4.0 Step 1). It is set by the writing agent; NULL (unset) is treated as
+// normal by the approval policy. The policy classifies by this level and NEVER
+// reinterprets the Materiality *int64 threshold field (frozen decision,
+// 2026-08-05).
+type MaterialityLevel string
+
+const (
+	// MaterialityNormal is the default classification (NULL = normal).
+	MaterialityNormal MaterialityLevel = "normal"
+	// MaterialityMaterial requires a senior accountant under the v0.4.0 policy.
+	MaterialityMaterial MaterialityLevel = "material"
+	// MaterialityCritical requires a controller under the v0.4.0 policy.
+	MaterialityCritical MaterialityLevel = "critical"
+)
+
+// IsValidMaterialityLevel reports whether level is a known materiality
+// classification. An empty level is INVALID for v2 writes; NULL is represented
+// by a nil pointer, never by an empty string.
+func IsValidMaterialityLevel(level MaterialityLevel) bool {
+	switch level {
+	case MaterialityNormal, MaterialityMaterial, MaterialityCritical:
+		return true
+	}
+	return false
+}
+
 // IsValidFiscalEffect reports whether effect is a known v2 fiscal effect.
 // An empty effect is INVALID for v2 writes; callers must classify (none is
 // explicit).
@@ -373,6 +400,12 @@ type AccountingMemory struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 	// Materiality is an optional monetary threshold in int64 cents (never float).
 	Materiality *int64 `json:"materiality,omitempty"`
+	// MaterialityLevel is the DECLARED classification (normal | material |
+	// critical), set by the writing agent; NULL = normal. v0.4.0 approval policy
+	// classifies by this level; the Materiality threshold is never reinterpreted
+	// by policy. NOT persisted yet (v3 schema batch); it does NOT participate in
+	// the envelope hash (frozen decision).
+	MaterialityLevel *MaterialityLevel `json:"materialityLevel,omitempty"`
 	// ContentHash is the canonical SHA-256 of the semantic content (see
 	// ComputeContentHash). Computed at write, never editable.
 	ContentHash string `json:"contentHash"`
@@ -545,6 +578,10 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 	if m.Materiality != nil {
 		mat := *m.Materiality
 		cloned.Materiality = &mat
+	}
+	if m.MaterialityLevel != nil {
+		ml := *m.MaterialityLevel
+		cloned.MaterialityLevel = &ml
 	}
 	cloned.EvidenceRefs = append([]string(nil), m.EvidenceRefs...)
 	cloned.RuleRefs = append([]string(nil), m.RuleRefs...)
@@ -793,6 +830,9 @@ func AssertValidMemory(m AccountingMemory) error {
 	}
 	if m.Materiality != nil && *m.Materiality < 0 {
 		return fmt.Errorf("INVALID_MATERIALITY: materiality must be >= 0 (int64 cents), got %d", *m.Materiality)
+	}
+	if m.MaterialityLevel != nil && !IsValidMaterialityLevel(*m.MaterialityLevel) {
+		return fmt.Errorf("INVALID_MATERIALITY_LEVEL: unknown materiality level %q — expected normal|material|critical", *m.MaterialityLevel)
 	}
 	return nil
 }
