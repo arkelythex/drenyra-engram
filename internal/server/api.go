@@ -1,24 +1,26 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module is the shared domain-service
-// layer for the engine surfaces; observation content is structured text
-// (What/Why/Where/Learned) with no monetary fields, so no money value is
-// computed here.
+// layer for the engine surfaces. The memory model carries no monetary fields
+// except the optional Materiality threshold (int64 cents); Confidence is a
+// probability (0..1), never money. No money value is computed here.
 //
 // Shared API — the single semantic surface exercised by every transport.
 // docs/architecture.md: "Surfaces are adapters. MCP, HTTP, TUI, and CLI exercise
 // the same domain services." All transports (CLI, HTTP, MCP) call this layer so
-// compare verdicts, lifecycle transitions, and scope semantics stay identical
+// approval gates, lifecycle transitions, and scope semantics stay identical
 // everywhere — the CLI never re-derives them.
 //
-// Non-authorization boundary (contracts/provenance.md): this layer deliberately
-// has NO authorize/approve/allow operation. Memory guides; it never authorizes.
-// Consumers route approvals through drenyra-ai gates and human professionals.
+// v2 approval gate (contracts/lifecycle.md): a memory with fiscalEffect != none
+// is saved as pending_review and can only reach `approved` through a HUMAN
+// actor (source.actorKind == human). Agents and systems record; they never
+// approve. This layer implements the mandatory human gate for approve/reject;
+// it still has NO authorize operation beyond the professional review of a
+// memory — memory guides, it never authorizes business actions.
 //
-// Error model: the engine's stable error codes are returned as error strings
-// (INVALID_SCOPE, OBSERVATION_NOT_FOUND, INVALID_TRANSITION, IMMUTABLE_*).
-// Transport adapters classify them with IsNotFound/IsInvalid/IsConflict so
-// HTTP status codes and MCP tool errors map the same way on every surface.
-
+// Error model: stable error codes are returned as error strings
+// (INVALID_SCOPE, MEMORY_NOT_FOUND, INVALID_TRANSITION, GATE_REQUIRES_HUMAN).
+// Transport adapters classify them with IsNotFound/IsInvalid/IsConflict/
+// IsGateError so HTTP status codes and MCP tool errors map the same way.
 package server
 
 import (
@@ -54,8 +56,28 @@ func New(st store.Store, defaultActor string) *API {
 // Writes
 // ──────────────────────────────────────────────
 
-// Save upserts an observation under its (topicKey, exact scope) chain.
+// Save validates and upserts a memory under its (topicKey, exact scope) chain,
+// applying the v2 approval gate:
+//   - recordedAt is the engine clock (automatic, immutable).
+//   - effectiveAt defaults to recordedAt when absent (callers that need a
+//     different accounting date pass it explicitly — critical for late events
+//     affecting a previous closed period).
+//   - status derives from fiscalEffect: none → active (informative); any
+//     non-none effect → pending_review (mandatory human approval gate).
+//   - contentHash is computed from the immutable content.
+//
+// A prior current revision of the same (topicKey, scope) is superseded with a
+// `supersedes` relation to the new revision (immutable history — nothing is
+// ever edited in place).
 func (a *API) Save(input core.SaveInput) (core.WriteResult, error) {
+	// The store owns derivation (recordedAt, status gate, contentHash, revision,
+	// supersession) and full v2 validation (AssertValidMemory covers scope,
+	// content, source, kind, status, fiscal effect, timestamps, confidence and
+	// materiality). This layer adds the explicit supersedes relation so the
+	// immutable-history chain is visible in the relation graph.
+	// The store records the supersedes relation atomically when it supersedes a
+	// previous revision of the chain (immutable history is visible in the
+	// relation graph).
 	return a.Store.Save(input)
 }
 
@@ -63,29 +85,29 @@ func (a *API) Save(input core.SaveInput) (core.WriteResult, error) {
 // Reads
 // ──────────────────────────────────────────────
 
-// Get returns the observation with the given id; OBSERVATION_NOT_FOUND when
-// absent (callers classify with IsNotFound).
-func (a *API) Get(id string) (core.Observation, error) {
-	observation, ok := a.Store.FindByID(id)
+// Get returns the memory with the given id; MEMORY_NOT_FOUND when absent
+// (callers classify with IsNotFound).
+func (a *API) Get(id string) (core.AccountingMemory, error) {
+	memory, ok := a.Store.FindByID(id)
 	if !ok {
-		return core.Observation{}, errors.New("OBSERVATION_NOT_FOUND: " + id)
+		return core.AccountingMemory{}, errors.New("MEMORY_NOT_FOUND: " + id)
 	}
-	return observation, nil
+	return memory, nil
 }
 
 // GetByTopic returns the latest revision of the (topicKey, exact scope) chain.
-func (a *API) GetByTopic(topicKey string, scope core.Scope) (core.Observation, error) {
-	observation, ok := a.Store.FindByTopicKey(topicKey, scope)
+func (a *API) GetByTopic(topicKey string, scope core.Scope) (core.AccountingMemory, error) {
+	memory, ok := a.Store.FindByTopicKey(topicKey, scope)
 	if !ok {
-		return core.Observation{}, errors.New("OBSERVATION_NOT_FOUND: topicKey " + topicKey)
+		return core.AccountingMemory{}, errors.New("MEMORY_NOT_FOUND: topicKey " + topicKey)
 	}
-	return observation, nil
+	return memory, nil
 }
 
 // Chain returns the FULL revision history of a (topicKey, exact scope) chain,
 // ordered by revision ascending (every revision, not just the current one —
 // the counterpart of GetByTopic).
-func (a *API) Chain(topicKey string, scope core.Scope) ([]core.Observation, error) {
+func (a *API) Chain(topicKey string, scope core.Scope) ([]core.AccountingMemory, error) {
 	if err := core.AssertValidScope(scope); err != nil {
 		return nil, err
 	}
@@ -97,7 +119,7 @@ func (a *API) Chain(topicKey string, scope core.Scope) ([]core.Observation, erro
 		return nil, err
 	}
 	if chain == nil {
-		chain = []core.Observation{}
+		chain = []core.AccountingMemory{}
 	}
 	return chain, nil
 }
@@ -117,14 +139,14 @@ func (a *API) Search(input search.Input) ([]search.Result, error) {
 
 // Context returns the CURRENT memory for a scope: the latest revision per
 // (topicKey, exact scope) chain, never the full revision history.
-func (a *API) Context(scope core.Scope) ([]core.Observation, error) {
-	observations, err := a.Store.FindByScope(scope)
+func (a *API) Context(scope core.Scope) ([]core.AccountingMemory, error) {
+	memories, err := a.Store.FindByScope(scope)
 	if err != nil {
 		return nil, err
 	}
-	current := search.LatestPerChain(observations)
+	current := search.LatestPerChain(memories)
 	if current == nil {
-		current = []core.Observation{}
+		current = []core.AccountingMemory{}
 	}
 	return current, nil
 }
@@ -151,18 +173,20 @@ func (a *API) Doctor() (store.DoctorReport, error) {
 // CompareOutput is the JSON shape of the compare operation (shared by every
 // transport so verdicts are byte-identical).
 type CompareOutput struct {
-	IDA             string               `json:"idA"`
-	IDB             string               `json:"idB"`
-	IdentityMatch   bool                 `json:"identityMatch"`
-	ScopeMatch      string               `json:"scopeMatch"`
-	StatusA         core.AuthorityStatus `json:"statusA"`
-	StatusB         core.AuthorityStatus `json:"statusB"`
-	ContentDeltas   ContentDeltas        `json:"contentDeltas"`
-	RelationVerdict string               `json:"relationVerdict"`
+	IDA             string            `json:"idA"`
+	IDB             string            `json:"idB"`
+	IdentityMatch   bool              `json:"identityMatch"`
+	ScopeMatch      string            `json:"scopeMatch"`
+	KindA           core.MemoryKind   `json:"kindA"`
+	KindB           core.MemoryKind   `json:"kindB"`
+	StatusA         core.MemoryStatus `json:"statusA"`
+	StatusB         core.MemoryStatus `json:"statusB"`
+	ContentDeltas   ContentDeltas     `json:"contentDeltas"`
+	RelationVerdict string            `json:"relationVerdict"`
 }
 
 // ContentDeltas flags which of the four structured fields differ between the
-// two observations (contracts/memory.md rule 1: What/Why/Where/Learned).
+// two memories (contracts/memory.md rule 1: What/Why/Where/Learned).
 type ContentDeltas struct {
 	What    bool `json:"what"`
 	Why     bool `json:"why"`
@@ -170,28 +194,30 @@ type ContentDeltas struct {
 	Learned bool `json:"learned"`
 }
 
-// Compare reports how two stored observations relate.
+// Compare reports how two stored memories relate.
 func (a *API) Compare(idA, idB string) (CompareOutput, error) {
-	aObs, err := a.Get(idA)
+	aMem, err := a.Get(idA)
 	if err != nil {
 		return CompareOutput{}, err
 	}
-	bObs, err := a.Get(idB)
+	bMem, err := a.Get(idB)
 	if err != nil {
 		return CompareOutput{}, err
 	}
 
-	identityMatch := aObs.Identity.ID == bObs.Identity.ID || aObs.Identity.TopicKey == bObs.Identity.TopicKey
+	identityMatch := aMem.Identity.ID == bMem.Identity.ID || aMem.Identity.TopicKey == bMem.Identity.TopicKey
 
 	return CompareOutput{
-		IDA:             aObs.Identity.ID,
-		IDB:             bObs.Identity.ID,
+		IDA:             aMem.Identity.ID,
+		IDB:             bMem.Identity.ID,
 		IdentityMatch:   identityMatch,
-		ScopeMatch:      compareScopeMatch(aObs.Scope, bObs.Scope),
-		StatusA:         aObs.AuthorityStatus,
-		StatusB:         bObs.AuthorityStatus,
-		ContentDeltas:   compareContentDeltas(aObs.Content, bObs.Content),
-		RelationVerdict: compareRelationVerdict(a, aObs, bObs, identityMatch),
+		ScopeMatch:      compareScopeMatch(aMem.Scope, bMem.Scope),
+		KindA:           aMem.Kind,
+		KindB:           bMem.Kind,
+		StatusA:         aMem.Status,
+		StatusB:         bMem.Status,
+		ContentDeltas:   compareContentDeltas(aMem.Content, bMem.Content),
+		RelationVerdict: compareRelationVerdict(a, aMem, bMem, identityMatch),
 	}, nil
 }
 
@@ -219,17 +245,13 @@ func compareContentDeltas(a, b core.Content) ContentDeltas {
 	}
 }
 
-// compareRelationVerdict decides how the two observations relate:
+// compareRelationVerdict decides how the two memories relate:
 //   - "supersedes" — the relations table records A→B as `supersedes` AND A (the
 //     superseded source) is stored as superseded — a completed supersede pair.
-//     The successor B is typically draft/promoted, never superseded itself.
-//   - "related" — the observations share a topicKey;
+//   - "related" — the memories share a topicKey;
 //   - "not_conflict" — otherwise.
-//
-// The supersedes check runs first so a completed supersede pair wins over the
-// weaker shared-topicKey signal.
-func compareRelationVerdict(a *API, aObs, bObs core.Observation, identityMatch bool) string {
-	if rel, ok := a.Store.RelationBetween(aObs.Identity.ID, bObs.Identity.ID); ok && rel == string(core.RelationSupersedes) && aObs.AuthorityStatus == core.StatusSuperseded {
+func compareRelationVerdict(a *API, aMem, bMem core.AccountingMemory, identityMatch bool) string {
+	if rel, ok := a.Store.RelationBetween(aMem.Identity.ID, bMem.Identity.ID); ok && rel == string(core.RelationSupersedes) && aMem.Status == core.StatusSuperseded {
 		return "supersedes"
 	}
 	if identityMatch {
@@ -239,86 +261,401 @@ func compareRelationVerdict(a *API, aObs, bObs core.Observation, identityMatch b
 }
 
 // ──────────────────────────────────────────────
-// Lifecycle — review / promote / supersede
+// Lifecycle — v2 human-gated approval machine
 // ──────────────────────────────────────────────
 
-// TransitionOutput is the JSON shape of review and promote.
+// TransitionOutput is the JSON shape of an approval lifecycle operation.
 type TransitionOutput struct {
-	ID       string               `json:"id"`
-	From     core.AuthorityStatus `json:"from"`
-	To       core.AuthorityStatus `json:"to"`
-	Revision int                  `json:"revision"`
+	ID       string            `json:"id"`
+	From     core.MemoryStatus `json:"from"`
+	To       core.MemoryStatus `json:"to"`
+	Revision int               `json:"revision"`
 }
 
-// Review moves an observation draft → reviewed (adjacent-forward only; illegal
-// moves fail closed with INVALID_TRANSITION, leaving the observation unchanged).
-func (a *API) Review(id, actor string) (TransitionOutput, error) {
-	return a.transition(id, core.StatusReviewed, actor)
+// Approve approves a pending_review memory. REQUIRES a human actor
+// (source.actorKind == human); anything else fails with GATE_REQUIRES_HUMAN.
+// The approval is recorded in the audit trail with actor + actorKind — approval
+// provenance, never an artificial relation.
+func (a *API) Approve(memoryID string, actor core.Source) (core.AccountingMemory, error) {
+	return a.gatedTransition(memoryID, actor, func(m *core.AccountingMemory, src core.Source) error {
+		return core.Approve(m, src)
+	})
 }
 
-// Promote moves an observation reviewed → promoted.
-func (a *API) Promote(id, actor string) (TransitionOutput, error) {
-	return a.transition(id, core.StatusPromoted, actor)
+// Reject rejects a pending_review memory (terminal). REQUIRES a human actor.
+func (a *API) Reject(memoryID string, actor core.Source) (core.AccountingMemory, error) {
+	return a.gatedTransition(memoryID, actor, func(m *core.AccountingMemory, src core.Source) error {
+		return core.Reject(m, src)
+	})
 }
 
-func (a *API) transition(id string, to core.AuthorityStatus, actor string) (TransitionOutput, error) {
-	if actor == "" {
-		actor = a.DefaultActor
+// Void voids an active | pending_review | approved memory (terminal, no
+// successor). Admits human or system actors (systemic correction), NEVER an
+// agent. The reason for the void is documented by creating a memory (the
+// caller records the correction context); the void itself is a status-only
+// transition.
+func (a *API) Void(memoryID string, actor core.Source) (core.AccountingMemory, error) {
+	return a.gatedTransition(memoryID, actor, func(m *core.AccountingMemory, src core.Source) error {
+		return core.Void(m, src)
+	})
+}
+
+// gatedTransition applies a lifecycle mutation (approve/reject/void) and
+// persists the resulting status transition with the actor's audit metadata.
+func (a *API) gatedTransition(memoryID string, actor core.Source, mutate func(*core.AccountingMemory, core.Source) error) (core.AccountingMemory, error) {
+	if actor.ActorID == "" {
+		actor.ActorID = a.DefaultActor
 	}
-	before, err := a.Get(id)
-	if err != nil {
-		return TransitionOutput{}, err
+	memory, ok := a.Store.FindByID(memoryID)
+	if !ok {
+		return core.AccountingMemory{}, errors.New("MEMORY_NOT_FOUND: " + memoryID)
 	}
-	updated, err := core.ApplyTransition(a.Store, id, to, core.TransitionMeta{
-		Actor:     actor,
+	before := memory.Status
+	if err := mutate(&memory, actor); err != nil {
+		return core.AccountingMemory{}, err
+	}
+	updated, err := a.Store.ApplyStatusTransition(memoryID, memory.Status, core.TransitionMeta{
+		Actor:     actor.ActorID,
+		ActorKind: actor.ActorKind,
 		Timestamp: nowISO(),
 	})
 	if err != nil {
-		return TransitionOutput{}, err
+		return core.AccountingMemory{}, err
 	}
-	return TransitionOutput{
-		ID:       updated.Identity.ID,
-		From:     before.AuthorityStatus,
-		To:       updated.AuthorityStatus,
-		Revision: updated.Revision,
-	}, nil
+	_ = before // the audit trail records from/to; kept for clarity
+	return updated, nil
 }
 
-// SupersedeOutput is the JSON shape of the supersede operation.
+// SupersedeOutput is the JSON shape of the explicit supersede operation.
 type SupersedeOutput struct {
-	ID       string               `json:"id"`
-	From     core.AuthorityStatus `json:"from"`
-	To       core.AuthorityStatus `json:"to"`
-	TargetID string               `json:"targetId"`
+	ID       string            `json:"id"`
+	From     core.MemoryStatus `json:"from"`
+	To       core.MemoryStatus `json:"to"`
+	TargetID string            `json:"targetId"`
 }
 
-// Supersede marks a promoted observation superseded and records a `supersedes`
-// relation to the REQUIRED target (never auto-promotes the replacement —
-// contracts/lifecycle.md rule 1).
-func (a *API) Supersede(id, targetID, actor string) (SupersedeOutput, error) {
-	if actor == "" {
-		actor = a.DefaultActor
+// Supersede explicitly marks a memory superseded and records a `supersedes`
+// relation to the REQUIRED successor (never auto-promotes the replacement).
+// Immutable history: the superseded memory stays visible and routes readers to
+// the successor. (Save also supersedes automatically when a chain evolves.)
+func (a *API) Supersede(memoryID, successorID string, actor core.Source) (SupersedeOutput, error) {
+	if actor.ActorID == "" {
+		actor.ActorID = a.DefaultActor
 	}
-	before, err := a.Get(id)
+	before, err := a.Get(memoryID)
 	if err != nil {
 		return SupersedeOutput{}, err
 	}
-	updated, err := core.Supersede(core.SupersedeInput{
-		Store:         a.Store,
-		ObservationID: id,
-		TargetID:      targetID,
-		Actor:         actor,
-		Timestamp:     nowISO(),
+	if _, err := a.Get(successorID); err != nil {
+		return SupersedeOutput{}, err
+	}
+	if memoryID == successorID {
+		return SupersedeOutput{}, errors.New("INVALID_SUPERSEDE_TARGET: a memory cannot supersede itself")
+	}
+	// Legality via the lifecycle machine, then one atomic low-level mutation.
+	superseded := core.CloneMemory(before)
+	if err := core.SupersedePrev(&superseded, successorID); err != nil {
+		return SupersedeOutput{}, err
+	}
+	updated, err := a.Store.SupersedeExplicit(memoryID, successorID, core.TransitionMeta{
+		Actor:     actor.ActorID,
+		ActorKind: actor.ActorKind,
+		Timestamp: nowISO(),
 	})
 	if err != nil {
 		return SupersedeOutput{}, err
 	}
 	return SupersedeOutput{
 		ID:       updated.Identity.ID,
-		From:     before.AuthorityStatus,
-		To:       updated.AuthorityStatus,
-		TargetID: targetID,
+		From:     before.Status,
+		To:       updated.Status,
+		TargetID: successorID,
 	}, nil
+}
+
+// ──────────────────────────────────────────────
+// Evidence / rule links (immutable memory, growing links)
+// ──────────────────────────────────────────────
+
+// LinkEvidence attaches evidence references (XML/PDF/CDR/extracto) to a memory
+// AFTER write. The memory itself is never mutated (immutability); links live in
+// the dedicated evidence_links table. Returns the full deduplicated list
+// (write-time refs + links).
+func (a *API) LinkEvidence(memoryID string, refs []string, actor string) ([]string, error) {
+	memory, ok := a.Store.FindByID(memoryID)
+	if !ok {
+		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if actor == "" {
+		actor = a.DefaultActor
+	}
+	seen := make(map[string]struct{})
+	for _, ref := range memory.EvidenceRefs {
+		seen[ref] = struct{}{}
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		if err := a.Store.AddEvidenceLink(memoryID, ref, actor); err != nil {
+			return nil, err
+		}
+		seen[ref] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for ref := range seen {
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+// LinkRules attaches rule/policy references (e.g. "policy/igv/late-document-v3")
+// to a memory AFTER write. Same immutability contract as LinkEvidence.
+func (a *API) LinkRules(memoryID string, refs []string, actor string) ([]string, error) {
+	memory, ok := a.Store.FindByID(memoryID)
+	if !ok {
+		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if actor == "" {
+		actor = a.DefaultActor
+	}
+	seen := make(map[string]struct{})
+	for _, ref := range memory.RuleRefs {
+		seen[ref] = struct{}{}
+	}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			continue
+		}
+		if err := a.Store.AddRuleLink(memoryID, ref, actor); err != nil {
+			return nil, err
+		}
+		seen[ref] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for ref := range seen {
+		out = append(out, ref)
+	}
+	return out, nil
+}
+
+// ──────────────────────────────────────────────
+// Judge — documented professional resolution of a conflict
+// ──────────────────────────────────────────────
+
+// Judge records a professional adjudication of a conflict: it creates a
+// decision memory (kind decision, informative fiscal effect) approved by the
+// human actor, explaining how the conflict was resolved, and links it to the
+// conflict with an `explains` relation. REQUIRES a human actor — a machine
+// cannot adjudicate professional conflicts (GATE_REQUIRES_HUMAN otherwise).
+func (a *API) Judge(conflictID string, resolution string, actor core.Source) (core.AccountingMemory, error) {
+	if err := core.AssertHumanApproval(actor); err != nil {
+		return core.AccountingMemory{}, err
+	}
+	conflict, err := a.Get(conflictID)
+	if err != nil {
+		return core.AccountingMemory{}, err
+	}
+	if strings.TrimSpace(resolution) == "" {
+		return core.AccountingMemory{}, errors.New("INVALID_RESOLUTION: resolution must be a non-empty string")
+	}
+	// The adjudication is an informative decision (fiscalEffect none → active)
+	// recorded by a HUMAN actor; its provenance is the approval evidence. It
+	// lives in the SAME tenant/period as the conflict (never cross-tenant).
+	result, err := a.Save(core.SaveInput{
+		TopicKey: "judgment/" + conflictID,
+		Title:    "Resolución de conflicto",
+		Kind:     core.KindDecision,
+		Scope:    conflict.Scope,
+		Content: core.Content{
+			What:    resolution,
+			Why:     "Adjudicación profesional documentada del conflicto " + conflictID,
+			Where:   conflictID,
+			Learned: "Resolución registrada como memoria institucional; la evidencia permanece.",
+		},
+		FiscalEffect: core.FiscalEffectNone,
+		Source:       actor,
+	})
+	if err != nil {
+		return core.AccountingMemory{}, err
+	}
+	if err := a.Store.Relate(result.Memory.Identity.ID, conflictID, core.RelationExplains, &core.RelationMeta{
+		Actor:     actor.ActorID,
+		Timestamp: nowISO(),
+	}); err != nil {
+		return core.AccountingMemory{}, err
+	}
+	return result.Memory, nil
+}
+
+// ──────────────────────────────────────────────
+// Period summary — the killer demo (explainable institutional memory)
+// ──────────────────────────────────────────────
+
+// PeriodSummaryOutput is the aggregated, explainable view of a fiscal period.
+type PeriodSummaryOutput struct {
+	Scope             core.Scope                `json:"scope"`
+	Total             int                       `json:"total"`
+	ByKind            map[core.MemoryKind]int   `json:"byKind"`
+	ByStatus          map[core.MemoryStatus]int `json:"byStatus"`
+	PendingApprovals  []core.AccountingMemory   `json:"pendingApprovals"`
+	ActiveObligations []core.AccountingMemory   `json:"activeObligations"`
+	ActiveExceptions  []core.AccountingMemory   `json:"activeExceptions"`
+	Narrative         []NarrativeItem           `json:"narrative"`
+	NarrativeText     string                    `json:"narrativeText"`
+}
+
+// NarrativeItem is one line of the explainable period narrative (the killer
+// demo: "why did account 4011 end with this balance").
+type NarrativeItem struct {
+	MemoryID    string          `json:"memoryId"`
+	EffectiveAt string          `json:"effectiveAt"`
+	Kind        core.MemoryKind `json:"kind"`
+	Title       string          `json:"title"`
+	What        string          `json:"what"`
+}
+
+// PeriodSummary aggregates the memories of an exact scope (company + period) and
+// composes an explainable narrative ordered by accounting-effective date.
+//   - ByKind / ByStatus: counts over ALL memories of the scope.
+//   - PendingApprovals: memories awaiting the human approval gate.
+//   - ActiveObligations / ActiveExceptions: current (non-terminal) obligations
+//     and exceptions.
+//   - Narrative: fact/decision/exception memories in current states, ordered by
+//     EffectiveAt ASC — the institutional story of the period.
+func (a *API) PeriodSummary(scope core.Scope) (PeriodSummaryOutput, error) {
+	if err := core.AssertValidScope(scope); err != nil {
+		return PeriodSummaryOutput{}, err
+	}
+	memories, err := a.Store.FindByScope(scope)
+	if err != nil {
+		return PeriodSummaryOutput{}, err
+	}
+	current := search.LatestPerChain(memories)
+
+	out := PeriodSummaryOutput{
+		Scope:             scope,
+		Total:             len(current),
+		ByKind:            make(map[core.MemoryKind]int),
+		ByStatus:          make(map[core.MemoryStatus]int),
+		PendingApprovals:  []core.AccountingMemory{},
+		ActiveObligations: []core.AccountingMemory{},
+		ActiveExceptions:  []core.AccountingMemory{},
+		Narrative:         []NarrativeItem{},
+	}
+	for _, memory := range current {
+		out.ByKind[memory.Kind]++
+		out.ByStatus[memory.Status]++
+		switch memory.Status {
+		case core.StatusPendingReview:
+			out.PendingApprovals = append(out.PendingApprovals, memory)
+		}
+		if memory.Status == core.StatusActive || memory.Status == core.StatusPendingReview || memory.Status == core.StatusApproved {
+			switch memory.Kind {
+			case core.KindObligation:
+				out.ActiveObligations = append(out.ActiveObligations, memory)
+			case core.KindException:
+				out.ActiveExceptions = append(out.ActiveExceptions, memory)
+			}
+		}
+		if isNarrativeKind(memory) {
+			out.Narrative = append(out.Narrative, NarrativeItem{
+				MemoryID:    memory.Identity.ID,
+				EffectiveAt: memory.EffectiveAt,
+				Kind:        memory.Kind,
+				Title:       memory.Title,
+				What:        memory.Content.What,
+			})
+		}
+	}
+
+	sortNarrativeByEffectiveAt(out.Narrative)
+
+	period := scope.Period
+	if period == "" {
+		period = "scope"
+	}
+	var sb strings.Builder
+	sb.WriteString("Periodo ")
+	sb.WriteString(period)
+	sb.WriteString(" — ")
+	sb.WriteString(itoa(len(out.Narrative)))
+	sb.WriteString(" memorias relevantes:\n")
+	for _, item := range out.Narrative {
+		sb.WriteString("- ")
+		sb.WriteString(item.Title)
+		sb.WriteString(": ")
+		sb.WriteString(item.What)
+		sb.WriteString(" (efectivo ")
+		sb.WriteString(item.EffectiveAt)
+		sb.WriteString(")\n")
+	}
+	out.NarrativeText = sb.String()
+	return out, nil
+}
+
+// isNarrativeKind reports whether a memory participates in the period
+// narrative: fact / decision / exception in a current (non-terminal) state.
+// Terminal states (superseded, voided, rejected) never narrate current facts.
+func isNarrativeKind(memory core.AccountingMemory) bool {
+	if memory.Status == core.StatusSuperseded || memory.Status == core.StatusVoided || memory.Status == core.StatusRejected {
+		return false
+	}
+	switch memory.Kind {
+	case core.KindFact, core.KindDecision, core.KindException:
+		return true
+	}
+	return false
+}
+
+// sortNarrativeByEffectiveAt orders narrative items by effective date ascending
+// (stable — ties keep insertion order).
+func sortNarrativeByEffectiveAt(items []NarrativeItem) {
+	for i := 1; i < len(items); i++ {
+		for j := i; j > 0; j-- {
+			if lessEffective(items[j], items[j-1]) {
+				items[j], items[j-1] = items[j-1], items[j]
+			} else {
+				break
+			}
+		}
+	}
+}
+
+func lessEffective(a, b NarrativeItem) bool {
+	ta, oka := core.ParseDateTime(a.EffectiveAt)
+	tb, okb := core.ParseDateTime(b.EffectiveAt)
+	if !oka {
+		return false
+	}
+	if !okb {
+		return true
+	}
+	return ta.Before(tb)
+}
+
+// itoa is a small allocation-free int formatter for the narrative (avoids
+// importing strconv for a single use).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	pos := len(buf)
+	negative := n < 0
+	if negative {
+		n = -n
+	}
+	for n > 0 {
+		pos--
+		buf[pos] = byte('0' + n%10)
+		n /= 10
+	}
+	if negative {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
 }
 
 // nowISO is the API's event timestamp: current UTC time in RFC3339, which the
@@ -334,12 +671,11 @@ func nowISO() string {
 
 // IsNotFound reports whether err is a not-found failure (404 on HTTP).
 func IsNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "OBSERVATION_NOT_FOUND")
+	return err != nil && strings.Contains(err.Error(), "MEMORY_NOT_FOUND")
 }
 
 // IsInvalid reports whether err is a caller/validation failure (400 on HTTP):
-// malformed scope, RUC, period, content, provenance, topic key or supersede
-// target.
+// malformed scope, RUC, period, content, source, topic key or supersede target.
 func IsInvalid(err error) bool {
 	if err == nil {
 		return false
@@ -357,4 +693,10 @@ func IsConflict(err error) bool {
 	}
 	message := err.Error()
 	return strings.Contains(message, "INVALID_TRANSITION") || strings.Contains(message, "IMMUTABLE_")
+}
+
+// IsGateError reports whether err is the mandatory human-approval gate
+// (403 on HTTP): approve/reject requires a human actor.
+func IsGateError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "GATE_REQUIRES_HUMAN")
 }

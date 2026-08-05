@@ -85,11 +85,11 @@ func TestHTTPSaveAndGet(t *testing.T) {
 		t.Fatalf("decode save: %v", err)
 	}
 
-	status, raw = httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/"+result.Observation.Identity.ID, "", nil)
+	status, raw = httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/"+result.Memory.Identity.ID, "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("get status = %d, want 200; body %s", status, raw)
 	}
-	var observation core.Observation
+	var observation core.AccountingMemory
 	if err := json.Unmarshal([]byte(raw), &observation); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
@@ -171,12 +171,14 @@ func TestHTTPLifecycleConflict(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
 		t.Fatalf("decode save: %v", err)
 	}
-	id := result.Observation.Identity.ID
+	id := result.Memory.Identity.ID
 
-	// promote from draft (skip reviewed) is an illegal transition → 409.
-	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/observations/"+id+"/promote", "", nil)
+	// Approving an ACTIVE (informative, never-gated) memory is an illegal
+	// transition → 409.
+	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/observations/"+id+"/approve", "",
+		map[string]string{"actorId": "maria.torres", "actorKind": "human"})
 	if status != http.StatusConflict {
-		t.Fatalf("promote status = %d, want 409; body %s", status, raw)
+		t.Fatalf("approve status = %d, want 409; body %s", status, raw)
 	}
 	if !strings.Contains(raw, "INVALID_TRANSITION") {
 		t.Fatalf("body %q must carry INVALID_TRANSITION", raw)
@@ -187,15 +189,9 @@ func TestHTTPCompareSupersedes(t *testing.T) {
 	ts, api := newTestHTTPServer(t, "")
 	scope := testScope(testRucA)
 	old := saveOne(t, api, validInput("topic/cmp", "CMP", "old", scope))
-	target := saveOne(t, api, validInput("topic/cmp", "CMP", "new", scope))
+	target := saveOne(t, api, validInput("topic/cmp2", "CMP2", "new", scope))
 
-	if _, err := api.Review(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	if _, err := api.Promote(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("promote: %v", err)
-	}
-	if _, err := api.Supersede(old.Identity.ID, target.Identity.ID, "test"); err != nil {
+	if _, err := api.Supersede(old.Identity.ID, target.Identity.ID, humanSource("maria.torres")); err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
 
@@ -302,7 +298,7 @@ func TestHTTPChainFullHistory(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body %s", status, raw)
 	}
-	var chain []core.Observation
+	var chain []core.AccountingMemory
 	if err := json.Unmarshal([]byte(raw), &chain); err != nil {
 		t.Fatalf("decode chain: %v", err)
 	}

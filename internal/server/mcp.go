@@ -283,26 +283,22 @@ func ToolCatalog() []map[string]any {
 	return []map[string]any{
 		{
 			"name":        "engram_save",
-			"description": "Upsert an observation under a topic key + exact scope. Each save creates a NEW immutable revision (created/updated); content, scope and provenance never change after write.",
+			"description": "Upsert an accounting memory (v2) under a topic key + exact scope. Each save creates a NEW immutable revision (created/updated); content, scope, source and contentHash never change after write. fiscalEffect != none lands pending_review behind the human gate.",
 			"inputSchema": objectSchema(map[string]any{
-				"topicKey": stringSchema("stable upsert handle for evolving knowledge (required)"),
-				"title":    stringSchema("short searchable title (required)"),
-				"type":     stringSchema("free-form observation category, e.g. decision, discovery, pattern (optional)"),
-				"scope":    scopeSchema(),
-				"content":  contentSchema(),
-				"authorityStatus": enumSchema("optional initial lifecycle state (default draft)",
-					"draft", "reviewed", "promoted", "superseded"),
-				"validity": objectSchema(map[string]any{
-					"effectiveAt": stringSchema("UTC ISO-8601 effective time (optional)"),
-					"expiresAt":   stringSchema("UTC ISO-8601 expiry time (optional); expired observations surface as stale"),
-				}),
-				"provenance": objectSchema(map[string]any{
-					"actor":     stringSchema("who created it (required)"),
-					"timestamp": stringSchema("UTC ISO-8601 creation time (required)"),
-					"source":    stringSchema("where it came from, e.g. cli, http, mcp (required)"),
+				"topicKey":     stringSchema("stable upsert handle for evolving knowledge (required)"),
+				"title":        stringSchema("short searchable title (required)"),
+				"kind":         stringSchema("accounting kind: fact|evidence|decision|rule|exception|control|obligation|summary (required)"),
+				"fiscalEffect": stringSchema("none|journal_entry|declaration|closing|adjustment|reclassification|approval|sunat_filing (required)"),
+				"effectiveAt":  stringSchema("when it happened ACCOUNTING-wise, ISO-8601 (required; default record time)"),
+				"scope":        scopeSchema(),
+				"content":      contentSchema(),
+				"source": objectSchema(map[string]any{
+					"system":    stringSchema("which system produced the event (required)"),
+					"actorId":   stringSchema("who (required for human actors)"),
+					"actorKind": stringSchema("human|agent|system (required)"),
 					"session":   stringSchema("optional session id"),
-				}, "actor", "timestamp", "source"),
-			}, "topicKey", "title", "type", "scope", "content", "provenance"),
+				}, "system", "actorKind"),
+			}, "topicKey", "title", "kind", "fiscalEffect", "scope", "content", "source"),
 		},
 		{
 			"name":        "engram_get",
@@ -360,20 +356,31 @@ func ToolCatalog() []map[string]any {
 			"inputSchema": objectSchema(nil),
 		},
 		{
-			"name":        "engram_review",
-			"description": "Lifecycle transition draft → reviewed. Adjacent-forward only; illegal moves fail with INVALID_TRANSITION and leave the observation unchanged.",
+			"name":        "engram_approve",
+			"description": "Approve a pending_review memory. REQUIRES a human actor; machine approval fails with GATE_REQUIRES_HUMAN. Approval is recorded in the audit trail with actor and actor kind.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":    stringSchema("observation id"),
-				"actor": stringSchema("actor recorded in the audit trail (optional)"),
-			}, "id"),
+				"id":        stringSchema("memory id"),
+				"actorId":   stringSchema("human professional id (required for approval)"),
+				"actorKind": stringSchema("actor kind: human|agent|system (approval requires human)"),
+			}, "id", "actorId"),
 		},
 		{
-			"name":        "engram_promote",
-			"description": "Lifecycle transition reviewed → promoted. Adjacent-forward only; illegal moves fail with INVALID_TRANSITION.",
+			"name":        "engram_reject",
+			"description": "Reject a pending_review memory (terminal). REQUIRES a human actor.",
 			"inputSchema": objectSchema(map[string]any{
-				"id":    stringSchema("observation id"),
-				"actor": stringSchema("actor recorded in the audit trail (optional)"),
-			}, "id"),
+				"id":        stringSchema("memory id"),
+				"actorId":   stringSchema("human professional id (required for rejection)"),
+				"actorKind": stringSchema("actor kind: human|agent|system (rejection requires human)"),
+			}, "id", "actorId"),
+		},
+		{
+			"name":        "engram_void",
+			"description": "Void an active|pending_review|approved memory (terminal, no successor). Admits human or system actors, NEVER an agent.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":        stringSchema("memory id"),
+				"actorId":   stringSchema("actor id"),
+				"actorKind": stringSchema("actor kind: human|agent|system (void requires human or system)"),
+			}, "id", "actorId"),
 		},
 		{
 			"name":        "engram_supersede",
@@ -392,6 +399,86 @@ func ToolCatalog() []map[string]any {
 		{
 			"name":        "engram_transitions",
 			"description": "The full lifecycle audit trail: every status transition with actor and timestamp.",
+			"inputSchema": objectSchema(nil),
+		},
+		// ── accounting_* (v2): the accounting-native surface ──
+		{
+			"name":        "accounting_record",
+			"description": "Record an accounting memory (fact/evidence/decision/rule/exception/control/obligation/summary) with fiscal effect, effective/observed dates and structured source. fiscalEffect != none lands pending_review behind the human gate.",
+			"inputSchema": objectSchema(map[string]any{
+				"topicKey":     stringSchema("stable accounting-fiscal topic key (e.g. account/4011/igv-payable)"),
+				"title":        stringSchema("short verb + what title"),
+				"kind":         stringSchema("fact|evidence|decision|rule|exception|control|obligation|summary"),
+				"fiscalEffect": stringSchema("none|journal_entry|declaration|closing|adjustment|reclassification|approval|sunat_filing"),
+				"effectiveAt":  stringSchema("when it happened ACCOUNTING-wise (ISO-8601)"),
+				"observedAt":   stringSchema("when it was detected (ISO-8601, optional)"),
+				"source":       stringSchema(`JSON: {"system": "...", "actorId": "...", "actorKind": "human|agent|system", "session": "..."}`),
+			}, "topicKey", "title", "kind", "fiscalEffect", "effectiveAt"),
+		},
+		{
+			"name":        "accounting_get",
+			"description": "Get one accounting memory by immutable id (any revision, any status).",
+			"inputSchema": objectSchema(map[string]any{"id": stringSchema("memory id")}, "id"),
+		},
+		{
+			"name":        "accounting_search",
+			"description": "Scope-first accounting search with kind/status/fiscal-effect filters. The scope filter runs BEFORE ranking — out-of-scope knowledge is never scored.",
+			"inputSchema": objectSchema(map[string]any{
+				"query":        stringSchema("search text"),
+				"scope":        stringSchema(`JSON scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"}`),
+				"kinds":        stringSchema("comma-separated kinds to include (optional)"),
+				"status":       stringSchema("comma-separated statuses to include (optional)"),
+				"fiscalEffect": stringSchema("exact fiscal effect filter (optional)"),
+			}, "query", "scope"),
+		},
+		{
+			"name":        "accounting_timeline",
+			"description": "Full revision timeline of a (topicKey, exact scope) chain, ordered by revision ascending — the provenance line of a memory.",
+			"inputSchema": objectSchema(map[string]any{
+				"topicKey": stringSchema("stable topic key"),
+				"scope":    stringSchema(`JSON scope`),
+			}, "topicKey", "scope"),
+		},
+		{
+			"name":        "accounting_compare",
+			"description": "Compare two accounting memories: identity/scope/kind/status deltas and the relation verdict (supersedes/related/not_conflict).",
+			"inputSchema": objectSchema(map[string]any{"idA": stringSchema("memory id"), "idB": stringSchema("memory id")}, "idA", "idB"),
+		},
+		{
+			"name":        "accounting_judge",
+			"description": "Record a PROFESSIONAL adjudication of a conflict (REQUIRES a human actorId): creates an approved decision memory linked to the conflict with an explains relation.",
+			"inputSchema": objectSchema(map[string]any{
+				"conflictId": stringSchema("id of the conflicting memory"),
+				"resolution": stringSchema("the documented professional resolution"),
+				"actorId":    stringSchema("human professional id (REQUIRED)"),
+			}, "conflictId", "resolution", "actorId"),
+		},
+		{
+			"name":        "accounting_link_evidence",
+			"description": "Attach evidence references (XML/PDF/CDR/extracto) to a memory AFTER write — the memory stays immutable, the links grow.",
+			"inputSchema": objectSchema(map[string]any{
+				"id":    stringSchema("memory id"),
+				"refs":  stringSchema("comma-separated evidence refs"),
+				"actor": stringSchema("actor id recorded on the links (optional)"),
+			}, "id", "refs"),
+		},
+		{
+			"name":        "accounting_period_summary",
+			"description": "Explainable period summary: counts by kind/status, pending human approvals, active obligations/exceptions and the effectiveAt-ordered narrative (the killer demo — why did account 4011 end with this balance).",
+			"inputSchema": objectSchema(map[string]any{
+				"scope": stringSchema(`JSON scope with period`),
+			}, "scope"),
+		},
+		{
+			"name":        "accounting_context",
+			"description": "Current accounting memory for a scope: latest revision per (topicKey, scope) chain.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope": stringSchema(`JSON scope`),
+			}, "scope"),
+		},
+		{
+			"name":        "accounting_doctor",
+			"description": "Store health snapshot: schema version, storage, counts. Fails closed on corruption.",
 			"inputSchema": objectSchema(nil),
 		},
 	}
@@ -567,10 +654,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(report)), nil
 
-	case "engram_review", "engram_promote":
+	case "engram_approve", "engram_reject", "engram_void":
 		var args struct {
-			ID    string `json:"id"`
-			Actor string `json:"actor"`
+			ID        string `json:"id"`
+			ActorID   string `json:"actorId"`
+			ActorKind string `json:"actorKind"`
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
@@ -578,14 +666,25 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("id", args.ID); err != nil {
 			return nil, err
 		}
+		source := core.Source{
+			System:    "mcp",
+			ActorID:   args.ActorID,
+			ActorKind: core.ActorKind(args.ActorKind),
+		}
+		if err := requireExplicitActor(source, call.Name == "engram_void"); err != nil {
+			return errTextContent(err), nil
+		}
 		var (
-			output TransitionOutput
+			output core.AccountingMemory
 			err    error
 		)
-		if call.Name == "engram_review" {
-			output, err = m.api.Review(args.ID, args.Actor)
-		} else {
-			output, err = m.api.Promote(args.ID, args.Actor)
+		switch call.Name {
+		case "engram_approve":
+			output, err = m.api.Approve(args.ID, source)
+		case "engram_reject":
+			output, err = m.api.Reject(args.ID, source)
+		case "engram_void":
+			output, err = m.api.Void(args.ID, source)
 		}
 		if err != nil {
 			return errTextContent(err), nil
@@ -594,9 +693,10 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 
 	case "engram_supersede":
 		var args struct {
-			ID       string `json:"id"`
-			TargetID string `json:"targetId"`
-			Actor    string `json:"actor"`
+			ID        string `json:"id"`
+			TargetID  string `json:"targetId"`
+			ActorID   string `json:"actorId"`
+			ActorKind string `json:"actorKind"`
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
@@ -607,7 +707,15 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("targetId", args.TargetID); err != nil {
 			return nil, err
 		}
-		output, err := m.api.Supersede(args.ID, args.TargetID, args.Actor)
+		source := core.Source{
+			System:    "mcp",
+			ActorID:   args.ActorID,
+			ActorKind: core.ActorKind(args.ActorKind),
+		}
+		if err := requireExplicitActor(source, false); err != nil {
+			return errTextContent(err), nil
+		}
+		output, err := m.api.Supersede(args.ID, args.TargetID, source)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -627,9 +735,306 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(transitions)), nil
 
+	case "accounting_record":
+		var args struct {
+			TopicKey     string `json:"topicKey"`
+			Title        string `json:"title"`
+			Kind         string `json:"kind"`
+			FiscalEffect string `json:"fiscalEffect"`
+			EffectiveAt  string `json:"effectiveAt"`
+			ObservedAt   string `json:"observedAt"`
+			Scope        string `json:"scope"`
+			Source       string `json:"source"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topicKey", args.TopicKey); err != nil {
+			return nil, err
+		}
+		if err := requireParams("title", args.Title); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		source, err := decodeSource(args.Source)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		result, err := m.api.Save(core.SaveInput{
+			TopicKey:     args.TopicKey,
+			Title:        args.Title,
+			Kind:         core.MemoryKind(args.Kind),
+			Scope:        scope,
+			FiscalEffect: core.FiscalEffect(args.FiscalEffect),
+			EffectiveAt:  args.EffectiveAt,
+			ObservedAt:   args.ObservedAt,
+			Source:       source,
+		})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
+	case "accounting_get":
+		var args struct {
+			ID string `json:"id"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("id", args.ID); err != nil {
+			return nil, err
+		}
+		memory, err := m.api.Get(args.ID)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(memory)), nil
+
+	case "accounting_search":
+		var args struct {
+			Query        string `json:"query"`
+			Scope        string `json:"scope"`
+			Kinds        string `json:"kinds"`
+			Status       string `json:"status"`
+			FiscalEffect string `json:"fiscalEffect"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("query", args.Query); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		input := search.Input{Query: args.Query, Scope: scope}
+		for _, kind := range splitCSV(args.Kinds) {
+			input.Kinds = append(input.Kinds, core.MemoryKind(kind))
+		}
+		for _, status := range splitCSV(args.Status) {
+			input.Status = append(input.Status, core.MemoryStatus(status))
+		}
+		if args.FiscalEffect != "" {
+			effect := core.FiscalEffect(args.FiscalEffect)
+			input.FiscalEffect = &effect
+		}
+		results, err := m.api.Search(input)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(results)), nil
+
+	case "accounting_timeline":
+		var args struct {
+			TopicKey string `json:"topicKey"`
+			Scope    string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topicKey", args.TopicKey); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		chain, err := m.api.Chain(args.TopicKey, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(chain)), nil
+
+	case "accounting_compare":
+		var args struct {
+			IDA string `json:"idA"`
+			IDB string `json:"idB"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("idA", args.IDA); err != nil {
+			return nil, err
+		}
+		if err := requireParams("idB", args.IDB); err != nil {
+			return nil, err
+		}
+		output, err := m.api.Compare(args.IDA, args.IDB)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(output)), nil
+
+	case "accounting_judge":
+		var args struct {
+			ConflictID string `json:"conflictId"`
+			Resolution string `json:"resolution"`
+			ActorID    string `json:"actorId"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("conflictId", args.ConflictID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("resolution", args.Resolution); err != nil {
+			return nil, err
+		}
+		memory, err := m.api.Judge(args.ConflictID, args.Resolution, core.Source{System: "mcp", ActorID: args.ActorID, ActorKind: core.ActorKindHuman})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(memory)), nil
+
+	case "accounting_link_evidence":
+		var args struct {
+			ID    string `json:"id"`
+			Refs  string `json:"refs"`
+			Actor string `json:"actor"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("id", args.ID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("refs", args.Refs); err != nil {
+			return nil, err
+		}
+		refs, err := m.api.LinkEvidence(args.ID, splitCSV(args.Refs), args.Actor)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(refs)), nil
+
+	case "accounting_period_summary":
+		var args struct {
+			Scope string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		summary, err := m.api.PeriodSummary(scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(summary)), nil
+
+	case "accounting_context":
+		var args struct {
+			Scope string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		memories, err := m.api.Context(scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(memories)), nil
+
+	case "accounting_doctor":
+		report, err := m.api.Doctor()
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(report)), nil
+
 	default:
 		return nil, &jsonrpcError{Code: codeMethodNotFound, Message: "method not found: tool " + call.Name}
 	}
+}
+
+// requireExplicitActor enforces the fail-closed actor contract on the gate
+// surfaces: approve/reject REQUIRE an explicit human actorId+actorKind
+// (GATE_REQUIRES_HUMAN otherwise — agents never approve); void admits explicit
+// human or system (never agent, never an implicit default); supersede requires
+// an explicit known actorKind. No surface may default an omitted actorKind to
+// the highest-trust class.
+func requireExplicitActor(source core.Source, allowSystem bool) error {
+	if source.ActorKind == "" {
+		return core.ErrGateRequiresHuman
+	}
+	if !core.IsValidActorKind(source.ActorKind) {
+		return fmt.Errorf("INVALID_SOURCE: unknown actorKind %q — expected human|agent|system", source.ActorKind)
+	}
+	if source.ActorKind == core.ActorKindHuman && strings.TrimSpace(source.ActorID) == "" {
+		return fmt.Errorf("INVALID_SOURCE: actorId is required for human actors")
+	}
+	if !allowSystem && source.ActorKind == core.ActorKindSystem {
+		return core.ErrGateRequiresHuman
+	}
+	return nil
+}
+
+// splitCSV splits a comma-separated list, trimming spaces and dropping empties.
+func splitCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// decodeScope parses a JSON scope string.
+func decodeScope(raw string) (core.Scope, error) {
+	if strings.TrimSpace(raw) == "" {
+		return core.Scope{}, errors.New("INVALID_SCOPE: scope is required")
+	}
+	var scope core.Scope
+	if err := json.Unmarshal([]byte(raw), &scope); err != nil {
+		return core.Scope{}, fmt.Errorf("INVALID_SCOPE: %v", err)
+	}
+	return scope, nil
+}
+
+// decodeSource parses a JSON source string; empty falls back to a system actor.
+func decodeSource(raw string) (core.Source, error) {
+	if strings.TrimSpace(raw) == "" {
+		return core.Source{System: "mcp", ActorKind: core.ActorKindSystem}, nil
+	}
+	var source core.Source
+	if err := json.Unmarshal([]byte(raw), &source); err != nil {
+		return core.Source{}, fmt.Errorf("INVALID_SOURCE: %v", err)
+	}
+	if source.System == "" {
+		source.System = "mcp"
+	}
+	if !core.IsValidActorKind(source.ActorKind) {
+		return core.Source{}, errors.New("INVALID_SOURCE: actorKind must be human|agent|system")
+	}
+	return source, nil
 }
 
 // decodeArguments unmarshals tool arguments; a shape failure is an invalid-params

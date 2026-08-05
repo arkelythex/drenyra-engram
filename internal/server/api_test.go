@@ -28,22 +28,22 @@ func TestSaveGetRoundTrip(t *testing.T) {
 	if result.Outcome != core.WriteCreated {
 		t.Fatalf("outcome = %q, want created", result.Outcome)
 	}
-	if result.Observation.Revision != 1 {
-		t.Fatalf("revision = %d, want 1", result.Observation.Revision)
+	if result.Memory.Revision != 1 {
+		t.Fatalf("revision = %d, want 1", result.Memory.Revision)
 	}
-	if result.Observation.Identity.ID == "" {
+	if result.Memory.Identity.ID == "" {
 		t.Fatal("empty observation id")
 	}
 
-	got, err := api.Get(result.Observation.Identity.ID)
+	got, err := api.Get(result.Memory.Identity.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
 	if got.Content.What != "IGV is 18%" {
 		t.Fatalf("what = %q, want %q", got.Content.What, "IGV is 18%")
 	}
-	if got.AuthorityStatus != core.StatusDraft {
-		t.Fatalf("status = %q, want draft", got.AuthorityStatus)
+	if got.Status != core.StatusActive {
+		t.Fatalf("status = %q, want active (informative save, fiscalEffect none)", got.Status)
 	}
 }
 
@@ -161,18 +161,21 @@ func TestCompareSupersedesSourceCheck(t *testing.T) {
 	api := newTestAPI(t)
 	scope := testScope(testRucA)
 
-	replacement := saveOne(t, api, validInput("topic/rule", "Rule", "replacement", scope))
 	old := saveOne(t, api, validInput("topic/rule", "Rule", "old", scope))
+	replacement := saveOne(t, api, validInput("topic/rule", "Rule", "replacement", scope))
 
-	// review → promote old, then supersede it with the replacement.
-	if _, err := api.Review(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("review old: %v", err)
+	// The second save superseded the first automatically: the STORED old memory
+	// is superseded (re-read, not the first-save snapshot) and the supersedes
+	// relation is recorded atomically.
+	storedOld, err := api.Get(old.Identity.ID)
+	if err != nil {
+		t.Fatalf("get old: %v", err)
 	}
-	if _, err := api.Promote(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("promote old: %v", err)
+	if storedOld.Status != core.StatusSuperseded {
+		t.Fatalf("stored old status = %q, want superseded (automatic on chain save)", storedOld.Status)
 	}
-	if _, err := api.Supersede(old.Identity.ID, replacement.Identity.ID, "test"); err != nil {
-		t.Fatalf("supersede: %v", err)
+	if storedOld.SupersedesID != replacement.Identity.ID {
+		t.Fatalf("stored old supersedesId = %q, want successor %q", storedOld.SupersedesID, replacement.Identity.ID)
 	}
 
 	output, err := api.Compare(old.Identity.ID, replacement.Identity.ID)
@@ -204,18 +207,27 @@ func TestCompareNotConflict(t *testing.T) {
 	}
 }
 
-func TestCompareRelatedByTopicKey(t *testing.T) {
+func TestCompareSameChainReportsSupersedes(t *testing.T) {
 	api := newTestAPI(t)
 	scope := testScope(testRucA)
 	a := saveOne(t, api, validInput("topic/shared", "A", "a", scope))
 	b := saveOne(t, api, validInput("topic/shared", "B", "b", scope))
 
+	// v2: two saves of the same (topicKey, scope) chain — the first is
+	// superseded by the second; compare(A, B) reports the completed supersede
+	// pair (the SOURCE is stored superseded).
 	output, err := api.Compare(a.Identity.ID, b.Identity.ID)
 	if err != nil {
 		t.Fatalf("compare: %v", err)
 	}
-	if output.RelationVerdict != "related" {
-		t.Fatalf("verdict = %q, want related (shared topicKey)", output.RelationVerdict)
+	if output.RelationVerdict != "supersedes" {
+		t.Fatalf("verdict = %q, want supersedes (same chain, first superseded)", output.RelationVerdict)
+	}
+	if output.StatusA != core.StatusSuperseded {
+		t.Fatalf("statusA = %q, want superseded (source)", output.StatusA)
+	}
+	if output.StatusB == core.StatusSuperseded {
+		t.Fatalf("statusB = %q, successor must not be superseded", output.StatusB)
 	}
 	if output.ScopeMatch != "exact" {
 		t.Fatalf("scopeMatch = %q, want exact", output.ScopeMatch)
@@ -226,45 +238,68 @@ func TestCompareRelatedByTopicKey(t *testing.T) {
 // Lifecycle (contracts/lifecycle.md)
 // ──────────────────────────────────────────────
 
-func TestLifecycleAdjacentForwardOnly(t *testing.T) {
+func TestHumanApprovalGate(t *testing.T) {
 	api := newTestAPI(t)
-	observation := saveOne(t, api, validInput("topic/life", "Life", "x", testScope(testRucA)))
-	id := observation.Identity.ID
-
-	// draft → reviewed → promoted.
-	if _, err := api.Review(id, "test"); err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	if _, err := api.Promote(id, "test"); err != nil {
-		t.Fatalf("promote: %v", err)
+	scope := testScope(testRucA)
+	// A memory WITH fiscal effect is saved as pending_review (the gate).
+	gated := saveOne(t, api, gatedInput("topic/life", "Ajuste", scope))
+	if gated.Status != core.StatusPendingReview {
+		t.Fatalf("gated save status = %q, want pending_review", gated.Status)
 	}
 
-	// draft → promoted (skip reviewed) must fail closed.
-	fresh := saveOne(t, api, validInput("topic/life2", "Life2", "y", testScope(testRucA)))
-	_, err := api.Promote(fresh.Identity.ID, "test")
-	if !IsConflict(err) {
-		t.Fatalf("promote from draft: IsConflict(%v) = false, want true", err)
+	// A MACHINE (agent) cannot approve — GATE_REQUIRES_HUMAN.
+	if _, err := api.Approve(gated.Identity.ID, testAgentSource); !IsGateError(err) {
+		t.Fatalf("agent approve: IsGateError(%v) = false, want true", err)
 	}
-	if !strings.Contains(err.Error(), "INVALID_TRANSITION") {
-		t.Fatalf("error %q must carry INVALID_TRANSITION", err)
+
+	// A HUMAN approves — pending_review → approved.
+	approved, err := api.Approve(gated.Identity.ID, humanSource("maria.torres"))
+	if err != nil {
+		t.Fatalf("human approve: %v", err)
+	}
+	if approved.Status != core.StatusApproved {
+		t.Fatalf("status = %q, want approved", approved.Status)
+	}
+
+	// An ACTIVE memory (informative) cannot be approved (never gated).
+	informative := saveOne(t, api, validInput("topic/info", "Info", "y", scope))
+	_, approveErr := api.Approve(informative.Identity.ID, humanSource("maria.torres"))
+	if !IsConflict(approveErr) {
+		t.Fatalf("approve active: IsConflict(%v) = false, want true", approveErr)
+	}
+	if !strings.Contains(approveErr.Error(), "INVALID_TRANSITION") {
+		t.Fatalf("error %q must carry INVALID_TRANSITION", approveErr)
 	}
 }
 
-func TestSupersedeRequiresPromoted(t *testing.T) {
+// gatedInput builds a SaveInput with a real fiscal effect (adjustment) so the
+// save lands in pending_review behind the human gate.
+func gatedInput(topicKey, title string, scope core.Scope) core.SaveInput {
+	input := validInput(topicKey, title, "ajuste de periodo", scope)
+	input.FiscalEffect = core.FiscalEffectAdjustment
+	input.EffectiveAt = "2026-07-31T12:00:00Z"
+	return input
+}
+
+func TestSupersedeExplicitFromActive(t *testing.T) {
 	api := newTestAPI(t)
 	scope := testScope(testRucA)
 	old := saveOne(t, api, validInput("topic/s", "S", "old", scope))
-	target := saveOne(t, api, validInput("topic/s", "S", "new", scope))
+	target := saveOne(t, api, validInput("topic/t", "T", "new", scope))
 
-	// Supersede from draft is an illegal transition — fail closed.
-	_, err := api.Supersede(old.Identity.ID, target.Identity.ID, "test")
-	if !IsConflict(err) {
-		t.Fatalf("supersede from draft: IsConflict(%v) = false, want true", err)
+	// Explicit supersede of an ACTIVE memory routes readers to the target.
+	if _, err := api.Supersede(old.Identity.ID, target.Identity.ID, humanSource("maria.torres")); err != nil {
+		t.Fatalf("supersede: %v", err)
 	}
-	// The observation must be unchanged.
-	got, _ := api.Get(old.Identity.ID)
-	if got.AuthorityStatus != core.StatusDraft {
-		t.Fatalf("status = %q, want unchanged draft", got.AuthorityStatus)
+	got, err := api.Get(old.Identity.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.Status != core.StatusSuperseded {
+		t.Fatalf("status = %q, want superseded", got.Status)
+	}
+	if got.SupersedesID != target.Identity.ID {
+		t.Fatalf("supersedesId = %q, want target %q", got.SupersedesID, target.Identity.ID)
 	}
 }
 
@@ -272,15 +307,9 @@ func TestSupersedeRecordsRelationAndRoutesReaders(t *testing.T) {
 	api := newTestAPI(t)
 	scope := testScope(testRucA)
 	old := saveOne(t, api, validInput("topic/s2", "S2", "old", scope))
-	target := saveOne(t, api, validInput("topic/s2", "S2", "new", scope))
+	target := saveOne(t, api, validInput("topic/t2", "T2", "new", scope))
 
-	if _, err := api.Review(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("review: %v", err)
-	}
-	if _, err := api.Promote(old.Identity.ID, "test"); err != nil {
-		t.Fatalf("promote: %v", err)
-	}
-	if _, err := api.Supersede(old.Identity.ID, target.Identity.ID, "test"); err != nil {
+	if _, err := api.Supersede(old.Identity.ID, target.Identity.ID, humanSource("maria.torres")); err != nil {
 		t.Fatalf("supersede: %v", err)
 	}
 
@@ -317,7 +346,11 @@ func TestNonAuthorizationBoundary(t *testing.T) {
 	for i := 0; i < typ.NumMethod(); i++ {
 		name := typ.Method(i).Name
 		lower := strings.ToLower(name)
-		for _, forbidden := range []string{"authorize", "approve", "allow"} {
+		// v2: Approve/Reject are the HUMAN review gate of a memory (a professional
+		// approving a pending_review memory) — explicitly part of the model. The
+		// boundary bans AUTHORIZATION OF BUSINESS ACTIONS: the API can never
+		// authorize, allow, execute, file, declare or pay anything.
+		for _, forbidden := range []string{"authorize", "allow", "execute", "declare", "file", "pay"} {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("API method %q violates the non-authorization boundary", name)
 			}
@@ -333,8 +366,8 @@ func TestDoctorFailsClosedOnMissingTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if report.SchemaVersion != 1 {
-		t.Fatalf("schemaVersion = %d, want 1", report.SchemaVersion)
+	if report.SchemaVersion != 2 {
+		t.Fatalf("schemaVersion = %d, want 2", report.SchemaVersion)
 	}
 }
 

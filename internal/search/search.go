@@ -1,23 +1,23 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module implements scope-first search
-// over observation text; there are no monetary fields in the model, so no
-// money value is scored or computed here.
+// over memory text; there are no monetary fields in the model, so no money
+// value is scored or computed here.
 //
 // Scope-first search (contracts/scope.md rule 1: scope is a structural filter,
 // never a post-filter). Mirrors search/scope-first.ts semantically.
 //
 // Pipeline:
-//  1. STRUCTURAL SCOPE FILTER — exact scope match for company observations;
-//     institutional observations only when the query scope is institutional or
-//     the caller explicitly requests them via IncludeInstitutional. This runs
-//     BEFORE any scoring, so a company-A observation can never be scored for a
+//  1. STRUCTURAL SCOPE FILTER — exact scope match for company memories;
+//     institutional memories only when the query scope is institutional or the
+//     caller explicitly requests them via IncludeInstitutional. This runs
+//     BEFORE any scoring, so a company-A memory can never be scored for a
 //     company-B query.
-//  2. Chain dedup — only the latest revision per (topicKey, exact scope).
-//  3. Token-overlap ranking over title + content (MatchAll requires every query
+//  2. v2 filters — Kinds / Status / FiscalEffect (OR / exact), also structural.
+//  3. Chain dedup — only the latest revision per (topicKey, exact scope).
+//  4. Token-overlap ranking over title + content (MatchAll requires every query
 //     token, MatchAny requires at least one).
-//  4. Stale marking — an expired observation (expiresAt < now) is surfaced as
-//     Stale, never presented as current fact (contracts/lifecycle.md).
-
+//  5. Stale marking — an expired memory (expiresAt < now) is surfaced as Stale,
+//     never presented as current fact (contracts/lifecycle.md).
 package search
 
 import (
@@ -40,10 +40,10 @@ const (
 	MatchAny MatchMode = "any"
 )
 
-// ObservationSource is the narrow read surface search needs; the SQLite store
+// MemorySource is the narrow read surface search needs; the SQLite store
 // satisfies it structurally (consumer-side interface).
-type ObservationSource interface {
-	List() ([]core.Observation, error)
+type MemorySource interface {
+	List() ([]core.AccountingMemory, error)
 }
 
 // Input is a scope-first search request.
@@ -55,16 +55,22 @@ type Input struct {
 	// IncludeInstitutional is the explicit institutional opt-in for company
 	// query scopes (scope.md rule 3).
 	IncludeInstitutional bool
+	// Kinds filters by memory kind (OR). Empty = no kind filter.
+	Kinds []core.MemoryKind
+	// Status filters by memory status (OR). Empty = no status filter.
+	Status []core.MemoryStatus
+	// FiscalEffect filters by exact fiscal effect. Nil = no effect filter.
+	FiscalEffect *core.FiscalEffect
 	// Limit caps the returned results (0 → 20).
 	Limit int
 }
 
 // Result is one ranked search hit.
 type Result struct {
-	Observation core.Observation `json:"observation"`
+	Memory core.AccountingMemory `json:"memory"`
 	// Score is the number of query tokens matched across title + content.
 	Score int `json:"score"`
-	// Stale is true when the observation is expired (expiresAt < now) at read
+	// Stale is true when the memory is expired (expiresAt < now) at read
 	// time — visible, never current fact.
 	Stale bool `json:"stale"`
 }
@@ -76,9 +82,9 @@ var tokenPattern = regexp.MustCompile(`[^a-z0-9áéíóúñ]+`)
 
 // ScopeFirst searches src scope-first and returns results ranked by token
 // overlap. The structural scope filter runs before any ranking, so a
-// company-A observation can never be scored for a company-B query — under any
+// company-A memory can never be scored for a company-B query — under any
 // match mode, limit, or ordering.
-func ScopeFirst(src ObservationSource, input Input) ([]Result, error) {
+func ScopeFirst(src MemorySource, input Input) ([]Result, error) {
 	if err := core.AssertValidScope(input.Scope); err != nil {
 		return nil, err
 	}
@@ -108,36 +114,39 @@ func ScopeFirst(src ObservationSource, input Input) ([]Result, error) {
 	// STEP 1 — structural scope filter, before any scoring.
 	candidates := scopeCandidates(all, input)
 
+	// STEP 1b — v2 structural filters (kind / status / fiscal effect).
+	candidates = v2Filters(candidates, input)
+
 	// STEP 2 — latest revision per (topicKey, scope) chain.
 	latest := LatestPerChain(candidates)
 
 	// STEP 3 — token-overlap ranking over title + content.
 	now := time.Now()
 	results := make([]Result, 0, len(latest))
-	for _, observation := range latest {
-		score := scoreObservation(observation, tokens)
+	for _, memory := range latest {
+		score := scoreMemory(memory, tokens)
 		matched := (matchMode == MatchAll && score == len(tokens)) || (matchMode == MatchAny && score > 0)
 		if !matched {
 			continue
 		}
 		results = append(results, Result{
-			Observation: core.CloneObservation(observation),
-			Score:       score,
-			Stale:       isStale(observation, now),
+			Memory: core.CloneMemory(memory),
+			Score:  score,
+			Stale:  isStale(memory, now),
 		})
 	}
 
-	// Rank: higher overlap first, newer provenance first, id last for stability.
+	// Rank: higher overlap first, newer record time first, id last for stability.
 	sort.SliceStable(results, func(i, j int) bool {
 		left, right := results[i], results[j]
 		if left.Score != right.Score {
 			return left.Score > right.Score
 		}
-		leftRank, rightRank := timestampRank(left.Observation), timestampRank(right.Observation)
+		leftRank, rightRank := timestampRank(left.Memory), timestampRank(right.Memory)
 		if leftRank != rightRank {
 			return leftRank > rightRank
 		}
-		return left.Observation.Identity.ID < right.Observation.Identity.ID
+		return left.Memory.Identity.ID < right.Memory.Identity.ID
 	})
 
 	if len(results) > limit {
@@ -146,18 +155,65 @@ func ScopeFirst(src ObservationSource, input Input) ([]Result, error) {
 	return results, nil
 }
 
-func scopeCandidates(observations []core.Observation, input Input) []core.Observation {
+// v2Filters applies the optional kind / status / fiscal-effect filters. They
+// are structural (they run inside the scope-filtered candidate set, never
+// after ranking) so tenant isolation is never weakened by them.
+func v2Filters(memories []core.AccountingMemory, input Input) []core.AccountingMemory {
+	if len(input.Kinds) == 0 && len(input.Status) == 0 && input.FiscalEffect == nil {
+		return memories
+	}
+	out := make([]core.AccountingMemory, 0, len(memories))
+	for _, memory := range memories {
+		if !matchesKinds(memory, input.Kinds) {
+			continue
+		}
+		if !matchesStatus(memory, input.Status) {
+			continue
+		}
+		if input.FiscalEffect != nil && memory.FiscalEffect != *input.FiscalEffect {
+			continue
+		}
+		out = append(out, memory)
+	}
+	return out
+}
+
+func matchesKinds(memory core.AccountingMemory, kinds []core.MemoryKind) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, kind := range kinds {
+		if memory.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesStatus(memory core.AccountingMemory, statuses []core.MemoryStatus) bool {
+	if len(statuses) == 0 {
+		return true
+	}
+	for _, status := range statuses {
+		if memory.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func scopeCandidates(memories []core.AccountingMemory, input Input) []core.AccountingMemory {
 	includeInstitutional := input.IncludeInstitutional || input.Scope.Kind == core.ScopeKindInstitutional
-	candidates := make([]core.Observation, 0, len(observations))
-	for _, observation := range observations {
-		if observation.Scope.Kind == core.ScopeKindInstitutional {
+	candidates := make([]core.AccountingMemory, 0, len(memories))
+	for _, memory := range memories {
+		if memory.Scope.Kind == core.ScopeKindInstitutional {
 			if includeInstitutional {
-				candidates = append(candidates, observation)
+				candidates = append(candidates, memory)
 			}
 			continue
 		}
-		if core.ScopeEquals(observation.Scope, input.Scope) {
-			candidates = append(candidates, observation)
+		if core.ScopeEquals(memory.Scope, input.Scope) {
+			candidates = append(candidates, memory)
 		}
 	}
 	return candidates
@@ -166,23 +222,23 @@ func scopeCandidates(observations []core.Observation, input Input) []core.Observ
 // LatestPerChain keeps only the latest revision per (topicKey, exact scope)
 // chain. It is exported because the CLI `context` command surfaces the current
 // context the same way.
-func LatestPerChain(observations []core.Observation) []core.Observation {
-	latest := make(map[string]core.Observation)
-	for _, observation := range observations {
-		key := chainKey(observation)
-		if current, ok := latest[key]; !ok || observation.Revision > current.Revision {
-			latest[key] = observation
+func LatestPerChain(memories []core.AccountingMemory) []core.AccountingMemory {
+	latest := make(map[string]core.AccountingMemory)
+	for _, memory := range memories {
+		key := chainKey(memory)
+		if current, ok := latest[key]; !ok || memory.Revision > current.Revision {
+			latest[key] = memory
 		}
 	}
-	out := make([]core.Observation, 0, len(latest))
-	for _, observation := range latest {
-		out = append(out, observation)
+	out := make([]core.AccountingMemory, 0, len(latest))
+	for _, memory := range latest {
+		out = append(out, memory)
 	}
 	return out
 }
 
-func chainKey(observation core.Observation) string {
-	return observation.Identity.TopicKey + "\x00" + core.ScopeKey(observation.Scope)
+func chainKey(memory core.AccountingMemory) string {
+	return memory.Identity.TopicKey + "\x00" + core.ScopeKey(memory.Scope)
 }
 
 func tokenize(text string) []string {
@@ -209,14 +265,14 @@ func uniqueTokens(tokens []string) []string {
 	return unique
 }
 
-func scoreObservation(observation core.Observation, tokens []string) int {
+func scoreMemory(memory core.AccountingMemory, tokens []string) int {
 	searchable := make(map[string]struct{})
 	for _, token := range tokenize(strings.Join([]string{
-		observation.Title,
-		observation.Content.What,
-		observation.Content.Why,
-		observation.Content.Where,
-		observation.Content.Learned,
+		memory.Title,
+		memory.Content.What,
+		memory.Content.Why,
+		memory.Content.Where,
+		memory.Content.Learned,
 	}, " ")) {
 		searchable[token] = struct{}{}
 	}
@@ -229,16 +285,16 @@ func scoreObservation(observation core.Observation, tokens []string) int {
 	return score
 }
 
-func isStale(observation core.Observation, now time.Time) bool {
-	if observation.Validity == nil || observation.Validity.ExpiresAt == "" {
+func isStale(memory core.AccountingMemory, now time.Time) bool {
+	if memory.Validity == nil || memory.Validity.ExpiresAt == "" {
 		return false
 	}
-	expiresAt, ok := core.ParseDateTime(observation.Validity.ExpiresAt)
+	expiresAt, ok := core.ParseDateTime(memory.Validity.ExpiresAt)
 	return ok && expiresAt.Before(now)
 }
 
-func timestampRank(observation core.Observation) int64 {
-	parsed, ok := core.ParseDateTime(observation.Provenance.Timestamp)
+func timestampRank(memory core.AccountingMemory) int64 {
+	parsed, ok := core.ParseDateTime(memory.RecordedAt)
 	if !ok {
 		return 0
 	}

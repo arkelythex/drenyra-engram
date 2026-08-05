@@ -180,13 +180,13 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 13 {
-		t.Fatalf("tool count = %d, want 13", len(result.Tools))
+	if len(result.Tools) != 24 {
+		t.Fatalf("tool count = %d, want 24 (14 engram_* + 10 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)
-		if !strings.HasPrefix(name, "engram_") {
-			t.Fatalf("tool %q must be namespaced engram_", name)
+		if !strings.HasPrefix(name, "engram_") && !strings.HasPrefix(name, "accounting_") {
+			t.Fatalf("tool %q must be namespaced engram_ or accounting_", name)
 		}
 		if _, ok := tool["inputSchema"]; !ok {
 			t.Fatalf("tool %q missing inputSchema", name)
@@ -200,7 +200,11 @@ func TestMCPToolCatalogNonAuthorization(t *testing.T) {
 	for _, tool := range ToolCatalog() {
 		name, _ := tool["name"].(string)
 		lower := strings.ToLower(name)
-		for _, forbidden := range []string{"authorize", "approve", "allow"} {
+		// v2: engram_approve/engram_reject are the HUMAN review gate of a memory
+		// (a professional approving a pending_review memory) — part of the model,
+		// not authorization of business actions. The boundary bans authorization
+		// of business actions.
+		for _, forbidden := range []string{"authorize", "allow", "execute", "declare", "file", "pay"} {
 			if strings.Contains(lower, forbidden) {
 				t.Fatalf("tool %q violates the non-authorization boundary", name)
 			}
@@ -231,9 +235,9 @@ func TestMCPToolsCallSaveAndGet(t *testing.T) {
 	}
 
 	got := call(t, m, 4, "tools/call", map[string]any{
-		"name": "engram_get", "arguments": map[string]any{"id": result.Observation.Identity.ID},
+		"name": "engram_get", "arguments": map[string]any{"id": result.Memory.Identity.ID},
 	})
-	var observation core.Observation
+	var observation core.AccountingMemory
 	if err := json.Unmarshal([]byte(toolResultText(t, got)), &observation); err != nil {
 		t.Fatalf("decode get result: %v", err)
 	}
@@ -264,32 +268,21 @@ func TestMCPToolsCallLifecycle(t *testing.T) {
 		t.Fatalf("decode save new: %v", err)
 	}
 
-	review := call(t, m, 3, "tools/call", map[string]any{
-		"name": "engram_review", "arguments": map[string]any{"id": oldResult.Observation.Identity.ID},
-	})
-	if review.Error != nil {
-		t.Fatalf("review error: %+v", review.Error)
-	}
-
-	promote := call(t, m, 4, "tools/call", map[string]any{
-		"name": "engram_promote", "arguments": map[string]any{"id": oldResult.Observation.Identity.ID},
-	})
-	if promote.Error != nil {
-		t.Fatalf("promote error: %+v", promote.Error)
-	}
-
-	supersede := call(t, m, 5, "tools/call", map[string]any{
+	supersede := call(t, m, 3, "tools/call", map[string]any{
 		"name": "engram_supersede", "arguments": map[string]any{
-			"id": oldResult.Observation.Identity.ID, "targetId": newResult.Observation.Identity.ID,
+			"id":        oldResult.Memory.Identity.ID,
+			"targetId":  newResult.Memory.Identity.ID,
+			"actorId":   "maria.torres",
+			"actorKind": "human",
 		},
 	})
 	if supersede.Error != nil {
 		t.Fatalf("supersede error: %+v", supersede.Error)
 	}
 
-	compare := call(t, m, 6, "tools/call", map[string]any{
+	compare := call(t, m, 4, "tools/call", map[string]any{
 		"name": "engram_compare", "arguments": map[string]any{
-			"idA": oldResult.Observation.Identity.ID, "idB": newResult.Observation.Identity.ID,
+			"idA": oldResult.Memory.Identity.ID, "idB": newResult.Memory.Identity.ID,
 		},
 	})
 	var output CompareOutput
@@ -319,14 +312,16 @@ func TestMCPToolsCallDomainError(t *testing.T) {
 		t.Fatalf("decode save: %v", err)
 	}
 
-	promote := call(t, m, 2, "tools/call", map[string]any{
-		"name": "engram_promote", "arguments": map[string]any{"id": result.Observation.Identity.ID},
+	approve := call(t, m, 2, "tools/call", map[string]any{
+		"name": "engram_approve", "arguments": map[string]any{
+			"id": result.Memory.Identity.ID, "actorId": "maria.torres", "actorKind": "human",
+		},
 	})
-	if promote.Error != nil {
-		t.Fatalf("domain failure must be a tool result, not a JSON-RPC error: %+v", promote.Error)
+	if approve.Error != nil {
+		t.Fatalf("domain failure must be a tool result, not a JSON-RPC error: %+v", approve.Error)
 	}
 	var output toolCallOutput
-	if err := json.Unmarshal(promote.Result, &output); err != nil {
+	if err := json.Unmarshal(approve.Result, &output); err != nil {
 		t.Fatalf("decode tool result: %v", err)
 	}
 	if !output.IsError {
@@ -346,7 +341,7 @@ func TestMCPToolsCallNotFound(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &output); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !output.IsError || !strings.Contains(output.Content[0]["text"], "OBSERVATION_NOT_FOUND") {
+	if !output.IsError || !strings.Contains(output.Content[0]["text"], "MEMORY_NOT_FOUND") {
 		t.Fatalf("want not-found tool error, got %+v", output)
 	}
 }
@@ -411,7 +406,7 @@ func TestMCPChainTool(t *testing.T) {
 	if response.Error != nil {
 		t.Fatalf("chain error: %+v", response.Error)
 	}
-	var chain []core.Observation
+	var chain []core.AccountingMemory
 	if err := json.Unmarshal([]byte(toolResultText(t, response)), &chain); err != nil {
 		t.Fatalf("decode chain: %v", err)
 	}

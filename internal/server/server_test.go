@@ -46,33 +46,39 @@ func testScope(ruc string) core.Scope {
 	}
 }
 
-// validInput builds a valid SaveInput under a topic key + scope.
+// testAgentSource is the fixture actor for agent-originated saves.
+var testAgentSource = core.Source{
+	System:    "go-test",
+	ActorID:   "test-agent",
+	ActorKind: core.ActorKindAgent,
+}
+
+// humanSource builds a human actor source for approval-gate tests.
+func humanSource(actor string) core.Source {
+	return core.Source{System: "go-test", ActorID: actor, ActorKind: core.ActorKindHuman}
+}
+
+// validInput builds a valid v2 SaveInput under a topic key + scope. The default
+// is an INFORMATIVE memory (fiscalEffect none → active) so most fixtures do not
+// trip the human-approval gate; gate tests set FiscalEffect explicitly.
 func validInput(topicKey, title, what string, scope core.Scope) core.SaveInput {
 	return core.SaveInput{
-		TopicKey: topicKey,
-		Title:    title,
-		Type:     "decision",
-		Scope:    scope,
-		Content: core.Content{
-			What:    what,
-			Why:     "test fixture",
-			Where:   "internal/server",
-			Learned: "n/a",
-		},
-		Provenance: core.Provenance{
-			Actor:     "test",
-			Timestamp: "2026-01-15T12:00:00Z",
-			Source:    "test",
-		},
+		TopicKey:     topicKey,
+		Title:        title,
+		Kind:         core.KindDecision,
+		Scope:        scope,
+		Content:      core.Content{What: what, Why: "test fixture", Where: "internal/server", Learned: "n/a"},
+		FiscalEffect: core.FiscalEffectNone,
+		Source:       testAgentSource,
 	}
 }
 
-// saveOne saves a fixture and returns the stored observation.
-func saveOne(t *testing.T, api *API, input core.SaveInput) core.Observation {
+// saveOne saves a fixture and returns the stored memory.
+func saveOne(t *testing.T, api *API, input core.SaveInput) core.AccountingMemory {
 	t.Helper()
 	result, err := api.Save(input)
 	if err != nil {
 		t.Fatalf("save fixture: %v", err)
 	}
-	return result.Observation
+	return result.Memory
 }

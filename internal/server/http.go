@@ -103,8 +103,9 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/search", h.requireToken(h.handleSearch))
 	mux.HandleFunc("GET /v1/context", h.requireToken(h.handleContext))
 	mux.HandleFunc("POST /v1/compare", h.requireToken(h.handleCompare))
-	mux.HandleFunc("POST /v1/observations/{id}/review", h.requireToken(h.handleReview))
-	mux.HandleFunc("POST /v1/observations/{id}/promote", h.requireToken(h.handlePromote))
+	mux.HandleFunc("POST /v1/observations/{id}/approve", h.requireToken(h.handleApprove))
+	mux.HandleFunc("POST /v1/observations/{id}/reject", h.requireToken(h.handleReject))
+	mux.HandleFunc("POST /v1/observations/{id}/void", h.requireToken(h.handleVoid))
 	mux.HandleFunc("POST /v1/observations/{id}/supersede", h.requireToken(h.handleSupersede))
 	mux.HandleFunc("GET /v1/relations", h.requireToken(h.handleRelations))
 	mux.HandleFunc("GET /v1/transitions", h.requireToken(h.handleTransitions))
@@ -277,15 +278,31 @@ func (h *HTTPServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, output)
 }
 
-func (h *HTTPServer) handleReview(w http.ResponseWriter, r *http.Request) {
-	h.writeTransition(w, r, func(id, actor string) (any, error) {
-		return h.api.Review(id, actor)
+// httpSource builds the Source for an HTTP lifecycle call: the caller names an
+// actor id (a professional) or the server default applies. HTTP callers are
+// treated as human actors — the approval gate lives here, on the transport.
+func (h *HTTPServer) httpSource(actor string) core.Source {
+	if actor == "" {
+		actor = h.api.DefaultActor
+	}
+	return core.Source{System: "http", ActorID: actor, ActorKind: core.ActorKindHuman}
+}
+
+func (h *HTTPServer) handleApprove(w http.ResponseWriter, r *http.Request) {
+	h.writeGateTransition(w, r, func(id string, src core.Source) (any, error) {
+		return h.api.Approve(id, src)
 	})
 }
 
-func (h *HTTPServer) handlePromote(w http.ResponseWriter, r *http.Request) {
-	h.writeTransition(w, r, func(id, actor string) (any, error) {
-		return h.api.Promote(id, actor)
+func (h *HTTPServer) handleReject(w http.ResponseWriter, r *http.Request) {
+	h.writeGateTransition(w, r, func(id string, src core.Source) (any, error) {
+		return h.api.Reject(id, src)
+	})
+}
+
+func (h *HTTPServer) handleVoid(w http.ResponseWriter, r *http.Request) {
+	h.writeGateTransition(w, r, func(id string, src core.Source) (any, error) {
+		return h.api.Void(id, src)
 	})
 }
 
@@ -301,7 +318,7 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errors.New("INVALID_SUPERSEDE_TARGET: targetId is required"))
 		return
 	}
-	output, err := h.api.Supersede(r.PathValue("id"), body.TargetID, body.Actor)
+	output, err := h.api.Supersede(r.PathValue("id"), body.TargetID, h.httpSource(body.Actor))
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -309,9 +326,9 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, output)
 }
 
-// writeTransition shares the review/promote handler shape: a JSON body with an
-// optional actor, transition by path id.
-func (h *HTTPServer) writeTransition(w http.ResponseWriter, r *http.Request, run func(id, actor string) (any, error)) {
+// writeGateTransition shares the approve/reject/void handler shape: a JSON body
+// with an optional actor, gated transition by path id.
+func (h *HTTPServer) writeGateTransition(w http.ResponseWriter, r *http.Request, run func(id string, src core.Source) (any, error)) {
 	var body struct {
 		Actor string `json:"actor"`
 	}
@@ -321,7 +338,7 @@ func (h *HTTPServer) writeTransition(w http.ResponseWriter, r *http.Request, run
 			return
 		}
 	}
-	output, err := run(r.PathValue("id"), body.Actor)
+	output, err := run(r.PathValue("id"), h.httpSource(body.Actor))
 	if err != nil {
 		h.writeError(w, err)
 		return

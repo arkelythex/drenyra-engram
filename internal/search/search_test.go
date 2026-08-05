@@ -43,7 +43,11 @@ func companyScope(ruc string) core.Scope {
 	}
 }
 
-var testProvenance = core.Provenance{Actor: "test-agent", Timestamp: testTimeStr, Source: "go-test"}
+var testAgentSource = core.Source{
+	System:    "go-test",
+	ActorID:   "test-agent",
+	ActorKind: core.ActorKindAgent,
+}
 
 var igvContent = core.Content{
 	What:    "IGV base rate is 18 percent",
@@ -75,12 +79,14 @@ func TestCompanyAObservationNeverVisibleFromCompanyB(t *testing.T) {
 
 	// Identical text, identical topicKey — differing only by scope (ruc).
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: companyScope(testRucA), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
+		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: companyScope(testRucB), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
+		Scope: companyScope(testRucB), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 
 	// From company B: exactly one result, and it is B's own observation.
@@ -91,11 +97,11 @@ func TestCompanyAObservationNeverVisibleFromCompanyB(t *testing.T) {
 	if len(fromB) != 1 {
 		t.Fatalf("search from B returned %d results, want exactly 1 (its own)", len(fromB))
 	}
-	if fromB[0].Observation.Scope.RUC != testRucB {
-		t.Fatalf("result from B scoped to %s, want %s", fromB[0].Observation.Scope.RUC, testRucB)
+	if fromB[0].Memory.Scope.RUC != testRucB {
+		t.Fatalf("result from B scoped to %s, want %s", fromB[0].Memory.Scope.RUC, testRucB)
 	}
 	for _, result := range fromB {
-		if result.Observation.Scope.RUC == testRucA {
+		if result.Memory.Scope.RUC == testRucA {
 			t.Fatal("LEAK: company-A observation surfaced in a company-B query")
 		}
 	}
@@ -108,11 +114,11 @@ func TestCompanyAObservationNeverVisibleFromCompanyB(t *testing.T) {
 	if len(fromA) != 1 {
 		t.Fatalf("search from A returned %d results, want exactly 1 (its own)", len(fromA))
 	}
-	if fromA[0].Observation.Scope.RUC != testRucA {
-		t.Fatalf("result from A scoped to %s, want %s", fromA[0].Observation.Scope.RUC, testRucA)
+	if fromA[0].Memory.Scope.RUC != testRucA {
+		t.Fatalf("result from A scoped to %s, want %s", fromA[0].Memory.Scope.RUC, testRucA)
 	}
 	for _, result := range fromA {
-		if result.Observation.Scope.RUC == testRucB {
+		if result.Memory.Scope.RUC == testRucB {
 			t.Fatal("LEAK: company-B observation surfaced in a company-A query")
 		}
 	}
@@ -122,12 +128,14 @@ func TestInstitutionalOnlyOnExplicitIntent(t *testing.T) {
 	s := newTestStore(t)
 
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: companyScope(testRucA), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
+		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 	save(t, s, core.SaveInput{
-		TopicKey: "policy.banking-rules", Title: "Banking rules", Type: "policy",
-		Scope: core.Scope{Kind: core.ScopeKindInstitutional}, Content: institutionalContent, Provenance: testProvenance,
+		TopicKey: "policy.banking-rules", Title: "Banking rules", Kind: core.KindRule,
+		Scope: core.Scope{Kind: core.ScopeKindInstitutional}, Content: institutionalContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 
 	// Plain company-A query: institutional observation must NOT appear.
@@ -157,11 +165,11 @@ func TestInstitutionalOnlyOnExplicitIntent(t *testing.T) {
 	if len(institutionalQuery) != 1 {
 		t.Fatalf("institutional query returned %d results, want exactly 1", len(institutionalQuery))
 	}
-	if institutionalQuery[0].Observation.Scope.Kind != core.ScopeKindInstitutional {
-		t.Fatalf("institutional query surfaced a company-scoped observation: %+v", institutionalQuery[0].Observation.Scope)
+	if institutionalQuery[0].Memory.Scope.Kind != core.ScopeKindInstitutional {
+		t.Fatalf("institutional query surfaced a company-scoped observation: %+v", institutionalQuery[0].Memory.Scope)
 	}
 	for _, result := range institutionalQuery {
-		if result.Observation.Scope.Kind == core.ScopeKindCompany {
+		if result.Memory.Scope.Kind == core.ScopeKindCompany {
 			t.Fatal("LEAK: company observation surfaced in an institutional query")
 		}
 	}
@@ -169,7 +177,7 @@ func TestInstitutionalOnlyOnExplicitIntent(t *testing.T) {
 
 func containsInstitutional(results []Result) bool {
 	for _, result := range results {
-		if result.Observation.Scope.Kind == core.ScopeKindInstitutional {
+		if result.Memory.Scope.Kind == core.ScopeKindInstitutional {
 			return true
 		}
 	}
@@ -179,8 +187,9 @@ func containsInstitutional(results []Result) bool {
 func TestMatchModeAllRequiresEveryToken(t *testing.T) {
 	s := newTestStore(t)
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: companyScope(testRucB), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
+		Scope: companyScope(testRucB), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 
 	// "payroll" is not in B's observation: all rejects, any accepts.
@@ -204,14 +213,16 @@ func TestMatchModeAllRequiresEveryToken(t *testing.T) {
 func TestSearchUsesOnlyLatestRevisionPerChain(t *testing.T) {
 	s := newTestStore(t)
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate", Type: "policy",
-		Scope: companyScope(testRucA), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
+		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.rate", Title: "IGV base rate (updated)", Type: "policy",
-		Scope:      companyScope(testRucA),
-		Content:    core.Content{What: "IGV base rate is 18 percent since 2011", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
-		Provenance: testProvenance,
+		TopicKey: "tax.igv.rate", Title: "IGV base rate (updated)", Kind: core.KindRule,
+		Scope:        companyScope(testRucA),
+		Content:      core.Content{What: "IGV base rate is 18 percent since 2011", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
+		FiscalEffect: core.FiscalEffectNone,
+		Source:       testAgentSource,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "igv base rate", Scope: companyScope(testRucA), MatchMode: MatchAny})
@@ -221,18 +232,19 @@ func TestSearchUsesOnlyLatestRevisionPerChain(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatalf("search returned %d results, want exactly 1 (latest per chain)", len(results))
 	}
-	if results[0].Observation.Revision != 2 {
-		t.Fatalf("result revision = %d, want 2 (latest)", results[0].Observation.Revision)
+	if results[0].Memory.Revision != 2 {
+		t.Fatalf("result revision = %d, want 2 (latest)", results[0].Memory.Revision)
 	}
 }
 
 func TestStaleFlagOnExpiredObservation(t *testing.T) {
 	s := newTestStore(t)
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.expired-rule", Title: "Old IGV rule", Type: "policy",
+		TopicKey: "tax.igv.expired-rule", Title: "Old IGV rule", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent,
-		Validity:   &core.Validity{ExpiresAt: "2000-01-01T00:00:00.000Z"},
-		Provenance: testProvenance,
+		FiscalEffect: core.FiscalEffectNone,
+		Validity:     &core.Validity{ExpiresAt: "2000-01-01T00:00:00.000Z"},
+		Source:       testAgentSource,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "old igv", Scope: companyScope(testRucA), MatchMode: MatchAny})
@@ -251,14 +263,16 @@ func TestNoStaleFlagForValidOrWindowlessObservations(t *testing.T) {
 	s := newTestStore(t)
 	future := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.valid-rule", Title: "IGV current rule", Type: "policy",
+		TopicKey: "tax.igv.valid-rule", Title: "IGV current rule", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent,
-		Validity:   &core.Validity{ExpiresAt: future},
-		Provenance: testProvenance,
+		FiscalEffect: core.FiscalEffectNone,
+		Validity:     &core.Validity{ExpiresAt: future},
+		Source:       testAgentSource,
 	})
 	save(t, s, core.SaveInput{
-		TopicKey: "tax.igv.no-window", Title: "IGV rule without window", Type: "policy",
-		Scope: companyScope(testRucA), Content: igvContent, Provenance: testProvenance,
+		TopicKey: "tax.igv.no-window", Title: "IGV rule without window", Kind: core.KindRule,
+		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
+		FiscalEffect: core.FiscalEffectNone,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "igv rule", Scope: companyScope(testRucA), MatchMode: MatchAny})
@@ -270,7 +284,7 @@ func TestNoStaleFlagForValidOrWindowlessObservations(t *testing.T) {
 	}
 	for _, result := range results {
 		if result.Stale {
-			t.Fatalf("observation %s wrongly flagged stale", result.Observation.Identity.ID)
+			t.Fatalf("observation %s wrongly flagged stale", result.Memory.Identity.ID)
 		}
 	}
 }
