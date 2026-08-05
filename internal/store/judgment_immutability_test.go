@@ -309,20 +309,12 @@ func TestJudgmentConfirmIdempotencyDifferentPrincipalConflict(t *testing.T) {
 	}
 }
 
-func TestProposeReplayReturnsNewerTupleProposal(t *testing.T) {
-	// The propose-replay edge case flagged in the previous commit's risks
-	// (design §3 rule 6 / §5: a same-request retry must replay the ORIGINAL
-	// proposal). The reservation stores no link to the judgment it created, so
-	// the replay re-derives from the tuple: first the OPEN proposal, else the
-	// most recent tuple judgment. When a NEWER proposal exists for the tuple,
-	// the replay therefore returns the NEWER row, not the original.
-	//
-	// This test DOCUMENTS the current behavior (asserting exactly what the code
-	// does); the design intent is that the replay returns the original proposal.
-	// A correct fix requires persisting the created judgment id in
-	// judgment_idempotency_keys (a schema change to the design-doc §4 table,
-	// which is out of scope for this test commit) — flagged to the orchestrator
-	// for a dedicated fix commit.
+func TestProposeReplayReturnsOriginalProposal(t *testing.T) {
+	// The propose-replay contract (design §3 rule 6 / §5): a same-request retry
+	// must replay the ORIGINAL proposal the reservation created — never a newer
+	// proposal of the same tuple. The reservation stores judgment_id (the exact
+	// judgment it produced), so the replay returns that row even after the
+	// original was decided and a newer proposal was opened for the tuple.
 	s := newTestStore(t)
 	from, to := proposeContext(t, s)
 	principal := controllerPrincipal(t)
@@ -353,18 +345,17 @@ func TestProposeReplayReturnsNewerTupleProposal(t *testing.T) {
 	if !replay.IdempotentReplay {
 		t.Fatal("a completed proposal reservation must replay")
 	}
-	// DOCUMENTED DIVERGENCE from design intent (original expected here): the
-	// tuple re-derivation returns the newest open proposal.
-	if replay.JudgmentID != newer.JudgmentID {
-		t.Fatalf("replayed judgment id = %q, want %q (the newest tuple proposal — current behavior)",
-			replay.JudgmentID, newer.JudgmentID)
+	// The replay returns the ORIGINAL judgment (id + confirmed status), never
+	// the newer open proposal of the same tuple.
+	if replay.JudgmentID != original.JudgmentID {
+		t.Fatalf("replayed judgment id = %q, want the original %q", replay.JudgmentID, original.JudgmentID)
 	}
-	if replay.Judgment.Status != core.JudgmentProposed {
-		t.Errorf("replayed status = %s, want proposed", replay.Judgment.Status)
+	if replay.Judgment.Status != core.JudgmentConfirmed {
+		t.Errorf("replayed status = %s, want confirmed (the original decided row)", replay.Judgment.Status)
 	}
-	// The original judgment is untouched by the replay.
-	if row := readStoredJudgment(t, s, original.JudgmentID); row.Status != core.JudgmentConfirmed {
-		t.Errorf("original status = %s, want confirmed (replay is read-only)", row.Status)
+	// The newer proposal is untouched by the replay (read-only).
+	if row := readStoredJudgment(t, s, newer.JudgmentID); row.Status != core.JudgmentProposed {
+		t.Errorf("newer proposal status = %s, want proposed (replay is read-only)", row.Status)
 	}
 }
 

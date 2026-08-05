@@ -826,6 +826,7 @@ const judgmentIdempotencyKeysDDL = `
     CREATE TABLE judgment_idempotency_keys (
       tenant_id TEXT NOT NULL, request_id TEXT NOT NULL,
       command_hash TEXT NOT NULL, actor_binding TEXT NOT NULL,
+      judgment_id TEXT REFERENCES judgments(id),
       result_json TEXT, judgment_event_id TEXT REFERENCES judgment_events(id),
       created_at TEXT NOT NULL, completed_at TEXT,
       PRIMARY KEY(tenant_id,request_id),
@@ -2118,6 +2119,14 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: begin immediate: %w", err)
 	}
+	// defer_foreign_keys postpones ALL FK enforcement of this transaction to
+	// COMMIT: the idempotency reservation references the judgment row that is
+	// created later in the same transaction (and the proposed-predecessor
+	// supersession crosses rows in the same way). At COMMIT every FK is
+	// re-checked, so no dangling reference can survive.
+	if _, err := conn.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: defer foreign keys: %w", err)
+	}
 	committed := false
 	defer func() {
 		if !committed {
@@ -2152,27 +2161,41 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 		fiscalPeriod = from.Scope.Period
 	}
 
+	// The judgment id is generated BEFORE the idempotency reservation so the
+	// reservation can record the exact judgment it will create (the replay then
+	// returns this original row, never a newer proposal of the same tuple).
+	id, err := newUUID()
+	if err != nil {
+		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: generate judgment id: %w", err)
+	}
+
 	// 2. Idempotency by (tenant, requestId), bound to the exact proposer
 	// identity. A completed reservation replays the original proposal; an
 	// incomplete one (an interrupted attempt) is reused and the open-tuple
 	// index decides below.
 	var storedHash, storedBinding string
-	var storedResultJSON, completedAt sql.NullString
+	var storedResultJSON, storedJudgmentID, completedAt sql.NullString
 	err = conn.QueryRowContext(ctx, `
-		SELECT command_hash, actor_binding, result_json, completed_at
+		SELECT command_hash, actor_binding, judgment_id, result_json, completed_at
 		FROM judgment_idempotency_keys WHERE tenant_id = ? AND request_id = ?`,
 		tenantID, cmd.RequestID,
-	).Scan(&storedHash, &storedBinding, &storedResultJSON, &completedAt)
+	).Scan(&storedHash, &storedBinding, &storedJudgmentID, &storedResultJSON, &completedAt)
 	switch {
 	case err == nil:
 		if storedHash != commandHash || storedBinding != binding {
 			return core.ProposeJudgmentResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different proposal or proposer")
 		}
 		if completedAt.Valid {
-			// Replay: re-derive the proposal. The partial unique index
-			// guarantees at most one OPEN proposal for the tuple; if the
-			// original proposal was already decided before the retry, fall back
-			// to the most recent judgment of the tuple (never fabricated data).
+			// Replay: return the ORIGINAL proposal the reservation created. The
+			// reservation stores the judgment id it produced, so a same-request
+			// retry always replays that exact row — never a newer proposal of the
+			// same tuple. The tuple re-derivation remains only as a defensive
+			// fallback for reservations created before judgment_id was recorded.
+			if storedJudgmentID.Valid {
+				if j, ok := s.readJudgment(ctx, conn, storedJudgmentID.String); ok {
+					return core.ProposeJudgmentResult{JudgmentID: j.ID, Judgment: j, IdempotentReplay: true}, nil
+				}
+			}
 			j, ok := s.readOpenProposal(ctx, conn, tenantID, companyID, cmd.FromID, cmd.ToID, cmd.Relation)
 			if !ok {
 				j, ok = s.readLatestTupleJudgment(ctx, conn, tenantID, companyID, cmd.FromID, cmd.ToID, cmd.Relation)
@@ -2184,9 +2207,9 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 		}
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := conn.ExecContext(ctx, `
-			INSERT INTO judgment_idempotency_keys (tenant_id, request_id, command_hash, actor_binding, result_json, judgment_event_id, created_at, completed_at)
-			VALUES (?, ?, ?, ?, NULL, NULL, ?, NULL)`,
-			tenantID, cmd.RequestID, commandHash, binding, now,
+			INSERT INTO judgment_idempotency_keys (tenant_id, request_id, command_hash, actor_binding, judgment_id, result_json, judgment_event_id, created_at, completed_at)
+			VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+			tenantID, cmd.RequestID, commandHash, binding, id, now,
 		); err != nil {
 			return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: reserve judgment idempotency key: %w", err)
 		}
@@ -2194,12 +2217,6 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: read judgment idempotency key: %w", err)
 	}
 
-	// 3. The new judgment id is generated BEFORE the predecessor handling so a
-	// same-proposer supersession can route the predecessor to it.
-	id, err := newUUID()
-	if err != nil {
-		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: generate judgment id: %w", err)
-	}
 
 	// 4. Predecessor (design §3.7): a predecessor must concern the same pair
 	// and relation; a CONFIRMED predecessor stays current until the correction
@@ -2224,15 +2241,8 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 				return core.ProposeJudgmentResult{}, auth.New(auth.CodeProposalUnauthorized, "a proposed judgment may only be corrected by its own proposer")
 			}
 			// The supersede UPDATE sets predecessor.supersedes_id to the new
-			// judgment, whose row does not exist YET — while the open-tuple
-			// index forbids inserting it before the predecessor closes. SQLite's
-			// defer_foreign_keys postpones ALL FK enforcement of this
-			// transaction to COMMIT, by which time both rows exist. This is
-			// scoped to the one branch that needs the cross-row ordering; every
-			// other FK stays immediate.
-			if _, err := conn.ExecContext(ctx, `PRAGMA defer_foreign_keys = ON`); err != nil {
-				return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: defer foreign keys: %w", err)
-			}
+			// judgment row created in this transaction; FK enforcement is already
+			// deferred to COMMIT (see above), so the cross-row ordering is safe.
 			if _, err := s.supersedeProposedPredecessor(ctx, conn, pred, id, cmd.RequestID, now); err != nil {
 				return core.ProposeJudgmentResult{}, err
 			}
@@ -2285,11 +2295,11 @@ func (s *SQLiteStore) ProposeJudgment(ctx context.Context, cmd core.ProposeJudgm
 	// 7. Complete the reservation. A proposal has NO event (the events CHECK
 	// freezes actions to confirm|reject|withdraw|supersede), so the CHECK
 	// (judgment_event_id IS NULL) = (result_json IS NULL) keeps both NULL and
-	// the completion time is the only change; the replay re-derives the
-	// judgment from the tuple.
+	// the completion time is the only change; judgment_id records the created
+	// proposal so a same-request replay returns THAT exact row.
 	if _, err := conn.ExecContext(ctx, `
-		UPDATE judgment_idempotency_keys SET completed_at = ? WHERE tenant_id = ? AND request_id = ?`,
-		now, tenantID, cmd.RequestID,
+		UPDATE judgment_idempotency_keys SET judgment_id = ?, completed_at = ? WHERE tenant_id = ? AND request_id = ?`,
+		id, now, tenantID, cmd.RequestID,
 	); err != nil {
 		return core.ProposeJudgmentResult{}, fmt.Errorf("persistence error: complete judgment idempotency key: %w", err)
 	}
