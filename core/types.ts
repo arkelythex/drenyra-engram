@@ -1408,6 +1408,43 @@ export interface ReopenPeriodResult {
 	idempotentReplay: boolean;
 }
 
+/** One recent-chain entry of a CurrentContext (mirror of core.RecentChain). */
+export interface RecentChain {
+	topicKey: string;
+	memoryId: string;
+	kind: string;
+	status: string;
+	effectiveAt: string;
+	title: string;
+}
+
+/**
+ * The compact explainable period summary inside a CurrentContext (design §5):
+ * the period's memory counts, the period_closures projection state and the
+ * latest close memory id (empty when the period has no close).
+ */
+export interface CurrentContextPeriodSummary {
+	total: number;
+	byKind: Record<string, number>;
+	byStatus: Record<string, number>;
+	closureState: ClosureState;
+	latestClose: string;
+}
+
+/**
+ * Automatic MCP session context (design §5, mirror of core.CurrentContext):
+ * the exact configured scope, the compact period summary with closure state,
+ * the shared pending-item digest, the at most 20 most recent chains (latest
+ * revision per chain, effectiveAt desc) and the generation timestamp.
+ */
+export interface CurrentContext {
+	scope: MemoryScope;
+	periodSummary: CurrentContextPeriodSummary;
+	pendingItems: ClosePendingItem[];
+	recentChains: RecentChain[];
+	generatedAt: string;
+}
+
 /**
  * Month-end UTC stamp of a YYYYMM period (last day 23:59:59Z) — the canonical
  * effectiveAt of a monthly close. A malformed period fails with INVALID_PERIOD.

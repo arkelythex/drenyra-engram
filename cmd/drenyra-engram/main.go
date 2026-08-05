@@ -1582,7 +1582,15 @@ func cmdMCP(args []string) int {
 	defer func() { _ = st.Close() }()
 
 	api := server.New(st, "mcp")
-	mcp := server.NewMCPServer(api)
+	// The automatic session context (v0.5.0 design §5): one exact scope from
+	// DRENYRA_DEFAULT_SCOPE (JSON-encoded company scope). Unset → null context
+	// (initialize points at accounting_current_context); present but invalid or
+	// inaccessible → the server fails closed at startup, never serving partial
+	// cross-scope data.
+	mcp, err := server.NewMCPServerWithDefaultScope(api, os.Getenv("DRENYRA_DEFAULT_SCOPE"))
+	if err != nil {
+		return fail("%v", err)
+	}
 	if err := mcp.ServeStdio(os.Stdin, os.Stdout); err != nil {
 		return fail("mcp stdio: %v", err)
 	}
@@ -1623,7 +1631,13 @@ func cmdServe(args []string) int {
 	defer func() { _ = st.Close() }()
 
 	api := server.New(st, "http")
-	httpServer := server.NewHTTPServer(api, *token)
+	// The HTTP /mcp surface honors DRENYRA_DEFAULT_SCOPE exactly like the stdio
+	// server (v0.5.0 design §5): fail closed at startup when the configured
+	// scope is invalid or inaccessible.
+	httpServer, err := server.NewHTTPServerWithDefaultScope(api, *token, os.Getenv("DRENYRA_DEFAULT_SCOPE"))
+	if err != nil {
+		return fail("%v", err)
+	}
 	fmt.Fprintf(os.Stderr, "drenyra-engram: serving on http://%s (db %s)%s\n", *addr, *dbPath, tokenSuffix(*token))
 	if err := http.ListenAndServe(*addr, httpServer.Handler()); err != nil {
 		return fail("serve: %v", err)

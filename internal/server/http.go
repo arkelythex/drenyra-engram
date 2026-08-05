@@ -120,6 +120,11 @@ type HTTPServer struct {
 	// route delegates to (one BEGIN IMMEDIATE store operation, v0.5.0 close
 	// foundation, design §2.3).
 	reopenStore ReopenStore
+	// mcpServer is the MCP surface mounted at /mcp, constructed once with
+	// the configured DRENYRA_DEFAULT_SCOPE session context (v0.5.0 design
+	// §5; nil context when unset). The server is stateless between calls, so
+	// one instance serves every request.
+	mcpServer *MCPServer
 	// legacyApprove mounts the deprecated v0.3 POST /v1/observations/{id}/approve
 	// route. Disabled by default (v0.5.0 removes it); daemons opt in explicitly
 	// for the migration window (design section 6, resolved decision 2).
@@ -129,8 +134,21 @@ type HTTPServer struct {
 // NewHTTPServer returns an HTTPServer over api. When token is non-empty it is
 // required on every request (Authorization: Bearer <token>). The authenticated
 // approval route derives its principal ONLY from the resolved session credential
-// — the shared token guard is NOT identity and never authorizes approval.
+// — the shared token guard is NOT identity and never authorizes approval. The
+// /mcp surface has no default session context (DRENYRA_DEFAULT_SCOPE unset).
 func NewHTTPServer(api *API, token string) *HTTPServer {
+	h, _ := NewHTTPServerWithDefaultScope(api, token, "")
+	return h
+}
+
+// NewHTTPServerWithDefaultScope returns an HTTPServer over api whose /mcp
+// surface carries the automatic session context for the configured exact
+// company scope (v0.5.0 design §5). defaultScopeJSON is the raw
+// DRENYRA_DEFAULT_SCOPE value. It FAILS CLOSED at construction exactly like
+// NewMCPServerWithDefaultScope: a present but malformed, non-company or
+// inaccessible scope is an error — the server never starts with partial
+// cross-scope data on any transport.
+func NewHTTPServerWithDefaultScope(api *API, token, defaultScopeJSON string) (*HTTPServer, error) {
 	h := &HTTPServer{api: api, token: token}
 	if sessions, ok := api.Store.(auth.SessionStore); ok {
 		h.resolver = &auth.Resolver{Sessions: sessions, Mode: auth.RuntimeProduction}
@@ -147,7 +165,12 @@ func NewHTTPServer(api *API, token string) *HTTPServer {
 	if reopen, ok := api.Store.(ReopenStore); ok {
 		h.reopenStore = reopen
 	}
-	return h
+	mcp, err := NewMCPServerWithDefaultScope(api, defaultScopeJSON)
+	if err != nil {
+		return nil, err
+	}
+	h.mcpServer = mcp
+	return h, nil
 }
 
 // EnableLegacyApprove mounts the deprecated POST /v1/observations/{id}/approve
@@ -291,8 +314,7 @@ func (h *HTTPServer) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds 1 MiB")
 		return
 	}
-	mcp := NewMCPServer(h.api)
-	response := mcp.HandleMessage(body)
+	response := h.mcpServer.HandleMessage(body)
 	if response == nil {
 		// Notification over HTTP: MCP returns an empty 202 Accepted.
 		w.WriteHeader(http.StatusAccepted)

@@ -102,10 +102,33 @@ type MCPServer struct {
 	// it; a store without the reconciliation surface makes the tools fail
 	// closed.
 	reconciliationStore ReconciliationStore
+	// defaultContext is the automatic session context (v0.5.0 design §5): the
+	// CurrentContext loaded at construction for the configured
+	// DRENYRA_DEFAULT_SCOPE exact scope. nil when no default scope is
+	// configured — initialize then carries a null context and its
+	// instructions point at the accounting_current_context tool. The context
+	// is never inferred and never partial (construction fails closed instead).
+	defaultContext *core.CurrentContext
 }
 
-// NewMCPServer returns an MCP server over the shared API.
+// NewMCPServer returns an MCP server over the shared API with NO default
+// session context (DRENYRA_DEFAULT_SCOPE unset): initialize carries a null
+// context and the instructions point at accounting_current_context.
 func NewMCPServer(api *API) *MCPServer {
+	m, _ := NewMCPServerWithDefaultScope(api, "")
+	return m
+}
+
+// NewMCPServerWithDefaultScope returns an MCP server whose initialize carries
+// the automatic session context (design §5) for the configured exact company
+// scope. defaultScopeJSON is the raw DRENYRA_DEFAULT_SCOPE value
+// (JSON-encoded company scope). It FAILS CLOSED: an absent value yields a
+// server with a null default context; a present but malformed JSON scope,
+// non-company scope, invalid period or inaccessible scope is a construction
+// error — the server never starts with partial cross-scope data. The context
+// is loaded eagerly so an inaccessible scope fails at construction, exactly
+// where the operator can see it.
+func NewMCPServerWithDefaultScope(api *API, defaultScopeJSON string) (*MCPServer, error) {
 	m := &MCPServer{api: api}
 	if judgments, ok := api.Store.(JudgmentStore); ok {
 		m.judgmentStore = judgments
@@ -113,7 +136,26 @@ func NewMCPServer(api *API) *MCPServer {
 	if reconciliations, ok := api.Store.(ReconciliationStore); ok {
 		m.reconciliationStore = reconciliations
 	}
-	return m
+	raw := strings.TrimSpace(defaultScopeJSON)
+	if raw == "" {
+		return m, nil // unset → null context, instructions point at the tool
+	}
+	var scope core.Scope
+	if err := json.Unmarshal([]byte(raw), &scope); err != nil {
+		return nil, fmt.Errorf("DRENYRA_DEFAULT_SCOPE: invalid JSON scope: %v", err)
+	}
+	if err := core.AssertValidScope(scope); err != nil {
+		return nil, fmt.Errorf("DRENYRA_DEFAULT_SCOPE: %v", err)
+	}
+	if scope.Kind != core.ScopeKindCompany || scope.Period == "" {
+		return nil, errors.New("DRENYRA_DEFAULT_SCOPE: the default scope must be an exact company scope with a YYYYMM period")
+	}
+	ctx, err := CurrentContextFor(context.Background(), api, scope)
+	if err != nil {
+		return nil, fmt.Errorf("DRENYRA_DEFAULT_SCOPE: the configured scope is not accessible: %v", err)
+	}
+	m.defaultContext = &ctx
+	return m, nil
 }
 
 // ──────────────────────────────────────────────
@@ -269,6 +311,19 @@ func (m *MCPServer) handleInitialize(params json.RawMessage) (any, error) {
 	if !supportedVersion(version) {
 		version = latestProtocolVersion
 	}
+	// The automatic session context (v0.5.0 design §5): the CurrentContext of
+	// the configured DRENYRA_DEFAULT_SCOPE exact scope, or null when no default
+	// scope is configured — the instructions then point at the
+	// accounting_current_context tool. The context is never inferred and never
+	// partial (a present-but-invalid configuration fails at construction).
+	var currentContext any
+	instructions := baseInstructions
+	if m.defaultContext != nil {
+		currentContext = *m.defaultContext
+		instructions += " A default session context for the configured scope is provided in _meta.drenyra/currentContext; call accounting_current_context to refresh it."
+	} else {
+		instructions += " No default session scope is configured; call accounting_current_context with an exact company scope to load the session context."
+	}
 	return map[string]any{
 		"protocolVersion": version,
 		"capabilities": map[string]any{
@@ -278,11 +333,25 @@ func (m *MCPServer) handleInitialize(params json.RawMessage) (any, error) {
 			"name":    "drenyra-engram",
 			"version": engineVersion,
 		},
-		"instructions": "Institutional accounting memory (scope-first). Memory guides decisions; it never authorizes them. " +
-			"Every company-scoped read requires an exact scope (kind=company, organizationId, companyId, ruc, optional period). " +
-			"Lifecycle: draft → reviewed → promoted → superseded, adjacent-forward only.",
+		"instructions": instructions,
+		"_meta": map[string]any{
+			"drenyra/currentContext": currentContext,
+		},
 	}, nil
 }
+
+// baseInstructions is the fixed initialize instruction text (v0.5.0 design §5):
+// scope-first reads, the per-memory lifecycle with the human approval gate, and
+// the period closure states. The stale v0.3 line ("Lifecycle: draft → reviewed
+// → promoted → superseded, adjacent-forward only") is gone: a memory's status
+// chain and the period's closure state are separate semantics, and any fiscal-
+// effect write lands pending_review behind the human approval gate.
+const baseInstructions = "Institutional accounting memory (scope-first). Memory guides decisions; it never authorizes them. " +
+	"Every company-scoped read requires an exact scope (kind=company, organizationId, companyId, ruc, optional period). " +
+	"Lifecycle is per memory: draft → reviewed → promoted → superseded (adjacent-forward), and any write with a fiscal effect " +
+	"lands pending_review behind the human approval gate (approve/reject/void/supersede; agents never approve). " +
+	"Approving a monthly close (kind=summary, fiscalEffect=closing) closes its period (closureState=closed): later period-scoped " +
+	"mutations are BLOCKED until an explicit controller reopen (closureState=reopened)."
 
 func supportedVersion(version string) bool {
 	for _, supported := range supportedProtocolVersions {
@@ -494,11 +563,11 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_period_reopen",
 			"description": "Explicitly reopen a closed period (v0.5.0 close foundation, design §2.3) — the authenticated controller act that admits corrections. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"period":                    stringSchema("fiscal period YYYYMM being reopened"),
-				"scope":                     stringSchema(`JSON scope with period`),
-				"expected_close_memory_id":  stringSchema("close memory id that closed the period (the current closure row)"),
-				"reason":                    stringSchema("human-readable reopen justification (required)"),
-				"request_id":                stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+				"period":                   stringSchema("fiscal period YYYYMM being reopened"),
+				"scope":                    stringSchema(`JSON scope with period`),
+				"expected_close_memory_id": stringSchema("close memory id that closed the period (the current closure row)"),
+				"reason":                   stringSchema("human-readable reopen justification (required)"),
+				"request_id":               stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
 			}, "period", "scope", "expected_close_memory_id", "reason", "request_id"),
 		},
 		// ── accounting_judgment_* (v0.4.0 Step 2): the adjudication surface. The
@@ -634,6 +703,13 @@ func ToolCatalog() []map[string]any {
 			"description": "Explainable period summary: counts by kind/status, pending human approvals, active obligations/exceptions and the effectiveAt-ordered narrative (the killer demo — why did account 4011 end with this balance).",
 			"inputSchema": objectSchema(map[string]any{
 				"scope": stringSchema(`JSON scope with period`),
+			}, "scope"),
+		},
+		{
+			"name":        "accounting_current_context",
+			"description": "Session context for an exact company scope (v0.5.0, design §5): the explainable period summary with closure state and latest close, the shared pending-item digest, and the at most 20 most recent chains (latest revision per chain, effectiveAt desc). Pure read — no writes. Strict decode: the only accepted argument is scope.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope": stringSchema(`JSON company scope with period (required)`),
 			}, "scope"),
 		},
 		{
@@ -1527,6 +1603,29 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(summary)), nil
+
+	case "accounting_current_context":
+		// Strict decode (design §5/§6): the tool accepts EXACTLY its one
+		// declared argument — scope (a JSON company scope). Unknown fields are
+		// rejected, never silently ignored.
+		var args struct {
+			Scope string `json:"scope"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		current, err := CurrentContextFor(context.Background(), m.api, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(current)), nil
 
 	case "accounting_compare_periods":
 		// Strict snake_case decode (design §6): the tool accepts EXACTLY its two
