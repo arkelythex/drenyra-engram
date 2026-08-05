@@ -15,6 +15,11 @@ import (
 // ctxKey is the unexported context key for the verified principal.
 type ctxKey struct{}
 
+// authErrorKey is the unexported context key for a REJECTED authentication
+// credential (frozen code carried by the middleware when the resolver rejects a
+// presented credential).
+type authErrorKey struct{}
+
 // WithPrincipal returns a context carrying the verified approval principal.
 func WithPrincipal(ctx context.Context, principal auth.VerifiedApprovalPrincipal) context.Context {
 	return context.WithValue(ctx, ctxKey{}, principal)
@@ -39,4 +44,20 @@ func RequirePrincipal(ctx context.Context) (auth.VerifiedApprovalPrincipal, erro
 		)
 	}
 	return p, nil
+}
+
+// WithAuthError returns a context carrying the typed error of a REJECTED
+// authentication credential (the resolver's frozen code). It is stored only
+// when a credential WAS presented and could not be verified — never for a
+// missing or malformed Authorization header (that path leaves the context empty
+// so the handler answers AUTHENTICATION_REQUIRED).
+func WithAuthError(ctx context.Context, err error) context.Context {
+	return context.WithValue(ctx, authErrorKey{}, err)
+}
+
+// AuthErrorFromContext returns the rejected-credential error carried in ctx, or
+// nil when no credential was presented and rejected.
+func AuthErrorFromContext(ctx context.Context) error {
+	err, _ := ctx.Value(authErrorKey{}).(error)
+	return err
 }

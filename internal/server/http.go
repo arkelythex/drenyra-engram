@@ -24,12 +24,15 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strings"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
+	"github.com/arkelythex/drenyra-engram/internal/authz"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 )
@@ -83,13 +86,51 @@ func classify(err error) *apiError {
 // HTTPServer is the HTTP REST surface over the shared API.
 type HTTPServer struct {
 	api   *API
-	token string // optional bearer token; empty means no auth required
+	token string // optional shared bearer token; empty means no token guard
+	// resolver derives the verified approval principal from Authorization
+	// credentials (ADR-003). It is non-nil when api.Store implements
+	// auth.SessionStore; a nil resolver fails authentication closed.
+	resolver *auth.Resolver
+	// approvalStore is the atomic approval surface the authenticated route
+	// delegates to (one BEGIN IMMEDIATE store operation).
+	approvalStore ApprovalStore
+	// legacyApprove mounts the deprecated v0.3 POST /v1/observations/{id}/approve
+	// route. Disabled by default (v0.5.0 removes it); daemons opt in explicitly
+	// for the migration window (design section 6, resolved decision 2).
+	legacyApprove bool
 }
 
 // NewHTTPServer returns an HTTPServer over api. When token is non-empty it is
-// required on every request (Authorization: Bearer <token>).
+// required on every request (Authorization: Bearer <token>). The authenticated
+// approval route derives its principal ONLY from the resolved session credential
+// — the shared token guard is NOT identity and never authorizes approval.
 func NewHTTPServer(api *API, token string) *HTTPServer {
-	return &HTTPServer{api: api, token: token}
+	h := &HTTPServer{api: api, token: token}
+	if sessions, ok := api.Store.(auth.SessionStore); ok {
+		h.resolver = &auth.Resolver{Sessions: sessions, Mode: auth.RuntimeProduction}
+	}
+	if approval, ok := api.Store.(ApprovalStore); ok {
+		h.approvalStore = approval
+	}
+	return h
+}
+
+// EnableLegacyApprove mounts the deprecated POST /v1/observations/{id}/approve
+// route (v0.3 adapter, disabled by default in the daemon; removed in v0.5.0).
+func (h *HTTPServer) EnableLegacyApprove() *HTTPServer {
+	h.legacyApprove = true
+	return h
+}
+
+// SetAuthMode overrides the runtime mode used to resolve authentication
+// assertions (default production). Daemons in an explicit local development
+// mode pass auth.RuntimeLocalDev so local_dev sessions resolve; session and
+// service_assertion credentials resolve in both modes.
+func (h *HTTPServer) SetAuthMode(mode auth.RuntimeMode) *HTTPServer {
+	if h.resolver != nil {
+		h.resolver.Mode = mode
+	}
+	return h
 }
 
 // Handler returns the full route table (REST + MCP /mcp). Go 1.22+ ServeMux
@@ -103,7 +144,16 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/search", h.requireToken(h.handleSearch))
 	mux.HandleFunc("GET /v1/context", h.requireToken(h.handleContext))
 	mux.HandleFunc("POST /v1/compare", h.requireToken(h.handleCompare))
-	mux.HandleFunc("POST /v1/observations/{id}/approve", h.requireToken(h.handleApprove))
+	// Authenticated approval (v0.4.0 Step 1, ADR-003): the principal is derived
+	// ONLY from the Authorization credential; the strict body can never supply
+	// authority (actor/actorKind/subjectId/roles are REJECTED, never ignored).
+	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.authenticate(h.handleApprovalApprove))
+	// Deprecated v0.3 approval surface: stays compiled but is DISABLED by default
+	// in the daemon (v0.5.0 removes it). Mounted only behind an explicit opt-in
+	// (EnableLegacyApprove) for the migration window.
+	if h.legacyApprove {
+		mux.HandleFunc("POST /v1/observations/{id}/approve", h.requireToken(h.handleApprove))
+	}
 	mux.HandleFunc("POST /v1/observations/{id}/reject", h.requireToken(h.handleReject))
 	mux.HandleFunc("POST /v1/observations/{id}/void", h.requireToken(h.handleVoid))
 	mux.HandleFunc("POST /v1/observations/{id}/supersede", h.requireToken(h.handleSupersede))
@@ -114,6 +164,41 @@ func (h *HTTPServer) Handler() http.Handler {
 	// agent transport via `drenyra-engram mcp`).
 	mux.HandleFunc("POST /mcp", h.requireToken(h.handleMCP))
 	return mux
+}
+
+// authenticate resolves the Authorization bearer credential ONCE per request
+// (design section 3). A missing/malformed header leaves the context empty;
+// a rejected credential stores the typed auth error. No silent fallback.
+func (h *HTTPServer) authenticate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.resolver != nil {
+			if token, ok := parseBearer(r.Header.Get("Authorization")); ok {
+				principal, err := h.resolver.Authenticate(r.Context(), auth.AuthenticationAssertion{
+					Method:     auth.AuthMethodSession,
+					Credential: token,
+				})
+				if err != nil {
+					r = r.WithContext(WithAuthError(r.Context(), err))
+				} else {
+					r = r.WithContext(WithPrincipal(r.Context(), principal))
+				}
+			}
+		}
+		next(w, r)
+	}
+}
+
+// parseBearer extracts the token from an Authorization: Bearer <token> header.
+func parseBearer(header string) (string, bool) {
+	const prefix = "Bearer "
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return "", false
+	}
+	token := strings.TrimSpace(header[len(prefix):])
+	if token == "" {
+		return "", false
+	}
+	return token, true
 }
 
 // requireToken wraps a handler with the optional bearer-token guard. When no
@@ -324,6 +409,117 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, output)
+}
+
+// approvalApproveInput is the STRICT approval body.
+type approvalApproveInput struct {
+	ExpectedEnvelopeHash string `json:"expectedEnvelopeHash"`
+	Reason               string `json:"reason"`
+}
+
+// handleApprovalApprove is the authenticated approval route.
+func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
+	principal, err := RequirePrincipal(r.Context())
+	if err != nil {
+		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
+			writeApprovalError(w, rejected)
+			return
+		}
+		writeHTTPError(w, http.StatusUnauthorized, auth.CodeAuthenticationRequired,
+			"authentication required")
+		return
+	}
+	requestID := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if requestID == "" {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
+		return
+	}
+	body, err := readBounded(r)
+	if err != nil {
+		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
+		return
+	}
+	var input approvalApproveInput
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+		return
+	}
+	// The mux route is POST /accounting/memories/{memoryId}/approve; the memory
+	// id is the single path segment between the fixed prefixes/suffixes.
+	memoryID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/accounting/memories/"), "/approve")
+	if h.approvalStore == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "approval store is not available")
+		return
+	}
+	cmd := core.ApproveMemoryCommand{
+		MemoryID:             memoryID,
+		ExpectedEnvelopeHash: input.ExpectedEnvelopeHash,
+		Reason:               input.Reason,
+		RequestID:            requestID,
+	}
+	result, err := ApproveMemory(r.Context(), h.approvalStore, authz.NewApprovalPolicy(), cmd, principal)
+	if err != nil {
+		writeApprovalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// envelopeMismatchBody is the ONLY approval error shape with extra fields: the
+// expected and actual envelope hashes. Memory content never appears in approval
+// errors (design section 6).
+type envelopeMismatchBody struct {
+	Error                httpErrorDetail `json:"error"`
+	ExpectedEnvelopeHash string          `json:"expectedEnvelopeHash"`
+	ActualEnvelopeHash   string          `json:"actualEnvelopeHash"`
+}
+
+// approvalErrorStatus maps a frozen approval code to its HTTP status (design
+// section 6). An unmapped code fails closed (not ok).
+func approvalErrorStatus(code string) (int, bool) {
+	switch code {
+	case auth.CodeAuthenticationRequired, auth.CodePrincipalInvalid:
+		return http.StatusUnauthorized, true
+	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
+		auth.CodeRoleNotAuthorized, auth.CodeAssuranceTooLow, auth.CodeMaterialityLimitExceeded:
+		return http.StatusForbidden, true
+	case auth.CodeReasonRequired:
+		return http.StatusBadRequest, true
+	case auth.CodeMemoryNotFound:
+		return http.StatusNotFound, true
+	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided, auth.CodeIdempotencyConflict:
+		return http.StatusConflict, true
+	}
+	return 0, false
+}
+
+// writeApprovalError writes the approval error envelope. Only ENVELOPE_MISMATCH
+// adds expectedEnvelopeHash/actualEnvelopeHash; every other code carries just
+// the frozen code and message. Never include memory content.
+func writeApprovalError(w http.ResponseWriter, err error) {
+	var e *auth.Error
+	if !errors.As(err, &e) {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "approval failed")
+		return
+	}
+	status, ok := approvalErrorStatus(e.Code)
+	if !ok {
+		// Fail closed: an unmapped frozen code is a server defect, never a guess.
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL",
+			"approval error code "+e.Code+" is not mapped to a transport status")
+		return
+	}
+	if e.Code == auth.CodeEnvelopeMismatch {
+		writeJSON(w, status, envelopeMismatchBody{
+			Error:                httpErrorDetail{Code: e.Code, Message: e.Message},
+			ExpectedEnvelopeHash: e.ExpectedEnvelopeHash,
+			ActualEnvelopeHash:   e.ActualEnvelopeHash,
+		})
+		return
+	}
+	writeHTTPError(w, status, e.Code, e.Message)
 }
 
 // writeGateTransition shares the approve/reject/void handler shape: a JSON body

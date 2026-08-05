@@ -18,15 +18,22 @@ import (
 )
 
 // newTestHTTPServer returns an httptest server over the shared API with the
-// given optional token.
-func newTestHTTPServer(t *testing.T, token string) (*httptest.Server, *API) {
+// given optional token. opts configure the server before Handler() is built
+// (e.g. enableLegacyApprove).
+func newTestHTTPServer(t *testing.T, token string, opts ...func(*HTTPServer)) (*httptest.Server, *API) {
 	t.Helper()
 	api := newTestAPI(t)
 	httpServer := NewHTTPServer(api, token)
+	for _, opt := range opts {
+		opt(httpServer)
+	}
 	ts := httptest.NewServer(httpServer.Handler())
 	t.Cleanup(ts.Close)
 	return ts, api
 }
+
+// enableLegacyApprove opts a test server into the deprecated v0.3 approve route.
+func enableLegacyApprove(h *HTTPServer) { h.EnableLegacyApprove() }
 
 // httpScope builds a scope matching what the HTTP surface derives from query
 // parameters (companyId := ruc), so HTTP saves and HTTP reads round-trip.
@@ -162,7 +169,9 @@ func TestHTTPSearchScopeIsolation(t *testing.T) {
 }
 
 func TestHTTPLifecycleConflict(t *testing.T) {
-	ts, _ := newTestHTTPServer(t, "")
+	// The deprecated v0.3 approve route is disabled by default; this legacy test
+	// opts in explicitly (the migration-window flag).
+	ts, _ := newTestHTTPServer(t, "", enableLegacyApprove)
 	scope := testScope(testRucA)
 
 	_, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/observations", "",
@@ -233,6 +242,8 @@ func TestHTTPTokenAuth(t *testing.T) {
 // boundary: no authorize/approve/allow route exists on the HTTP surface.
 func TestHTTPNoAuthorizationEndpoints(t *testing.T) {
 	ts, _ := newTestHTTPServer(t, "")
+	// The legacy /v1/observations/x/approve route stays COMPILED but is disabled
+	// by default in the daemon: without the opt-in flag it must 404 here too.
 	for _, path := range []string{
 		"/v1/authorize", "/v1/approve", "/v1/allow",
 		"/v1/observations/x/authorize", "/v1/observations/x/approve",
