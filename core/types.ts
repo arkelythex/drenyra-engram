@@ -152,9 +152,15 @@ export interface MemorySource {
 }
 
 /** Vigencia: effective/expiry window. Expired memories surface as stale. */
+/** Vigencia: effective/expiry window. Expired memories surface as stale.
+ * `source` records the vigencia provenance (frozen decision, v0.3.0):
+ * "declared" (written explicitly by a v2 caller) or
+ * "migrated_from_effective_at_v1" (inferred during the v1→v2 migration) — an
+ * audit can distinguish a vigencia originally confirmed from one inferred. */
 export interface MemoryValidity {
 	effectiveAt?: string;
 	expiresAt?: string;
+	source?: string;
 }
 
 // ──────────────────────────────────────────────
@@ -510,6 +516,14 @@ export async function computeIdentityHash(memory: AccountingMemory): Promise<str
  * content hash + fiscal effect + status + source + evidence/rule refs +
  * timestamps + supersession + receipt. Mirrors core.ComputeEnvelopeHash.
  */
+/** Canonical ref ordering: evidenceRefs/ruleRefs are SETS — order is not
+ * semantically meaningful, so the envelope hash must not depend on it
+ * (frozen decision, v0.3.0). Same algorithm as core.canonicalRefs (Go). */
+function canonicalRefs(refs: string[]): string {
+  const unique = [...new Set(refs.filter((ref) => ref !== ""))].sort();
+  return unique.join("\u0000");
+}
+
 export async function computeEnvelopeHash(memory: AccountingMemory): Promise<string> {
   const canonical = [
     await computeIdentityHash(memory),
@@ -525,8 +539,8 @@ export async function computeEnvelopeHash(memory: AccountingMemory): Promise<str
     memory.observedAt ?? "",
     memory.supersedesId ?? "",
     memory.receiptId ?? "",
-    (memory.evidenceRefs ?? []).join("\u0000"),
-    (memory.ruleRefs ?? []).join("\u0000"),
+    canonicalRefs(memory.evidenceRefs ?? []),
+    canonicalRefs(memory.ruleRefs ?? []),
   ].join("\u0000");
   return sha256Hex(canonical);
 }

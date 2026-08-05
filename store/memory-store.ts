@@ -122,7 +122,14 @@ export class InMemoryMemoryStore implements MemoryStore {
 			source: { ...input.source },
 			...(input.validity === undefined
 				? {}
-				: { validity: { ...input.validity } }),
+				: {
+						validity: {
+							...input.validity,
+							// The vigencia of a written v2 memory is declared (frozen
+							// decision): migrated rows carry migrated_from_effective_at_v1.
+							source: input.validity.source ?? "declared",
+						},
+					}),
 			...(input.ruleRefs === undefined
 				? {}
 				: { ruleRefs: [...input.ruleRefs] }),
