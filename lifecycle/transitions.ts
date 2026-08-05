@@ -22,13 +22,17 @@
  * permanece." Memory informs decisions — it never authorizes business actions.
  */
 
-import type {
-	AccountingMemory,
-	ActorKind,
-	FiscalEffect,
-	MemoryStatus,
+import {
+	ApprovalError,
+	type AccountingMemory,
+	type ActorKind,
+	type ApprovalResult,
+	type ApproveMemoryCommand,
+	type FiscalEffect,
+	type MemoryStatus,
+	type VerifiedApprovalPrincipal,
 } from "../core/types.js";
-import type { MemoryStore } from "../store/memory-store.js";
+import type { ApprovalPolicyFn, MemoryStore } from "../store/memory-store.js";
 
 export const INVALID_TRANSITION_ERROR = "INVALID_TRANSITION";
 export const GATE_REQUIRES_HUMAN_ERROR = "GATE_REQUIRES_HUMAN";
@@ -137,6 +141,58 @@ export function supersedePrev(
 	return { ...memory, status: "superseded", supersedesId: successorId };
 }
 
+/**
+ * Authenticated atomic approval (v0.4.0 Step 1, ADR-003) — mirror of
+ * server.ApproveMemory. The principal is ALWAYS a separate verified argument
+ * (auth/principal.ts factory), never part of the command: the transport
+ * payload can never declare authority. This function validates command
+ * syntax and delegates the whole state change to the store's atomic
+ * approval; authorization (scope, role, assurance, materiality) belongs to
+ * the pure policy, not here.
+ */
+export async function approveMemory(
+command: ApproveMemoryCommand,
+principal: VerifiedApprovalPrincipal,
+store: MemoryStore,
+policy?: ApprovalPolicyFn,
+): Promise<ApprovalResult> {
+// A zero principal cannot approve anything (mirror of the service's fail-closed
+// guard before the policy could misreport it). The factory always mints a
+// fully-validated principal, so an empty subject is the only observable zero
+// value in the mirror.
+if (principal.subjectId.trim() === "") {
+throw new ApprovalError(
+"PRINCIPAL_INVALID",
+"no verified approval principal present",
+);
+}
+// Command syntax — the frozen transport mapping treats a malformed
+// command as a not-found/identity failure, never an authorization
+// decision.
+if (command.memoryId.trim() === "") {
+throw new ApprovalError("MEMORY_NOT_FOUND", "memoryId is required");
+}
+if (command.expectedEnvelopeHash.trim() === "") {
+throw new ApprovalError(
+"MEMORY_NOT_FOUND",
+"expectedEnvelopeHash is required",
+);
+}
+if (command.requestId.trim() === "") {
+throw new ApprovalError(
+"MEMORY_NOT_FOUND",
+"requestId (idempotency key) is required",
+);
+}
+if (command.reason.trim() === "") {
+throw new ApprovalError(
+"REASON_REQUIRED",
+"a reason is required for approval",
+);
+}
+return store.approveMemory(command, principal, policy);
+}
+    
 /**
  * Apply a gated status transition (approve/reject/void) to a stored memory,
  * recording an audit-trail entry. The store applies the transition; legality

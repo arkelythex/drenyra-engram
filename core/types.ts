@@ -257,26 +257,117 @@ export type ApprovalErrorCode =
 	| "ALREADY_DECIDED"
 	| "IDEMPOTENCY_CONFLICT";
 
-export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
-	"AUTHENTICATION_REQUIRED",
-	"PRINCIPAL_INVALID",
-	"MEMBERSHIP_INACTIVE",
-	"TENANT_SCOPE_MISMATCH",
-	"COMPANY_SCOPE_DENIED",
-	"ROLE_NOT_AUTHORIZED",
-	"ASSURANCE_TOO_LOW",
-	"MATERIALITY_LIMIT_EXCEEDED",
-	"REASON_REQUIRED",
-	"MEMORY_NOT_FOUND",
-	"INVALID_TRANSITION",
-	"ENVELOPE_MISMATCH",
-	"ALREADY_DECIDED",
-	"IDEMPOTENCY_CONFLICT",
-];
+    export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
+    	"AUTHENTICATION_REQUIRED",
+    	"PRINCIPAL_INVALID",
+    	"MEMBERSHIP_INACTIVE",
+    	"TENANT_SCOPE_MISMATCH",
+    	"COMPANY_SCOPE_DENIED",
+    	"ROLE_NOT_AUTHORIZED",
+    	"ASSURANCE_TOO_LOW",
+    	"MATERIALITY_LIMIT_EXCEEDED",
+    	"REASON_REQUIRED",
+    	"MEMORY_NOT_FOUND",
+    	"INVALID_TRANSITION",
+    	"ENVELOPE_MISMATCH",
+    	"ALREADY_DECIDED",
+    	"IDEMPOTENCY_CONFLICT",
+    ];
 
+    /**
+     * Approval command (v0.4.0 Step 1). Deliberately carries NO principal
+     * fields (ADR-003): authority arrives as a separate verified principal,
+     * never inside the transport payload. Mirrors core.ApproveMemoryCommand.
+     */
+    export interface ApproveMemoryCommand {
+    	memoryId: string;
+    	/** The envelope hash the reviewer actually saw; a mismatch fails with
+    	 * ENVELOPE_MISMATCH. */
+    	expectedEnvelopeHash: string;
+    	/** Human-readable justification (REQUIRED, non-whitespace). */
+    	reason: string;
+    	/** Idempotency key scoped to (tenant, requestId). */
+    	requestId: string;
+    }
 
-// ──────────────────────────────────────────────
-// Content / source / validity
+    /**
+     * Outcome of an atomic approval. previousStatus is always "pending_review"
+     * and currentStatus always "approved" for a fresh approval; a replay
+     * returns the stored result with idempotentReplay=true. Mirrors
+     * core.ApprovalResult.
+     */
+    export interface ApprovalResult {
+    	memoryId: string;
+    	approvalEventId: string;
+    	previousStatus: "pending_review";
+    	currentStatus: "approved";
+    	reviewedEnvelopeHash: string;
+    	/** H2 — the envelope of the approved memory; always differs from the
+    	 * reviewed envelope (status participates in the hash). */
+    	resultingEnvelopeHash: string;
+    	principalSubjectId: string;
+    	membershipId: string;
+    	policyVersion: string;
+    	approvedAt: string;
+    	/** True when replayed from the completed idempotency reservation. */
+    	idempotentReplay: boolean;
+    }
+
+    /**
+     * Immutable audit record of an authenticated approval — mirrors
+     * core.ApprovalEvent and the v3 approval_events table: action always
+     * "approved", fromStatus "pending_review", toStatus "approved",
+     * authorizationReasonCode always "AUTHORIZED". The snapshot carries
+     * canonical (sorted, deduplicated) roles.
+     */
+    export interface ApprovalEvent {
+    	id: string;
+    	requestId: string;
+    	memoryId: string;
+    	tenantId: string;
+    	companyId: string;
+    	fiscalPeriodId?: string;
+    	action: "approved";
+    	fromStatus: "pending_review";
+    	toStatus: "approved";
+    	reviewedEnvelopeHash: string;
+    	resultingEnvelopeHash: string;
+    	reason: string;
+    	principalSnapshot: PrincipalSnapshot;
+    	policyVersion: string;
+        authorizationReasonCode: "AUTHORIZED";
+        createdAt: string;
+    }
+
+    /**
+     * Transport-independent approval error carrying the frozen code (mirror of
+     * auth.Error in internal/auth/errors.go). ONLY an ENVELOPE_MISMATCH error
+     * carries the two hashes; memory content is never included, especially on
+     * cross-tenant surfaces.
+     */
+    export class ApprovalError extends Error {
+        readonly code: ApprovalErrorCode;
+        /** Present ONLY on ENVELOPE_MISMATCH — the hash the reviewer submitted. */
+        readonly expectedEnvelopeHash?: string;
+        /** Present ONLY on ENVELOPE_MISMATCH — the current envelope hash. */
+        readonly actualEnvelopeHash?: string;
+
+        constructor(
+            code: ApprovalErrorCode,
+            message: string,
+            hashes?: { expectedEnvelopeHash?: string; actualEnvelopeHash?: string },
+        ) {
+            super(message);
+            this.name = "ApprovalError";
+            this.code = code;
+            this.expectedEnvelopeHash = hashes?.expectedEnvelopeHash;
+            this.actualEnvelopeHash = hashes?.actualEnvelopeHash;
+        }
+    }
+    
+    
+    // ──────────────────────────────────────────────
+    // Content / source / validity
 // ──────────────────────────────────────────────
 
 /** Structured content — the canonical `What / Why / Where / Learned` shape. */
@@ -505,7 +596,13 @@ export function cloneMemory(memory: AccountingMemory): AccountingMemory {
 		...(memory.materialityLevel === undefined
 			? {}
 			: { materialityLevel: memory.materialityLevel }),
-		contentHash: memory.contentHash,
+    		contentHash: memory.contentHash,
+    		...(memory.identityHash === undefined
+    			? {}
+    			: { identityHash: memory.identityHash }),
+    		...(memory.envelopeHash === undefined
+    			? {}
+    			: { envelopeHash: memory.envelopeHash }),
 		...(memory.receiptId === undefined ? {} : { receiptId: memory.receiptId }),
 		...(memory.supersedesId === undefined
 			? {}

@@ -107,6 +107,14 @@ func AssertHumanApproval(actor Source) error {
 // Approve transitions a pending_review memory to approved. REQUIRES a human
 // actor; fails closed otherwise. Mutates the memory in place (the caller owns
 // persistence of the transition).
+//
+// Deprecated: v0.4.0 Step 1 replaced this low-level guard with the
+// authenticated approval path (ADR-003). New code MUST approve through
+// internal/server.ApproveMemory → store.SQLiteStore.ApproveMemory, which
+// verifies the principal, recomputes the envelope hash, runs the versioned
+// policy and persists the immutable approval event atomically. This function
+// remains ONLY for v0.3 consumers; it is not reachable from the new approval
+// transports.
 func Approve(m *AccountingMemory, actor Source) error {
 	if !CanApprove(m.Status) {
 		return fmt.Errorf("%w: %s → approved is not legal from status %q", ErrInvalidTransition, m.Identity.ID, m.Status)

@@ -22,9 +22,10 @@
  * - `conflict` is reserved for a future optimistic-concurrency slice.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 
 import {
+	ApprovalError,
 	assertValidContent,
 	assertValidMemory,
 	assertValidScope,
@@ -37,6 +38,10 @@ import {
 	scopeEquals,
 	scopeKey,
 	type AccountingMemory,
+	type ApprovalAuthorizationDecision,
+	type ApprovalEvent,
+	type ApprovalResult,
+	type ApproveMemoryCommand,
 	type MemoryRelation,
 	type MemoryRelationRecord,
 	type MemoryScope,
@@ -44,8 +49,21 @@ import {
 	type MemoryWriteResult,
 	type SaveMemoryInput,
 	type StatusTransitionRecord,
+	type VerifiedApprovalPrincipal,
 } from "../core/types.js";
 import { canVoid, initialStatus } from "../lifecycle/transitions.js";
+import { principalSnapshot } from "../auth/principal.js";
+import { authorizeApproval } from "../authz/approval-policy.js";
+
+/**
+ * Pure authorization function passed to the atomic approval (mirror of the
+ * authz.ApprovalAuthorizationPolicy interface). Defaults to the frozen
+ * v0.4.0 policy.
+ */
+export type ApprovalPolicyFn = (
+	principal: VerifiedApprovalPrincipal,
+	memory: AccountingMemory,
+) => ApprovalAuthorizationDecision;
 
 /** Storage surface consumed by search and lifecycle modules. */
 export interface MemoryStore {
@@ -76,8 +94,22 @@ export interface MemoryStore {
 		to: MemoryStatus,
 		meta: { actor: string; actorKind: string; timestamp: string },
 	): AccountingMemory;
+	/**
+	 * Atomic authenticated approval (v0.4.0 Step 1, ADR-003): the principal is
+	 * ALWAYS a separate verified argument, never part of the command. Mirrors
+	 * store.SQLiteStore.ApproveMemory: idempotency reservation → locked re-read
+	 * → scope/status checks → fresh H1 vs expected → pure policy → guarded
+	 * status flip + H2 → immutable approval event → completed reservation.
+	 */
+	approveMemory(
+		command: ApproveMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+		policy?: ApprovalPolicyFn,
+	): Promise<ApprovalResult>;
 	relations(): MemoryRelationRecord[];
 	transitionLog(): StatusTransitionRecord[];
+	/** Immutable authenticated approval events (v0.4.0 Step 1). */
+	approvalEvents(): ApprovalEvent[];
 }
 
 /** In-memory implementation. Data is lost when the process exits. */
@@ -87,6 +119,17 @@ export class InMemoryMemoryStore implements MemoryStore {
 	private readonly byId = new Map<string, AccountingMemory>();
 	private readonly relationRecords: MemoryRelationRecord[] = [];
 	private readonly statusTransitions: StatusTransitionRecord[] = [];
+	private readonly approvalEventRecords: ApprovalEvent[] = [];
+	private readonly idempotency = new Map<
+		string,
+		{
+			commandHash: string;
+			principalSubjectId: string;
+			membershipId: string;
+			result?: ApprovalResult;
+			completedAt?: string;
+		}
+	>();
 
 	async save(input: SaveMemoryInput): Promise<MemoryWriteResult> {
 		if (input.topicKey.trim().length === 0) {
@@ -288,6 +331,220 @@ export class InMemoryMemoryStore implements MemoryStore {
 		return this.statusTransitions.map((entry) => ({ ...entry }));
 	}
 
+	approvalEvents(): ApprovalEvent[] {
+		return this.approvalEventRecords.map((event) => ({ ...event }));
+	}
+
+	/**
+	 * Atomic authenticated approval (mirror of SQLiteStore.ApproveMemory). The
+	 * in-memory store is a semantic mirror, not a concurrency proof: the
+	 * single-threaded critical section is the contiguous final block (mutate +
+	 * record + complete reservation) after every await, so a throw before it
+	 * leaves no partial state (rollback of the incomplete reservation).
+	 */
+	async approveMemory(
+		command: ApproveMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+		policy: ApprovalPolicyFn = authorizeApproval,
+	): Promise<ApprovalResult> {
+		// Syntax guards (defense in depth — the transitions orchestrator validates
+		// first). Mirrors the store's fail-closed guards.
+		if (command.reason.trim().length === 0) {
+			throw new ApprovalError("REASON_REQUIRED", "a reason is required for approval");
+		}
+		if (
+			command.memoryId.trim().length === 0 ||
+			command.expectedEnvelopeHash.trim().length === 0 ||
+			command.requestId.trim().length === 0
+		) {
+			throw new ApprovalError(
+				"MEMORY_NOT_FOUND",
+				"approval command is incomplete (memoryId, expectedEnvelopeHash and requestId are required)",
+			);
+		}
+
+		const now = new Date().toISOString();
+		const commandHash = approveCommandHash(
+			command.memoryId,
+			command.expectedEnvelopeHash,
+			command.reason,
+		);
+		// Idempotency scope: one reservation per (tenant, requestId).
+		const key = `${principal.tenantId}\u0000${command.requestId}`;
+		const existing = this.idempotency.get(key);
+		if (existing !== undefined) {
+			// The reservation exists: the command AND the principal binding must
+			// match exactly, else the request id was reused for a different intent.
+			if (
+				existing.commandHash !== commandHash ||
+				existing.principalSubjectId !== principal.subjectId ||
+				existing.membershipId !== principal.membershipId
+			) {
+				throw new ApprovalError(
+					"IDEMPOTENCY_CONFLICT",
+					"request id already used with a different command or principal",
+				);
+			}
+			if (existing.completedAt !== undefined && existing.result !== undefined) {
+				// Completed replay: return the stored result marked as a replay.
+				return { ...existing.result, idempotentReplay: true };
+			}
+			// Incomplete reservation (an interrupted attempt): reuse it — the
+			// memory re-check below decides ALREADY_DECIDED when the memory was
+			// decided by another request.
+		} else {
+			// Reserve: result/completion stay unset until the approval commits.
+			this.idempotency.set(key, {
+				commandHash,
+				principalSubjectId: principal.subjectId,
+				membershipId: principal.membershipId,
+			});
+		}
+
+		try {
+			// Locked re-read of the memory (the mirror has a single byId map; the
+			// Go store re-reads through the locked connection).
+			const memory = this.byId.get(command.memoryId);
+			if (memory === undefined) {
+				throw new ApprovalError(
+					"MEMORY_NOT_FOUND",
+					`memory not found: ${command.memoryId}`,
+				);
+			}
+
+			// Scope checks (mirror of the store's locked transaction).
+			if (memory.scope.kind !== "company") {
+				throw new ApprovalError(
+					"COMPANY_SCOPE_DENIED",
+					"institutional memories cannot be approved by a company-scoped principal",
+				);
+			}
+			if (principal.tenantId !== memory.scope.organizationId) {
+				throw new ApprovalError(
+					"TENANT_SCOPE_MISMATCH",
+					"principal tenant does not match the memory tenant",
+				);
+			}
+			if (!principal.companyScopes.includes(memory.scope.companyId)) {
+				throw new ApprovalError(
+					"COMPANY_SCOPE_DENIED",
+					"company is outside the principal's scope",
+				);
+			}
+
+			// Status gate: only pending_review can be approved.
+			if (memory.status === "approved" || memory.status === "rejected") {
+				throw new ApprovalError("ALREADY_DECIDED", "memory is already decided");
+			}
+			if (memory.status !== "pending_review") {
+				throw new ApprovalError(
+					"INVALID_TRANSITION",
+					`approval is not legal from status "${memory.status}"`,
+				);
+			}
+
+			// H1 recomputed FRESH from the current row — never from a stale cached
+			// envelope. A mismatch carries ONLY the two hashes, never content.
+			const h1 = await computeEnvelopeHash(memory);
+			if (command.expectedEnvelopeHash.trim().toLowerCase() !== h1.toLowerCase()) {
+				throw new ApprovalError(
+					"ENVELOPE_MISMATCH",
+					"memory envelope changed after review; expected hash does not match the current envelope",
+				{
+					expectedEnvelopeHash: command.expectedEnvelopeHash,
+					actualEnvelopeHash: h1,
+				},
+				);
+			}
+
+			// Pure policy in the critical section (mirror of the in-transaction
+			// policy run). Any denial fails the approval.
+			const decision = policy(principal, memory);
+			if (!decision.allowed) {
+				throw new ApprovalError(
+					decision.reasonCode as ApprovalError["code"],
+					"authorization policy denied the approval",
+				);
+			}
+
+			// H2 from the approved snapshot; status participates in the envelope
+			// hash so it must differ from H1.
+			const approved = cloneMemory(memory);
+			approved.status = "approved";
+			const h2 = await computeEnvelopeHash(approved);
+			if (h2 === h1) {
+				throw new ApprovalError(
+					"INVALID_TRANSITION",
+					"resulting envelope equals reviewed envelope — status change did not affect the hash",
+				);
+			}
+
+			// ── Atomic final block: mutate + record + complete the reservation. ──
+			// No awaits after this point: a throw below cannot happen, and a throw
+			// above already rolled back the reservation in the catch handler.
+			const event: ApprovalEvent = {
+				id: randomUUID(),
+				requestId: command.requestId,
+				memoryId: memory.identity.id,
+				tenantId: memory.scope.organizationId,
+				companyId: memory.scope.companyId,
+				...(memory.scope.period === undefined || memory.scope.period === ""
+					? {}
+					: { fiscalPeriodId: memory.scope.period }),
+				action: "approved",
+				fromStatus: "pending_review",
+				toStatus: "approved",
+				reviewedEnvelopeHash: h1,
+				resultingEnvelopeHash: h2,
+				reason: command.reason,
+				principalSnapshot: principalSnapshot(principal),
+				policyVersion: decision.policyVersion,
+				authorizationReasonCode: "AUTHORIZED",
+				createdAt: now,
+			};
+			memory.status = "approved";
+			memory.envelopeHash = h2;
+			this.approvalEventRecords.push(event);
+			this.statusTransitions.push({
+				memoryId: memory.identity.id,
+				from: "pending_review",
+				to: "approved",
+				actor: principal.subjectId,
+				actorKind: "human",
+				timestamp: now,
+			});
+			const result: ApprovalResult = {
+				memoryId: memory.identity.id,
+				approvalEventId: event.id,
+				previousStatus: "pending_review",
+				currentStatus: "approved",
+				reviewedEnvelopeHash: h1,
+				resultingEnvelopeHash: h2,
+				principalSubjectId: principal.subjectId,
+				membershipId: principal.membershipId,
+				policyVersion: decision.policyVersion,
+				approvedAt: now,
+				idempotentReplay: false,
+			};
+			this.idempotency.set(key, {
+				commandHash,
+				principalSubjectId: principal.subjectId,
+				membershipId: principal.membershipId,
+				result,
+				completedAt: now,
+			});
+			return result;
+		} catch (error) {
+			// Rollback of the incomplete reservation (mirror of the transaction
+			// rollback); a completed reservation is never removed.
+			const current = this.idempotency.get(key);
+			if (current !== undefined && current.completedAt === undefined) {
+				this.idempotency.delete(key);
+			}
+			throw error;
+		}
+	}
+
 	private chain(topicKey: string, scope: MemoryScope): AccountingMemory[] {
 		const key = chainKey(topicKey, scope);
 		let chain = this.chains.get(key);
@@ -301,4 +558,19 @@ export class InMemoryMemoryStore implements MemoryStore {
 
 function chainKey(topicKey: string, scope: MemoryScope): string {
 	return `${topicKey}\u0000${scopeKey(scope)}`;
+}
+
+/**
+ * Canonical idempotency command hash (mirror of approveCommandHash in
+ * store.go): SHA-256 of `memoryId \x00 lowercase(expectedHash) \x00 reason`,
+ * hex-encoded. Byte-identical to the Go implementation so replayed results are
+ * comparable across runtimes.
+ */
+function approveCommandHash(
+	memoryId: string,
+	expectedEnvelopeHash: string,
+	reason: string,
+): string {
+	const canonical = `${memoryId}\u0000${expectedEnvelopeHash.toLowerCase()}\u0000${reason}`;
+	return createHash("sha256").update(canonical, "utf8").digest("hex");
 }

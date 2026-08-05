@@ -51,7 +51,9 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
+	"github.com/arkelythex/drenyra-engram/internal/authz"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 )
 
@@ -1298,6 +1302,387 @@ func (s *SQLiteStore) linkRefs(table, memoryID string) []string {
 	return refs
 }
 
+// ──────────────────────────────────────────────
+// Authenticated approval (v0.4.0 Step 1, ADR-003)
+// ──────────────────────────────────────────────
+
+// connQueryer is the statement surface the approval and link writers run
+// through: *sql.Conn (dedicated connection, manual BEGIN IMMEDIATE) satisfies
+// it, so every read and write of an approval stays on the SAME connection and
+// the transaction boundary is explicit.
+type connQueryer interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// readMemoryWithLinks reads an observation row and merges the current
+// evidence/rule link rows THROUGH the given connection (the approval and link
+// paths reuse the withLinks merge scoped to their own transaction — never a
+// separate pooled connection).
+func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q connQueryer, id string) (core.AccountingMemory, bool) {
+	row := q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, id)
+	memory, err := scanMemory(row)
+	if err != nil {
+		return core.AccountingMemory{}, false
+	}
+	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memory.Identity.ID))
+	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memory.Identity.ID))
+	return memory, true
+}
+
+// linkRefsQuery returns the link rows of a memory in insertion order, scoped to
+// the given connection.
+func linkRefsQuery(ctx context.Context, q connQueryer, table, memoryID string) []string {
+	rows, err := q.QueryContext(ctx, `SELECT ref FROM `+table+` WHERE memory_id = ? ORDER BY rowid`, memoryID)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = rows.Close() }()
+	refs := make([]string, 0)
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+// refreshEnvelopeCache recomputes the DERIVED envelope cache of memoryID from
+// the CURRENT row plus the CURRENT link rows (never from the stored hash) and
+// persists it on the given connection. The persisted observations.envelope_hash
+// is a cache only: approval always recomputes H1 fresh inside its own locked
+// transaction (design §5 — the cache is not trusted).
+func refreshEnvelopeCache(ctx context.Context, q connQueryer, memoryID string) error {
+	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID))
+	if err != nil {
+		return fmt.Errorf("persistence error: refresh envelope cache read: %w", err)
+	}
+	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memoryID))
+	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memoryID))
+	hash := core.ComputeEnvelopeHash(memory)
+	if _, err := q.ExecContext(ctx, `UPDATE observations SET envelope_hash = ? WHERE id = ?`, hash, memoryID); err != nil {
+		return fmt.Errorf("persistence error: refresh envelope cache update: %w", err)
+	}
+	return nil
+}
+
+// approveCommandHash is the canonical idempotency command hash: SHA-256 hex of
+// memoryId NUL lowercase(expectedEnvelopeHash) NUL exact reason.
+func approveCommandHash(memoryID, expectedEnvelopeHash, reason string) string {
+	canonical := memoryID + "\x00" + strings.ToLower(expectedEnvelopeHash) + "\x00" + reason
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+func principalHasCompanyScope(p auth.VerifiedApprovalPrincipal, companyID string) bool {
+	for _, c := range p.CompanyScopes() {
+		if c == companyID {
+			return true
+		}
+	}
+	return false
+}
+
+// IdentitySeed describes the identity rows the authenticated approval path needs
+// before a principal can approve: one company, one membership and its roles. It
+// exists so tests and the local-dev seed flow never depend on environment state
+// (design §8); production transports never call it with caller data.
+type IdentitySeed struct {
+	TenantID     string
+	CompanyID    string
+	CompanyRUC   string
+	CompanyName  string
+	MembershipID string
+	SubjectID    string
+	Roles        []auth.AccountingRole
+}
+
+// SeedIdentity inserts the company, membership and role rows for an identity
+// fixture in ONE transaction (FK order: companies → memberships →
+// membership_roles). Duplicate rows fail loudly — seeding is explicit, never a
+// silent overwrite.
+func (s *SQLiteStore) SeedIdentity(seed IdentitySeed) error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("seed identity: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	now := nowISO()
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO companies (id, tenant_id, ruc, name, active, created_at) VALUES (?, ?, ?, ?, 1, ?)`,
+		seed.CompanyID, seed.TenantID, seed.CompanyRUC, seed.CompanyName, now,
+	); err != nil {
+		return fmt.Errorf("seed identity: company: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (id, subject_id, tenant_id, company_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+		seed.MembershipID, seed.SubjectID, seed.TenantID, seed.CompanyID, now, now,
+	); err != nil {
+		return fmt.Errorf("seed identity: membership: %w", err)
+	}
+	for _, role := range seed.Roles {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO membership_roles (membership_id, role, created_at) VALUES (?, ?, ?)`,
+			seed.MembershipID, string(role), now,
+		); err != nil {
+			return fmt.Errorf("seed identity: role %s: %w", role, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("seed identity: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// ApproveMemory atomically approves a pending_review memory against the caller's
+// expected envelope hash — THE authenticated approval path (v0.4.0 Step 1,
+// ADR-003). Do NOT compose FindByID + ApplyStatusTransition for approval: that
+// split is a TOCTOU hole (the low-level update does not compare the old status).
+// This operation owns the whole state change inside ONE BEGIN IMMEDIATE
+// transaction on a dedicated connection:
+//
+//	idempotency reservation → locked re-read of row + links → scope checks →
+//	status check → fresh H1 recompute vs expected → pure policy → guarded
+//	status flip + envelope cache update → immutable approval event + legacy
+//	transition row → completed reservation → commit.
+//
+// BEGIN IMMEDIATE (not BeginTx(nil), which defers the write lock) takes
+// SQLite's reserved writer lock BEFORE any race-sensitive read; MaxOpenConns(1)
+// only serializes THIS process, not another process on the same WAL file. A
+// concurrent loser waits at BEGIN IMMEDIATE, reads the committed approved
+// status and returns ALREADY_DECIDED; its reservation rolls back. A retry with
+// the same request id + payload replays the committed result with
+// IdempotentReplay=true. All failure codes are the frozen codes of
+// internal/auth/errors.go.
+func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryCommand, principal auth.VerifiedApprovalPrincipal, policy authz.ApprovalAuthorizationPolicy) (core.ApprovalResult, error) {
+	// Syntax guards (defense in depth — the service validates first): an
+	// incomplete command or a missing reason fails closed before any lock.
+	if strings.TrimSpace(cmd.Reason) == "" {
+		return core.ApprovalResult{}, auth.New(auth.CodeReasonRequired, "a reason is required for approval")
+	}
+	if strings.TrimSpace(cmd.MemoryID) == "" || strings.TrimSpace(cmd.ExpectedEnvelopeHash) == "" || strings.TrimSpace(cmd.RequestID) == "" {
+		return core.ApprovalResult{}, auth.New(auth.CodeMemoryNotFound, "approval command is incomplete (memoryId, expectedEnvelopeHash and requestId are required)")
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// BEGIN IMMEDIATE is the write intent (design §5): SQLite's reserved writer
+	// lock is taken here, before any race-sensitive read.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	now := nowISO()
+	commandHash := approveCommandHash(cmd.MemoryID, cmd.ExpectedEnvelopeHash, cmd.Reason)
+
+	// 1. Idempotency: one reservation per (tenant, requestId).
+	var (
+		storedHash, storedSubject, storedMembership string
+		storedResultJSON, completedAt               sql.NullString
+	)
+	err = conn.QueryRowContext(ctx, `
+		SELECT command_hash, principal_subject_id, membership_id, result_json, completed_at
+		FROM idempotency_keys WHERE tenant_id = ? AND request_id = ?`,
+		principal.TenantID(), cmd.RequestID,
+	).Scan(&storedHash, &storedSubject, &storedMembership, &storedResultJSON, &completedAt)
+	switch {
+	case err == nil:
+		// The reservation exists: the command AND the principal binding must
+		// match exactly, else the request id was reused for a different intent.
+		if storedHash != commandHash || storedSubject != principal.SubjectID() || storedMembership != principal.MembershipID() {
+			return core.ApprovalResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or principal")
+		}
+		if completedAt.Valid {
+			// Completed replay: decode the stored result and mark it as such.
+			var replay core.ApprovalResult
+			if err := json.Unmarshal([]byte(storedResultJSON.String), &replay); err != nil {
+				return core.ApprovalResult{}, fmt.Errorf("persistence error: decode replayed approval result: %w", err)
+			}
+			replay.IdempotentReplay = true
+			return replay, nil
+		}
+		// Incomplete reservation (an interrupted attempt that never committed):
+		// reuse it — the memory re-check below decides ALREADY_DECIDED when the
+		// memory was decided by another request.
+	case errors.Is(err, sql.ErrNoRows):
+		// 2. Reserve: command_hash plus the compared principal binding; the
+		// result/completion stay NULL until the approval commits.
+		if _, err := conn.ExecContext(ctx, `
+			INSERT INTO idempotency_keys (tenant_id, request_id, command_hash, principal_subject_id, membership_id, approval_event_id, result_json, created_at, completed_at)
+			VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, NULL)`,
+			principal.TenantID(), cmd.RequestID, commandHash, principal.SubjectID(), principal.MembershipID(), now,
+		); err != nil {
+			return core.ApprovalResult{}, fmt.Errorf("persistence error: reserve idempotency key: %w", err)
+		}
+	default:
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: read idempotency key: %w", err)
+	}
+
+	// 3. Read the observation row + all evidence/rule refs THROUGH the same
+	// connection (the withLinks merge is scoped to this transaction).
+	memory, ok := s.readMemoryWithLinks(ctx, conn, cmd.MemoryID)
+	if !ok {
+		return core.ApprovalResult{}, auth.New(auth.CodeMemoryNotFound, "memory not found: "+cmd.MemoryID)
+	}
+
+	// 4. Derive tenant/company/period from the row's scope (never caller
+	// claims). Institutional memories have no company to authorize.
+	if memory.Scope.Kind != core.ScopeKindCompany {
+		return core.ApprovalResult{}, auth.New(auth.CodeCompanyScopeDenied, "institutional memories cannot be approved by a company-scoped principal")
+	}
+	if principal.TenantID() != memory.Scope.OrganizationID {
+		return core.ApprovalResult{}, auth.New(auth.CodeTenantScopeMismatch, "principal tenant does not match the memory tenant")
+	}
+	if !principalHasCompanyScope(principal, memory.Scope.CompanyID) {
+		return core.ApprovalResult{}, auth.New(auth.CodeCompanyScopeDenied, "company is outside the principal's scope")
+	}
+
+	// 5. Status gate: only pending_review can be approved; a decided memory is
+	// ALREADY_DECIDED (the concurrent loser lands here after the winner
+	// commits); anything else is an invalid transition.
+	switch memory.Status {
+	case core.StatusPendingReview:
+		// proceed
+	case core.StatusApproved, core.StatusRejected:
+		return core.ApprovalResult{}, auth.New(auth.CodeAlreadyDecided, "memory is already decided")
+	default:
+		return core.ApprovalResult{}, auth.New(auth.CodeInvalidTransition, fmt.Sprintf("approval is not legal from status %q", memory.Status))
+	}
+
+	// 6. H1 is recomputed FRESH from the locked row + current canonical refs —
+	// never from the stored envelope cache (the cache is derived and can be
+	// stale; the read merge combines stored refs + link rows). A mismatch
+	// returns ENVELOPE_MISMATCH carrying ONLY the two hashes, never content.
+	h1 := core.ComputeEnvelopeHash(memory)
+	if !strings.EqualFold(strings.TrimSpace(cmd.ExpectedEnvelopeHash), h1) {
+		return core.ApprovalResult{}, auth.NewEnvelopeMismatch(cmd.ExpectedEnvelopeHash, h1, "memory envelope changed after review; expected hash does not match the current envelope")
+	}
+
+	// 7. Pure policy in-transaction: any denial rolls back the reservation and
+	// returns its frozen reason code.
+	decision := policy.Authorize(principal, memory)
+	if !decision.Allowed {
+		return core.ApprovalResult{}, auth.New(decision.ReasonCode, "authorization policy denied the approval")
+	}
+
+	// 8. H2 is computed from the same snapshot with status=approved and must
+	// differ from H1 (status participates in the envelope hash). The guarded
+	// UPDATE requires EXACTLY one pending_review row — the write lock makes a
+	// lost update impossible; the guard is a final invariant check.
+	approvedSnapshot := memory
+	approvedSnapshot.Status = core.StatusApproved
+	h2 := core.ComputeEnvelopeHash(approvedSnapshot)
+	if h2 == h1 {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: resulting envelope equals reviewed envelope — status change did not affect the hash")
+	}
+	res, err := conn.ExecContext(ctx,
+		`UPDATE observations SET status = ?, authority_status = ?, envelope_hash = ? WHERE id = ? AND status = ?`,
+		string(core.StatusApproved), legacyStatusFor(core.StatusApproved), h2, cmd.MemoryID, string(core.StatusPendingReview),
+	)
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: approve update: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: approve rows affected: %w", err)
+	}
+	if affected != 1 {
+		return core.ApprovalResult{}, auth.New(auth.CodeInvalidTransition, "guarded status update did not match exactly one pending_review row")
+	}
+
+	// 9. The immutable approval event + the legacy transition mirror, sharing
+	// ONE captured UTC timestamp. The event's principal fields come from the
+	// canonical snapshot (roles sorted/deduplicated before JSON encoding).
+	eventID, err := newUUID()
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: generate approval event id: %w", err)
+	}
+	snapshot := principal.PrincipalSnapshot()
+	rolesJSON, err := json.Marshal(snapshot.Roles)
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: encode principal roles: %w", err)
+	}
+	var fiscalPeriodID any
+	if memory.Scope.Period != "" {
+		fiscalPeriodID = memory.Scope.Period
+	}
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO approval_events (
+			id, request_id, memory_id, tenant_id, company_id, fiscal_period_id,
+			action, from_status, to_status, reviewed_envelope_hash, resulting_envelope_hash,
+			reason, principal_subject_id, membership_id, principal_roles_json,
+			authentication_method, assurance_level, principal_authenticated_at,
+			policy_version, authorization_reason_code, created_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		eventID, cmd.RequestID, cmd.MemoryID, memory.Scope.OrganizationID, memory.Scope.CompanyID, fiscalPeriodID,
+		"approved", string(core.StatusPendingReview), string(core.StatusApproved), h1, h2,
+		cmd.Reason, snapshot.SubjectID, snapshot.MembershipID, string(rolesJSON),
+		string(snapshot.AuthenticationMethod), string(snapshot.AssuranceLevel), snapshot.AuthenticatedAt,
+		decision.PolicyVersion, decision.ReasonCode, now,
+	); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: insert approval event: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx,
+		`INSERT INTO transition_log (observation_id, from_status, to_status, actor, actor_kind, timestamp) VALUES (?, ?, ?, ?, ?, ?)`,
+		cmd.MemoryID, string(core.StatusPendingReview), string(core.StatusApproved), principal.SubjectID(), string(core.ActorKindHuman), now,
+	); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: record approval transition: %w", err)
+	}
+
+	result := core.ApprovalResult{
+		MemoryID:              cmd.MemoryID,
+		ApprovalEventID:       eventID,
+		PreviousStatus:        string(core.StatusPendingReview),
+		CurrentStatus:         string(core.StatusApproved),
+		ReviewedEnvelopeHash:  h1,
+		ResultingEnvelopeHash: h2,
+		PrincipalSubjectID:    snapshot.SubjectID,
+		MembershipID:          snapshot.MembershipID,
+		PolicyVersion:         decision.PolicyVersion,
+		ApprovedAt:            now,
+		IdempotentReplay:      false,
+	}
+
+	// 10. Complete the reservation (result + event link + completion time) and
+	// commit — the whole approval is one atomic unit. The CHECK on the table
+	// requires approval_event_id and result_json to be set together.
+	serializedResult, err := json.Marshal(result)
+	if err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: encode approval result: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `
+		UPDATE idempotency_keys SET result_json = ?, completed_at = ?, approval_event_id = ? WHERE tenant_id = ? AND request_id = ?`,
+		string(serializedResult), now, eventID, principal.TenantID(), cmd.RequestID,
+	); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: complete idempotency key: %w", err)
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return core.ApprovalResult{}, fmt.Errorf("persistence error: commit approval: %w", err)
+	}
+	committed = true
+	return result, nil
+}
+
 // FindByID returns the memory with the given id, if any (evidence/rule links
 // merged into the read view).
 func (s *SQLiteStore) FindByID(id string) (core.AccountingMemory, bool) {
@@ -1760,17 +2145,48 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 	if strings.TrimSpace(ref) == "" {
 		return errors.New("INVALID_REF: ref must be a non-empty string")
 	}
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// BEGIN IMMEDIATE is the write intent: the link insertion and the derived
+	// envelope-cache refresh are ONE atomic unit (a deferred transaction could
+	// interleave with an approval on another connection).
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
 	var exists int
-	if err := s.db.QueryRow(`SELECT 1 FROM observations WHERE id = ?`, memoryID).Scan(&exists); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT 1 FROM observations WHERE id = ?`, memoryID).Scan(&exists); err != nil {
 		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
 	}
-	_, err := s.db.Exec(
+	if _, err := conn.ExecContext(ctx,
 		`INSERT OR IGNORE INTO `+table+` (memory_id, ref, actor, timestamp) VALUES (?, ?, ?, ?)`,
 		memoryID, ref, actor, nowISO(),
-	)
-	if err != nil {
+	); err != nil {
 		return fmt.Errorf("persistence error: add link: %w", err)
 	}
+	// A link changes the canonical refs → the derived envelope cache changes.
+	// Refresh it in the SAME transaction, so a link added AFTER review produces
+	// a NEW actual H1 (the stale expected hash then triggers ENVELOPE_MISMATCH).
+	// Ref ordering semantics are unchanged (stored refs first, links in
+	// insertion order; canonical refs dedup + sort inside the hash).
+	if err := refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("persistence error: commit link: %w", err)
+	}
+	committed = true
 	return nil
 }
 
