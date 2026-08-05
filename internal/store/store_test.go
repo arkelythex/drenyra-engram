@@ -775,13 +775,14 @@ func TestV1ToV2MigrationIsAdditive(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 
-	// (c) schema_version must be 2 only after the migration completed.
+	// (c) schema_version must be the current layout only after the whole
+	// migration chain (v1→v2→v3) completed.
 	version, err := readSchemaVersion(s.db)
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("schema_version = %d, want 2", version)
+	if version != schemaVersion {
+		t.Fatalf("schema_version = %d, want %d", version, schemaVersion)
 	}
 
 	// Backfill per the core mappings.

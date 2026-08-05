@@ -421,6 +421,9 @@ export interface SaveMemoryInput {
 	ruleRefs?: string[];
 	confidence?: number;
 	materiality?: bigint;
+	/** Declared materiality classification (normal | material | critical); NULL is
+	 * treated as normal by the approval policy. Mirrors core.SaveInput. */
+	materialityLevel?: MaterialityLevel;
 	receiptId?: string;
 }
 

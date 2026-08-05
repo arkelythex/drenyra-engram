@@ -66,7 +66,13 @@ import (
 
 // schemaVersion is the store layout version (contracts/provenance.md frozen
 // migration policy: versioned layout, additive migrations only).
-const schemaVersion = 2
+//
+// v3 (v0.4.0 Step 1): adds observations.materiality_level (the declared
+// materiality classification set by the writing agent) and the six identity /
+// approval tables (companies, memberships, membership_roles, sessions,
+// approval_events, idempotency_keys) with their indexes and the two
+// approval_events immutability triggers.
+const schemaVersion = 3
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -141,9 +147,12 @@ type SQLiteStore struct {
 }
 
 // Open opens (creating if needed) the SQLite database at path and applies the
-// versioned schema. A v1 store is migrated additively (single transaction); a
-// corrupt or unsupported store fails closed: it never fabricates data
-// (contracts/provenance.md frozen policy).
+// versioned schema. Fresh stores bootstrap to the v2 layout exactly, then run
+// the SAME v2→v3 migration used for existing stores — one tested migration
+// path. A v1 store is migrated additively (single transaction), then the v2→v3
+// migration runs in its own single transaction. A corrupt or unsupported store
+// fails closed: it never fabricates data (contracts/provenance.md frozen
+// policy).
 func Open(path string) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -169,7 +178,8 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
-	// store is migrated additively in ONE transaction before use.
+	// store is migrated additively in ONE transaction, then the v2→v3 migration
+	// runs in its own single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -177,6 +187,13 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 	if version == 1 {
 		if err := migrateV1ToV2(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 2
+	}
+	if version == 2 {
+		if err := migrateV2ToV3(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -542,6 +559,196 @@ func migrateV1ToV2(db *sql.DB) error {
 	return nil
 }
 
+// ──────────────────────────────────────────────
+// v2 → v3 additive migration (single transaction, fail closed)
+// ──────────────────────────────────────────────
+
+// migrateV2ToV3 upgrades a schema_version=2 store to v3 IN ONE TRANSACTION:
+// observations gains the materiality_level column, the six v3 tables and the
+// three supporting indexes are created with the CREATE TABLE statements of
+// docs/architecture/approval-principal-step1.md section 4 verbatim (including
+// every UNIQUE constraint, CHECK, FK and the two approval_events immutability
+// triggers), the observations immutability guard is recreated to also protect
+// the declared materiality classification, and schema_version=3 is set ONLY
+// after the whole migration succeeded. On any failure the transaction rolls
+// back and the store stays v2. No uniqueness constraint is retrofitted onto
+// legacy transition_log (frozen decision: sync uses value-based idempotency;
+// approval uniqueness lives in approval_events + idempotency_keys).
+func migrateV2ToV3(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v2→v3: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// (a) observations.materiality_level — NULL | normal | material | critical
+	// (NULL is treated as normal by the approval policy).
+	existing, err := tableColumns(ctx, tx, "observations")
+	if err != nil {
+		return fmt.Errorf("migrate v2→v3: read observations columns: %w", err)
+	}
+	if !existing["materiality_level"] {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE observations ADD COLUMN materiality_level TEXT`); err != nil {
+			return fmt.Errorf("migrate v2→v3: add observations.materiality_level: %w", err)
+		}
+	}
+
+	// (b) The six v3 tables — CREATE TABLE statements verbatim from the design
+	// (no IF NOT EXISTS: a pre-existing table with a conflicting shape is a
+	// corruption signal and fails the migration closed).
+	for _, ddl := range []string{
+		companiesDDL, membershipsDDL, membershipRolesDDL, sessionsDDL,
+		approvalEventsDDL, idempotencyKeysDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v2→v3: create table: %w", err)
+		}
+	}
+
+	// (c) The three supporting indexes.
+	for _, ddl := range []string{
+		membershipsSubjectIndexDDL, sessionsMembershipIndexDDL, approvalEventsMemoryIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v2→v3: create index: %w", err)
+		}
+	}
+
+	// (d) The two approval_events immutability triggers.
+	for _, ddl := range []string{approvalEventsNoUpdateDDL, approvalEventsNoDeleteDDL} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v2→v3: create approval_events trigger: %w", err)
+		}
+	}
+
+	// (e) The declared materiality classification is immutable content: recreate
+	// the observations guard so materiality_level is protected like every other
+	// immutable column (the v2 guard does not know the column).
+	if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS observations_immutable_content`); err != nil {
+		return fmt.Errorf("migrate v2→v3: drop v2 guard: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, immutabilityTriggerV3DDL); err != nil {
+		return fmt.Errorf("migrate v2→v3: install v3 guard: %w", err)
+	}
+
+	// (f) schema_version = 3 ONLY after the whole migration succeeded — same
+	// transaction, so a failure above rolls everything back.
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v2→v3: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v2→v3: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// v3 tables and supporting objects — CREATE statements verbatim from
+// docs/architecture/approval-principal-step1.md section 4.
+
+const companiesDDL = `
+CREATE TABLE companies (
+  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, ruc TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_at TEXT NOT NULL,
+  UNIQUE(tenant_id,id), UNIQUE(tenant_id,ruc)
+);
+`
+
+const membershipsDDL = `
+CREATE TABLE memberships (
+  id TEXT PRIMARY KEY, subject_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+  company_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('active','inactive')),
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  UNIQUE(tenant_id,id), UNIQUE(subject_id,tenant_id,company_id),
+  FOREIGN KEY(tenant_id,company_id) REFERENCES companies(tenant_id,id)
+);
+`
+
+const membershipRolesDDL = `
+CREATE TABLE membership_roles (
+  membership_id TEXT NOT NULL REFERENCES memberships(id),
+  role TEXT NOT NULL CHECK(role IN ('accountant','senior_accountant','controller','tax_reviewer','authorized_tax_professional')),
+  created_at TEXT NOT NULL, PRIMARY KEY(membership_id,role)
+);
+`
+
+const sessionsDDL = `
+CREATE TABLE sessions (
+  id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
+  membership_id TEXT NOT NULL REFERENCES memberships(id),
+  authentication_method TEXT NOT NULL CHECK(authentication_method IN ('session','service_assertion','local_dev')),
+  assurance_level TEXT NOT NULL CHECK(assurance_level IN ('low','standard','strong')),
+  authenticated_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+  revoked_at TEXT, created_at TEXT NOT NULL
+);
+`
+
+const approvalEventsDDL = `
+CREATE TABLE approval_events (
+  id TEXT PRIMARY KEY, request_id TEXT NOT NULL, memory_id TEXT NOT NULL REFERENCES observations(id),
+  tenant_id TEXT NOT NULL, company_id TEXT NOT NULL, fiscal_period_id TEXT,
+  action TEXT NOT NULL CHECK(action='approved'),
+  from_status TEXT NOT NULL CHECK(from_status='pending_review'),
+  to_status TEXT NOT NULL CHECK(to_status='approved'),
+  reviewed_envelope_hash TEXT NOT NULL, resulting_envelope_hash TEXT NOT NULL,
+  reason TEXT NOT NULL, principal_subject_id TEXT NOT NULL,
+  membership_id TEXT NOT NULL REFERENCES memberships(id), principal_roles_json TEXT NOT NULL,
+  authentication_method TEXT NOT NULL, assurance_level TEXT NOT NULL,
+  principal_authenticated_at TEXT NOT NULL, policy_version TEXT NOT NULL,
+  authorization_reason_code TEXT NOT NULL CHECK(authorization_reason_code='AUTHORIZED'),
+  created_at TEXT NOT NULL,
+  UNIQUE(tenant_id,request_id), UNIQUE(memory_id)
+);
+`
+
+const idempotencyKeysDDL = `
+CREATE TABLE idempotency_keys (
+  tenant_id TEXT NOT NULL, request_id TEXT NOT NULL,
+  command_hash TEXT NOT NULL, principal_subject_id TEXT NOT NULL,
+  membership_id TEXT NOT NULL, approval_event_id TEXT REFERENCES approval_events(id),
+  result_json TEXT, created_at TEXT NOT NULL, completed_at TEXT,
+  PRIMARY KEY(tenant_id,request_id),
+  CHECK((approval_event_id IS NULL) = (result_json IS NULL))
+);
+`
+
+const membershipsSubjectIndexDDL = `CREATE INDEX idx_memberships_subject ON memberships(subject_id,tenant_id,status);`
+
+const sessionsMembershipIndexDDL = `CREATE INDEX idx_sessions_membership ON sessions(membership_id,expires_at);`
+
+const approvalEventsMemoryIndexDDL = `CREATE INDEX idx_approval_events_memory ON approval_events(memory_id,created_at);`
+
+const approvalEventsNoUpdateDDL = `
+CREATE TRIGGER approval_events_no_update BEFORE UPDATE ON approval_events BEGIN
+  SELECT RAISE(ABORT,'IMMUTABLE_APPROVAL_EVENT'); END;
+`
+
+const approvalEventsNoDeleteDDL = `
+CREATE TRIGGER approval_events_no_delete BEFORE DELETE ON approval_events BEGIN
+  SELECT RAISE(ABORT,'IMMUTABLE_APPROVAL_EVENT'); END;
+`
+
+// immutabilityTriggerV3DDL is the v3 observations guard: the v2 column list
+// plus materiality_level (the declared classification is immutable content).
+const immutabilityTriggerV3DDL = `
+CREATE TRIGGER observations_immutable_content
+BEFORE UPDATE OF id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
+                     what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
+                     expires_at, actor, timestamp, source, session, source_json, content_hash,
+                     evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, revision ON observations
+BEGIN
+    SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
+END;
+`
+
 const evidenceLinksDDL = `
 CREATE TABLE IF NOT EXISTS evidence_links (
     memory_id  TEXT NOT NULL REFERENCES observations(id),
@@ -745,8 +952,8 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
 		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
@@ -755,7 +962,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
-		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), memory.ReceiptID, memory.SupersedesID,
+		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), memory.ReceiptID, memory.SupersedesID,
 		revision,
 	)
 	if err != nil {
@@ -799,6 +1006,11 @@ func buildMemory(input core.SaveInput, id string, revision int, status core.Memo
 		m := *input.Materiality
 		materiality = &m
 	}
+	var materialityLevel *core.MaterialityLevel
+	if input.MaterialityLevel != nil {
+		ml := *input.MaterialityLevel
+		materialityLevel = &ml
+	}
 	memory := core.AccountingMemory{
 		Identity:     core.Identity{ID: id, TopicKey: input.TopicKey},
 		Title:        input.Title,
@@ -815,11 +1027,22 @@ func buildMemory(input core.SaveInput, id string, revision int, status core.Memo
 		RuleRefs:     append([]string(nil), input.RuleRefs...),
 		Confidence:   confidence,
 		Materiality:  materiality,
-		ReceiptID:    input.ReceiptID,
-		Revision:     revision,
+		// MaterialityLevel is the DECLARED classification (normal | material |
+		// critical), set by the writing agent (v3 column). It does NOT
+		// participate in the envelope hash (frozen decision).
+		MaterialityLevel: materialityLevel,
+		ReceiptID:        input.ReceiptID,
+		Revision:         revision,
 	}
 	memory.ContentHash = core.ComputeContentHash(memory)
 	return memory
+}
+
+func nullableMaterialityLevel(v *core.MaterialityLevel) any {
+	if v == nil {
+		return nil
+	}
+	return string(*v)
 }
 
 // legacyStatusFor maps a v2 status to the v1 authority_status vocabulary for
@@ -923,7 +1146,7 @@ func nullableInt(v *int64) any {
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 	expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-	confidence, materiality, receipt_id, supersedes_id, revision`
+	confidence, materiality, materiality_level, receipt_id, supersedes_id, revision`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface {
@@ -940,7 +1163,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	var (
 		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
 		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
-		supersedesID, receiptID                                                                   sql.NullString
+		supersedesID, receiptID, materialityLevelVal                                              sql.NullString
 		confidence                                                                                sql.NullFloat64
 		materiality                                                                               sql.NullInt64
 	)
@@ -948,7 +1171,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		&id, &topicKey, &title, &typ, &kind, &scopeKind, &orgID, &companyID, &ruc, &period,
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
 		&expiresAt, &validityEffectiveAtVal, &validitySourceVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
-		&confidence, &materiality, &receiptID, &supersedesID, &revision,
+		&confidence, &materiality, &materialityLevelVal, &receiptID, &supersedesID, &revision,
 	); err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -996,6 +1219,10 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	if materiality.Valid {
 		v := materiality.Int64
 		memory.Materiality = &v
+	}
+	if materialityLevelVal.Valid && materialityLevelVal.String != "" {
+		l := core.MaterialityLevel(materialityLevelVal.String)
+		memory.MaterialityLevel = &l
 	}
 	_ = json.Unmarshal([]byte(evidenceRefsJSON.String), &memory.EvidenceRefs)
 	_ = json.Unmarshal([]byte(ruleRefsJSON.String), &memory.RuleRefs)
@@ -1458,8 +1685,8 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
 		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
@@ -1468,7 +1695,7 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
-		nullableFloat(built.Confidence), nullableInt(built.Materiality), built.ReceiptID, built.SupersedesID,
+		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), built.ReceiptID, built.SupersedesID,
 		built.Revision,
 	); err != nil {
 		return false, fmt.Errorf("persistence error: import observation: %w", err)

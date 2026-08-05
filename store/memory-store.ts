@@ -139,6 +139,9 @@ export class InMemoryMemoryStore implements MemoryStore {
 			...(input.materiality === undefined
 				? {}
 				: { materiality: input.materiality }),
+			...(input.materialityLevel === undefined
+				? {}
+				: { materialityLevel: input.materialityLevel }),
 			...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
 			contentHash: "",
 			revision: latest === undefined ? 1 : latest.revision + 1,

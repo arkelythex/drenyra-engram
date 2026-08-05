@@ -453,7 +453,13 @@ type SaveInput struct {
 	RuleRefs    []string `json:"ruleRefs,omitempty"`
 	Confidence  *float64 `json:"confidence,omitempty"`
 	Materiality *int64   `json:"materiality,omitempty"`
-	ReceiptID   string   `json:"receiptId,omitempty"`
+	// MaterialityLevel is the DECLARED materiality classification
+	// (normal | material | critical), set by the writing agent; NULL is treated
+	// as normal by the approval policy. Persisted in the v3
+	// observations.materiality_level column; it does NOT participate in the
+	// envelope hash (frozen decision).
+	MaterialityLevel *MaterialityLevel `json:"materialityLevel,omitempty"`
+	ReceiptID        string            `json:"receiptId,omitempty"`
 }
 
 // WriteOutcome is the save (upsert) outcome. Conflict and Unknown are the
