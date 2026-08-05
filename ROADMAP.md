@@ -160,12 +160,34 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 - [ ] Evidence object store references (XML/PDF/CDR beyond refs)
 - [ ] Materiality-aware period views
 
-## Phase 5 — Close Intelligence (v0.5.0)
+## Phase 5 — Close Intelligence (v0.5.0) — COMPLETE
 
-- [ ] Monthly close memory (cierre) with pending items
-- [ ] Reconciliations as first-class memories (reconciles relation)
-- [ ] Period-over-period comparison
-- [ ] Automatic agent context on session start
+- [x] **Monthly close memory (cierre) with pending items**: `CreateClose` builds
+      a `closing/CIERRE-YYYYMM` summary memory (kind=summary, fiscalEffect=closing,
+      pending_review, month-end effectiveAt, frozen CloseSnapshot with counts /
+      signed-cent totals / pending-item digest / summaryHash). Controller
+      approval projects `period_closures` and **blocks all period-scoped
+      mutations** (`assertPeriodWritable` → PERIOD_CLOSED, inside the write
+      transaction) until an explicit controller `ReopenPeriod` (immutable
+      events + `memory_reopened` receipt). Receipts `memory_closed` /
+      `memory_reopened`. Contracts: contracts/closing.md.
+- [x] **Reconciliations as first-class** (`reconciles` relation): adjudicated
+      `Reconciliation` entity mirroring the judgment pattern — propose/confirm/
+      reject/withdraw/supersede, `ComputeReconciliationHash` guard,
+      `reconciliation-policy/v0.5.0` (controller), confirmed projects the
+      `reconciles` observation edge, receipts `reconciliation_confirmed` /
+      `reconciliation_rejected`, cross-period entities keep fiscalPeriodId NULL.
+      Contracts: contracts/reconciliation.md.
+- [x] **Period-over-period comparison**: `ComparePeriods` (pure read) with
+      chain deltas (new/removed/changed by topic key, period-stripped content
+      comparison), status changes, pending-item delta by chain topic, close
+      state. Contracts: contracts/period-comparison.md.
+- [x] **Automatic agent context on session start**: `DRENYRA_DEFAULT_SCOPE`
+      (exact scope, never inferred) → `initialize._meta["drenyra/currentContext"]`
+      + `accounting_current_context` tool; PeriodSummary extended with
+      latestClose/closureState/pendingItems; stale MCP lifecycle text fixed.
+
+    > Implemented in commits 3eab1e1..2fe6a7e.
 
 ## Phase 6 — Fiscal Policy Memory (v0.6.0)
 

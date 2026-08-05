@@ -1,11 +1,17 @@
 # Contract: lifecycle
 
-> Version: 0.2 · Status: frozen-for-0.2 · Transport-agnostic.
+> Version: 0.5 · Status: frozen-for-0.5 · Transport-agnostic.
 
 Defines the **memory lifecycle and vigencia** — how institutional accounting
 memory matures, expires, and is approved. The v2 machine replaces the v1
 `draft → reviewed → promoted → superseded` chain with an approval-gated model:
 the fiscal effect of a memory decides whether it needs a HUMAN approval.
+Since v0.5.0 the lifecycle also interacts with the **period closure gate**: an
+approved monthly close (contracts/closing.md) blocks new period-scoped
+mutations until an explicit controller reopen. The external
+captura → clasificacion → conciliacion → cierre → declaracion → auditoria FSD
+lifecycle of the Drenyra ecosystem is NOT encoded here; this contract defines
+the per-memory state machine only.
 
 ## States
 

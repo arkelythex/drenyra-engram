@@ -182,6 +182,37 @@ revisada, y una cadena de receipts Ed25519 verificable offline que prueba que
 ningún acto fue alterado — sin jamás afirmar que la decisión contable sea
 correcta.
 
+## v0.5.0 — Close Intelligence (released-on-main)
+
+Monthly close with an ENFORCEABLE period gate, first-class adjudicated
+reconciliations, period-over-period comparison and automatic agent context.
+
+- **Monthly close (cierre)**: `CreateClose` builds the canonical
+  `closing/CIERRE-YYYYMM` summary memory (frozen CloseSnapshot: counts, signed
+  cents totals with same-scope source memories, pending-item digest,
+  summaryHash). Controller approval projects `period_closures` and **blocks all
+  period-scoped mutations** (save, transitions, links, judgments,
+  reconciliations) until an explicit controller `ReopenPeriod` — the gate lives
+  INSIDE the write transaction (PERIOD_CLOSED, no adapter bypass, no TOCTOU).
+  Receipts `memory_closed` / `memory_reopened` (schema v6).
+- **First-class reconciliations**: adjudicated `Reconciliation` entities
+  mirroring the judgment pattern — propose/confirm/reject/withdraw/supersede,
+  `ComputeReconciliationHash` guard, `reconciliation-policy/v0.5.0`
+  (controller), confirmed projects the `reconciles` observation edge,
+  `varianceCents` engine-derived, cross-period entities keep fiscalPeriodId
+  NULL. Receipts `reconciliation_confirmed` / `reconciliation_rejected`.
+- **Period-over-period comparison**: `ComparePeriods` (pure read) with chain
+  deltas (new/removed/changed by topic key, period-stripped content
+  comparison), status changes, pending-item delta by chain topic, close state;
+  HTTP `/accounting/periods/compare`, MCP `accounting_compare_periods`, CLI
+  `compare-periods`.
+- **Automatic agent context**: `DRENYRA_DEFAULT_SCOPE` (exact scope, never
+  inferred) → `initialize._meta["drenyra/currentContext"]` +
+  `accounting_current_context`; PeriodSummary extended with latestClose /
+  closureState / pendingItems; stale MCP lifecycle text replaced.
+- Contracts frozen: contracts/closing.md, contracts/reconciliation.md,
+  contracts/period-comparison.md; contracts/lifecycle.md updated to 0.5.
+
 ## v0.3.0 — Accounting Memory Kernel (released)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
