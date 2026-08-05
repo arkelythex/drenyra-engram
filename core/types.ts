@@ -220,6 +220,10 @@ export interface AccountingMemory {
 	materiality?: bigint;
 	/** Canonical SHA-256 (hex) of the immutable content. */
 	contentHash: string;
+	/** SHA-256 (hex) of the DOMAIN identity (scope + topicKey + effectiveAt + source reference). */
+	identityHash?: string;
+	/** SHA-256 (hex) of everything signable (identity + content + effect + source + refs + timestamps + supersession). */
+	envelopeHash?: string;
 	/** Reference to the Ed25519 receipt issued by the Drenyra ecosystem. */
 	receiptId?: string;
 	/** Id of the memory this one replaces (set on the successor). */
@@ -474,6 +478,57 @@ export async function computeContentHash(
 	return Array.from(new Uint8Array(digest))
 		.map((byte) => byte.toString(16).padStart(2, "0"))
 		.join("");
+}
+
+/**
+ * Internal SHA-256 hex helper (WebCrypto).
+ */
+async function sha256Hex(canonical: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Identity hash (v2) — SHA-256 of the DOMAIN identity: scope (tenant/company/
+ * period) + topicKey + effectiveAt + source reference. Mirrors
+ * core.ComputeIdentityHash.
+ */
+export async function computeIdentityHash(memory: AccountingMemory): Promise<string> {
+  const canonical = [
+    scopeKey(memory.scope),
+    memory.identity.topicKey,
+    memory.effectiveAt,
+    memory.source.reference ?? "",
+  ].join("\u0000");
+  return sha256Hex(canonical);
+}
+
+/**
+ * Envelope hash (v2) — SHA-256 of EVERYTHING signable/verifiable: identity +
+ * content hash + fiscal effect + status + source + evidence/rule refs +
+ * timestamps + supersession + receipt. Mirrors core.ComputeEnvelopeHash.
+ */
+export async function computeEnvelopeHash(memory: AccountingMemory): Promise<string> {
+  const canonical = [
+    await computeIdentityHash(memory),
+    memory.contentHash,
+    memory.fiscalEffect,
+    memory.status,
+    memory.source.system,
+    memory.source.actorId ?? "",
+    memory.source.actorKind,
+    memory.source.model ?? "",
+    memory.source.session ?? "",
+    memory.recordedAt,
+    memory.observedAt ?? "",
+    memory.supersedesId ?? "",
+    memory.receiptId ?? "",
+    (memory.evidenceRefs ?? []).join("\u0000"),
+    (memory.ruleRefs ?? []).join("\u0000"),
+  ].join("\u0000");
+  return sha256Hex(canonical);
 }
 
 /**

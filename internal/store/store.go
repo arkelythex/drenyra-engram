@@ -228,12 +228,15 @@ CREATE TABLE IF NOT EXISTS observations (
     recorded_at      TEXT NOT NULL,
     observed_at      TEXT NOT NULL DEFAULT '',
     expires_at       TEXT NOT NULL DEFAULT '',
+    validity_effective_at TEXT NOT NULL DEFAULT '',
     actor            TEXT NOT NULL DEFAULT '',
     timestamp        TEXT NOT NULL DEFAULT '',
     source           TEXT NOT NULL DEFAULT '',
     session          TEXT NOT NULL DEFAULT '',
     source_json      TEXT NOT NULL DEFAULT '',
     content_hash     TEXT NOT NULL,
+    identity_hash    TEXT NOT NULL DEFAULT '',
+    envelope_hash    TEXT NOT NULL DEFAULT '',
     evidence_refs_json TEXT NOT NULL DEFAULT '[]',
     rule_refs_json     TEXT NOT NULL DEFAULT '[]',
     confidence       REAL,
@@ -365,8 +368,9 @@ func migrateV1ToV2(db *sql.DB) error {
 		kind   string
 	}{
 		{"kind", "TEXT"}, {"status", "TEXT"}, {"fiscal_effect", "TEXT"},
-		{"recorded_at", "TEXT"}, {"observed_at", "TEXT"},
+		{"recorded_at", "TEXT"}, {"observed_at", "TEXT"}, {"validity_effective_at", "TEXT"},
 		{"source_json", "TEXT"}, {"content_hash", "TEXT"},
+		{"identity_hash", "TEXT"}, {"envelope_hash", "TEXT"},
 		{"evidence_refs_json", "TEXT"}, {"rule_refs_json", "TEXT"},
 		{"receipt_id", "TEXT"},
 		{"confidence", "REAL"}, {"materiality", "INTEGER"}, {"supersedes_id", "TEXT"},
@@ -418,7 +422,7 @@ func migrateV1ToV2(db *sql.DB) error {
 	stmt, err := tx.PrepareContext(ctx, `
 		UPDATE observations
 		SET kind = ?, status = ?, fiscal_effect = 'none', recorded_at = ?,
-		    effective_at = ?, source_json = ?, content_hash = ?
+		    effective_at = ?, validity_effective_at = ?, source_json = ?, content_hash = ?
 		WHERE id = ?`)
 	if err != nil {
 		_ = rows.Close()
@@ -427,12 +431,12 @@ func migrateV1ToV2(db *sql.DB) error {
 	defer func() { _ = stmt.Close() }()
 
 	type backfillRow struct {
-		id, kind, status, recordedAt, effectiveAt, sourceJSON, contentHash string
+		id, kind, status, recordedAt, effectiveAt, validityEffectiveAt, sourceJSON, contentHash, identityHash, envelopeHash string
 	}
 	batch := make([]backfillRow, 0, migrationBatchSize)
 	flush := func() error {
 		for _, r := range batch {
-			if _, err := stmt.ExecContext(ctx, r.kind, r.status, r.recordedAt, r.effectiveAt, r.sourceJSON, r.contentHash, r.id); err != nil {
+			if _, err := stmt.ExecContext(ctx, r.kind, r.status, r.recordedAt, r.effectiveAt, r.validityEffectiveAt, r.sourceJSON, r.contentHash, r.id); err != nil {
 				return fmt.Errorf("migrate v1→v2: backfill row %s: %w", r.id, err)
 			}
 		}
@@ -485,14 +489,20 @@ func migrateV1ToV2(db *sql.DB) error {
 			EffectiveAt:  effectiveAt,
 			Source:       sourceStruct,
 		}
+		contentHash := core.ComputeContentHash(memory)
+		identityHash := core.ComputeIdentityHash(memory)
+		envelopeHash := core.ComputeEnvelopeHash(memory)
 		batch = append(batch, backfillRow{
-			id:          id,
-			kind:        string(kind),
-			status:      string(status),
-			recordedAt:  recordedAt,
-			effectiveAt: effectiveAt,
-			sourceJSON:  string(sourceJSON),
-			contentHash: core.ComputeContentHash(memory),
+			id:                  id,
+			kind:                string(kind),
+			status:              string(status),
+			recordedAt:          recordedAt,
+			effectiveAt:         effectiveAt,
+			validityEffectiveAt: effAt,
+			sourceJSON:          string(sourceJSON),
+			contentHash:         contentHash,
+			identityHash:        identityHash,
+			envelopeHash:        envelopeHash,
 		})
 		if len(batch) >= migrationBatchSize {
 			if err := flush(); err != nil {
@@ -730,17 +740,17 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-			expires_at, actor, timestamp, source, session, source_json, content_hash, evidence_refs_json, rule_refs_json,
+			expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
 		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
 		legacyStatusFor(memory.Status), string(memory.Status), string(memory.FiscalEffect),
 		memory.EffectiveAt, memory.RecordedAt, memory.ObservedAt,
-		validityExpiresAt(memory.Validity),
+		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
-		encodeSource(memory.Source), memory.ContentHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
+		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
 		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), memory.ReceiptID, memory.SupersedesID,
 		revision,
 	)
@@ -829,6 +839,13 @@ func legacyStatusFor(status core.MemoryStatus) string {
 	return "reviewed"
 }
 
+func validityEffectiveAt(v *core.Validity) string {
+	if v == nil {
+		return ""
+	}
+	return v.EffectiveAt
+}
+
 func validityExpiresAt(v *core.Validity) string {
 	if v == nil {
 		return ""
@@ -878,7 +895,7 @@ func nullableInt(v *int64) any {
 
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-	expires_at, actor, timestamp, source, session, source_json, content_hash, evidence_refs_json, rule_refs_json,
+	expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 	confidence, materiality, receipt_id, supersedes_id, revision`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
@@ -894,16 +911,16 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		revision                                                           int
 	)
 	var (
-		kind, status, fiscalEffect, observedAt                  sql.NullString
-		sourceJSON, contentHash, evidenceRefsJSON, ruleRefsJSON sql.NullString
-		supersedesID, receiptID                                 sql.NullString
-		confidence                                              sql.NullFloat64
-		materiality                                             sql.NullInt64
+		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal                            sql.NullString
+		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
+		supersedesID, receiptID                                                                   sql.NullString
+		confidence                                                                                sql.NullFloat64
+		materiality                                                                               sql.NullInt64
 	)
 	if err := rs.Scan(
 		&id, &topicKey, &title, &typ, &kind, &scopeKind, &orgID, &companyID, &ruc, &period,
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
-		&expiresAt, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &evidenceRefsJSON, &ruleRefsJSON,
+		&expiresAt, &validityEffectiveAtVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
 		&confidence, &materiality, &receiptID, &supersedesID, &revision,
 	); err != nil {
 		return core.AccountingMemory{}, err
@@ -936,12 +953,14 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		ObservedAt:   observedAt.String,
 		Source:       sourceFromJSON(sourceJSON.String, actor, timestamp, source, session),
 		ContentHash:  contentHash.String,
+		IdentityHash: identityHashVal.String,
+		EnvelopeHash: envelopeHashVal.String,
 		ReceiptID:    receiptID.String,
 		SupersedesID: supersedesID.String,
 		Revision:     revision,
 	}
-	if expiresAt != "" {
-		memory.Validity = &core.Validity{ExpiresAt: expiresAt}
+	if expiresAt != "" || validityEffectiveAtVal.String != "" {
+		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt}
 	}
 	if confidence.Valid {
 		v := confidence.Float64
@@ -1358,22 +1377,50 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		return false, errors.New("INVALID_REVISION: imported memory must carry a positive revision")
 	}
 	ctx := context.Background()
-	rows, err := s.db.QueryContext(ctx, `SELECT content_hash FROM observations WHERE id = ?`, memory.Identity.ID)
+	rows, err := s.db.QueryContext(ctx, `SELECT envelope_hash, identity_hash FROM observations WHERE id = ?`, memory.Identity.ID)
 	if err != nil {
 		return false, err
 	}
 	has := rows.Next()
-	var existingHash string
+	var existingEnvelope, existingIdentity string
 	if has {
-		if err := rows.Scan(&existingHash); err != nil {
+		if err := rows.Scan(&existingEnvelope, &existingIdentity); err != nil {
 			_ = rows.Close()
 			return false, err
 		}
 	}
 	_ = rows.Close()
 	if has {
-		if existingHash == memory.ContentHash {
-			return false, nil // identical — no-op
+		// The envelope hash covers EVERYTHING signable: identity + content +
+		// fiscal effect + source + evidence/rule refs + timestamps + supersession.
+		// A matching envelope is an exact duplicate (idempotent no-op); a
+		// differing envelope on the SAME identity is an immutable conflict — the
+		// import surfaces it, never overwrites. Migrated v1 rows may lack the new
+		// envelope column; fall back to the content hash for those.
+		if existingEnvelope != "" {
+			if existingEnvelope == memory.EnvelopeHash {
+				return false, nil // exact duplicate — no-op
+			}
+			if existingIdentity == memory.IdentityHash {
+				return false, fmt.Errorf("IMPORT_CONFLICT: id %s exists with different immutable bytes on the same domain identity", memory.Identity.ID)
+			}
+			return false, fmt.Errorf("IMPORT_CONFLICT: id %s exists with different immutable bytes", memory.Identity.ID)
+		}
+		if existingHash := existingEnvelope; existingHash == "" {
+			// legacy row without envelope: compare the canonical content hash
+			rows2, err := s.db.QueryContext(ctx, `SELECT content_hash FROM observations WHERE id = ?`, memory.Identity.ID)
+			if err != nil {
+				return false, err
+			}
+			has2 := rows2.Next()
+			var legacyHash string
+			if has2 {
+				_ = rows2.Scan(&legacyHash)
+			}
+			_ = rows2.Close()
+			if legacyHash == memory.ContentHash {
+				return false, nil // identical content — no-op
+			}
 		}
 		return false, fmt.Errorf("IMPORT_CONFLICT: id %s exists with different immutable bytes", memory.Identity.ID)
 	}
@@ -1383,17 +1430,17 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
-			expires_at, actor, timestamp, source, session, source_json, content_hash, evidence_refs_json, rule_refs_json,
+			expires_at, validity_effective_at, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
 			confidence, materiality, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
 		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
 		legacyStatusFor(built.Status), string(built.Status), string(built.FiscalEffect),
 		built.EffectiveAt, built.RecordedAt, built.ObservedAt,
-		validityExpiresAt(built.Validity),
+		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
-		encodeSource(built.Source), built.ContentHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
+		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
 		nullableFloat(built.Confidence), nullableInt(built.Materiality), built.ReceiptID, built.SupersedesID,
 		built.Revision,
 	); err != nil {

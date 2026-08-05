@@ -363,9 +363,19 @@ type AccountingMemory struct {
 	Confidence *float64 `json:"confidence,omitempty"`
 	// Materiality is an optional monetary threshold in int64 cents (never float).
 	Materiality *int64 `json:"materiality,omitempty"`
-	// ContentHash is the canonical SHA-256 of the immutable content (see
+	// ContentHash is the canonical SHA-256 of the semantic content (see
 	// ComputeContentHash). Computed at write, never editable.
 	ContentHash string `json:"contentHash"`
+	// IdentityHash is the SHA-256 of the DOMAIN identity: tenant/company/period
+	// scope + topicKey + effectiveAt + source reference. Two memories with the
+	// same IdentityHash represent the same domain thing in the same scope (see
+	// ComputeIdentityHash).
+	IdentityHash string `json:"identityHash,omitempty"`
+	// EnvelopeHash is the SHA-256 of everything signable/verifiable: identity +
+	// content + fiscal effect + source + evidence/rule refs + timestamps +
+	// supersession (see ComputeEnvelopeHash). The import decides duplicate vs
+	// conflict on it.
+	EnvelopeHash string `json:"envelopeHash,omitempty"`
 	// ReceiptID references the Ed25519 receipt issued by the Drenyra ecosystem.
 	// Only a reference — this engine never signs (non-authorization boundary).
 	ReceiptID string `json:"receiptId,omitempty"`
@@ -554,6 +564,51 @@ func ComputeContentHash(m AccountingMemory) string {
 		m.Content.Learned,
 		m.Source.System,
 		string(m.Source.ActorKind),
+	}, "\x00")
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+// ComputeIdentityHash hashes the DOMAIN identity of a memory — the tuple that
+// answers "is this the same domain thing in the same scope": tenant
+// (organization/company/RUC), period, topicKey, effectiveAt and the source
+// reference. Two memories with the same identity hash are the same domain
+// entity; a different content hash on the same identity is a conflict or a new
+// revision (the import decides).
+func ComputeIdentityHash(m AccountingMemory) string {
+	canonical := strings.Join([]string{
+		ScopeKey(m.Scope),
+		m.Identity.TopicKey,
+		m.EffectiveAt,
+		m.Source.Reference,
+	}, "\x00")
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
+// ComputeEnvelopeHash hashes EVERYTHING signable/verifiable about a memory:
+// the identity, the canonical content hash, the fiscal effect, the status, the
+// complete source, the evidence and rule references, the timestamps and the
+// supersession link. The import treats a matching envelope hash as an exact
+// duplicate (idempotent no-op) and a differing envelope hash on the same
+// identity as an immutable conflict.
+func ComputeEnvelopeHash(m AccountingMemory) string {
+	canonical := strings.Join([]string{
+		ComputeIdentityHash(m),
+		m.ContentHash,
+		string(m.FiscalEffect),
+		string(m.Status),
+		m.Source.System,
+		m.Source.ActorID,
+		string(m.Source.ActorKind),
+		m.Source.Model,
+		m.Source.Session,
+		m.RecordedAt,
+		m.ObservedAt,
+		m.SupersedesID,
+		m.ReceiptID,
+		strings.Join(m.EvidenceRefs, "\x00"),
+		strings.Join(m.RuleRefs, "\x00"),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])

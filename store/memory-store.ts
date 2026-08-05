@@ -32,6 +32,8 @@ import {
 	assertValidValidity,
 	cloneMemory,
 	computeContentHash,
+	computeEnvelopeHash,
+	computeIdentityHash,
 	scopeEquals,
 	scopeKey,
 	type AccountingMemory,
@@ -43,7 +45,7 @@ import {
 	type SaveMemoryInput,
 	type StatusTransitionRecord,
 } from "../core/types.js";
-import { initialStatus } from "../lifecycle/transitions.js";
+import { canVoid, initialStatus } from "../lifecycle/transitions.js";
 
 /** Storage surface consumed by search and lifecycle modules. */
 export interface MemoryStore {
@@ -135,10 +137,16 @@ export class InMemoryMemoryStore implements MemoryStore {
 			revision: latest === undefined ? 1 : latest.revision + 1,
 		};
 		memory.contentHash = await computeContentHash(memory);
+		memory.identityHash = await computeIdentityHash(memory);
+		memory.envelopeHash = await computeEnvelopeHash(memory);
 		assertValidMemory(memory);
 
-		// Immutable history: supersede the previous current revision of the chain.
-		if (latest !== undefined) {
+		// Immutable history: supersede the previous current revision of the chain
+		// ONLY when it is supersedeable (active | pending_review | approved — the
+		// canVoid guard). Terminal heads (rejected, superseded, voided) NEVER
+		// reopen; the new revision does NOT inherit the previous approval (a
+		// fiscal effect lands it pending_review behind the human gate).
+		if (latest !== undefined && canVoid(latest.status)) {
 			latest.status = "superseded";
 			latest.supersedesId = memory.identity.id;
 			this.relationRecords.push({
