@@ -7,6 +7,67 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## v0.4.0 — Evidence, Conflict and Judgment (unreleased)
+
+### Step 1 — ApprovalPrincipal autenticado (DONE)
+
+Approval no longer trusts the text `"human"`: it derives an authenticated,
+pre-verified principal from the session and authorizes with a versioned,
+reproducible policy against the exact envelope version that was reviewed.
+
+- **Principal is never caller-declared**: `approveMemory({ memoryId, reason,
+  expectedEnvelopeHash, requestId }, authenticatedPrincipal)` — the principal
+  is a separate verified argument built only inside `internal/auth` via
+  `Resolver.Authenticate`; no public arbitrary-input constructor. HTTP body,
+  MCP arguments and CLI flags can never supply `actorKind`/`subjectId`/`roles`
+  (strict surfaces reject them with `DisallowUnknownFields`).
+- **Two envelope hashes**: status participates in the envelope hash, so
+  approving changes it. The immutable `approval_events` row records
+  `reviewedEnvelopeHash` (H1, what the human examined) AND
+  `resultingEnvelopeHash` (H2, the approved state). A memory that changed
+  after review (evidence/rule linked, status moved) fails with
+  `ENVELOPE_MISMATCH` carrying only the two hashes.
+- **Atomic transition**: one SQLite `BEGIN IMMEDIATE` transaction (write
+  intent before race-sensitive reads) — idempotency resolution → locked
+  re-read → scope/status checks → fresh H1 recompute → pure policy → guarded
+  status flip + H2 → immutable event → completed reservation. Concurrent
+  approvals produce exactly ONE transition; retries replay the committed
+  result (`idempotentReplay: true`).
+- **Versioned policy `approval-policy/v0.4.0`** (`internal/authz`, pure): base
+  role matrix by fiscal effect, declared `materialityLevel` raises the
+  accounting ladder, minimum assurance `standard` (`strong` for
+  `sunat_filing`); frozen reason codes and check order.
+- **Identity storage (schema v3, additive migration)**: `companies`,
+  `memberships`, `membership_roles`, `sessions` (token hashes only),
+  `approval_events` (immutable triggers), `idempotency_keys`;
+  `observations.materiality_level`.
+- **Surfaces**: HTTP `POST /accounting/memories/{id}/approve` (legacy route
+  compiled but disabled by default, removed in v0.5.0) · MCP
+  `accounting_approve(memory_id, expected_envelope_hash, reason, request_id)`
+  fails closed `AUTHENTICATION_REQUIRED` without a session binding · CLI
+  `auth login` + `auth seed-local-dev` (DRENYRA_ENV=local_dev only) +
+  authenticated `approve` (caller-supplied `--actor` removed).
+- **Parity**: shared golden protocol extended with a `contract`
+  discriminator; six new vectors (authorized/unauthorized closing,
+  cross-tenant, stale-envelope, approved-result-envelope,
+  canonical-principal-role-order) pass identically in Go and TS.
+
+### Frozen decisions
+
+- The **principal never travels in the payload** (ADR-003 corrected command
+  shape): `approveMemory` takes the principal as a separate verified
+  argument. External JSON declaring `{ actorKind, subjectId, roles }` is
+  rejected, not ignored.
+- **Service assertions are opaque stored bearer credentials** (token hash in
+  `sessions`, `authentication_method='service_assertion'`); no self-declared
+  JWT claims until a signed-assertion trust contract exists. OIDC recognized
+  but not resolvable in Step 1.
+- **Materiality is a declared level** (`materialityLevel`: normal | material |
+  critical, set by the writing agent); the policy never reinterprets the
+  `Materiality *int64` threshold field.
+- **Legacy HTTP approval route**: compiled for one release, disabled by
+  default, removed in v0.5.0.
+
 ## v0.3.0 — Accounting Memory Kernel (released)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
@@ -60,8 +121,6 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
   environment, and the client guard blocks repository commits without an
   exception for review-mode off. Commits for this release were executed by
   the maintainer from a terminal. Not fixable from the repository.
-
-
 
 ### Added
 
@@ -230,7 +289,6 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
   `supersede` (promoted→superseded with required target + relation). 45 Go tests
   green; non-authorization boundary kept (authorize/approve/allow rejected).
 
-
 ### Added — v0.2 standalone Go engine foundation (ADR-001)
 
 - Go module + core types/validators, lifecycle machine, SQLite store (pure Go,
@@ -238,20 +296,19 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
   isolation, and the `drenyra-engram` CLI (save/search/context/doctor). 40 Go
   tests green; the non-authorization boundary is enforced (no authorize commands).
 
-
 ### Added
 
 - Repository identity scaffolding: README, LICENSE, SECURITY, CONTRIBUTING, CODEOWNERS, architecture and roadmap docs.
 - Draft contract index (`contracts/`): `memory`, `scope`, `lifecycle`, `provenance`.
 - **Memory core** — the observation model defined by the contracts: structured observations with type, scope (company/RUC/period), topic keys, lifecycle states (draft → reviewed → promoted → superseded), vigencia, and provenance.
-    - **Non-authorization boundary** — documented and carried in the provenance contract: memory guides, it never authorizes.
-    - **PR 1 — Functional vertical:** in-memory store with immutable revisions, scope-first search with the REQUIRED cross-tenant isolation property (company A memory never retrievable from company B, even with identical text/topic key), lifecycle transitions, and the compile-time `NonAuthorizing` guard (31 tests).
-    - **Strategy freeze + packaging:**
-      - ADR-001 (engine strategy: standalone Go engine long-term; v0.1 TS contracts + in-memory reference + PostgreSQL adapter; contracts stay neutral) and ADR-002 (storage authority: PostgreSQL transactional authority; in-memory = reference only).
-      - Frozen-for-0.1 semantics in `contracts/`: immutable revision model, write idempotency (updated/conflict/unknown outcomes), scope-filter-before-ranking, UNKNOWN fail-closed, migration policy.
-      - Build to `dist/` (tsc, NodeNext, declarations), `engines >= 22`, complete `files` manifest, subpath `exports`, `verify:package` + `verify-packed-install` + prepack/prepublishOnly gates + CI package job.
+  - **Non-authorization boundary** — documented and carried in the provenance contract: memory guides, it never authorizes.
+  - **PR 1 — Functional vertical:** in-memory store with immutable revisions, scope-first search with the REQUIRED cross-tenant isolation property (company A memory never retrievable from company B, even with identical text/topic key), lifecycle transitions, and the compile-time `NonAuthorizing` guard (31 tests).
+  - **Strategy freeze + packaging:**
+    - ADR-001 (engine strategy: standalone Go engine long-term; v0.1 TS contracts + in-memory reference + PostgreSQL adapter; contracts stay neutral) and ADR-002 (storage authority: PostgreSQL transactional authority; in-memory = reference only).
+    - Frozen-for-0.1 semantics in `contracts/`: immutable revision model, write idempotency (updated/conflict/unknown outcomes), scope-filter-before-ranking, UNKNOWN fail-closed, migration policy.
+    - Build to `dist/` (tsc, NodeNext, declarations), `engines >= 22`, complete `files` manifest, subpath `exports`, `verify:package` + `verify-packed-install` + prepack/prepublishOnly gates + CI package job.
 
-    ### Notes
+  ### Notes
 
-    - Pre-alpha: contracts beyond the frozen-for-0.1 semantics are not frozen; relations, sync, and surfaces (MCP/CLI/HTTP/TUI) are planned in the ROADMAP.
-    - Version policy: `0.0.1-prealpha.x` until the first frozen contract, then `0.1.0`.
+  - Pre-alpha: contracts beyond the frozen-for-0.1 semantics are not frozen; relations, sync, and surfaces (MCP/CLI/HTTP/TUI) are planned in the ROADMAP.
+  - Version policy: `0.0.1-prealpha.x` until the first frozen contract, then `0.1.0`.

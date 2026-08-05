@@ -71,17 +71,25 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 > `1. ApprovalPrincipal` → `2. adjudicable conflicts` → `3. Ed25519 receipts`
 > → `4. offline verification`.
 
-- [ ] **1. ApprovalPrincipal autenticado** (ADR-003): the API never accepts
-      authorization via `{ "actorKind": "human" }` — the service derives the
-      principal from the authenticated session (subjectId, tenantId,
-      membershipId, companyScopes, roles, authenticationMethod,
-      authenticatedAt). Command shape: `approveMemory({ memoryId, principal,
-      reason, expectedEnvelopeHash })` — the expected envelope hash protects
-      against approving a version different from the one the human reviewed.
+- [x] **1. ApprovalPrincipal autenticado** (ADR-003, v0.4.0 Step 1 — DONE): the
+      API never accepts authorization via `{ "actorKind": "human" }` — the
+      service derives the principal from the authenticated session (subjectId,
+      tenantId, membershipId, companyScopes, roles, authenticationMethod,
+      assuranceLevel, authenticatedAt). Command shape:
+      `approveMemory({ memoryId, reason, expectedEnvelopeHash, requestId },
+      authenticatedPrincipal)` — the principal is a SEPARATE verified argument,
+      never part of the payload; `expectedEnvelopeHash` protects against
+      approving a version different from the one the human reviewed; `requestId`
+      gives idempotency by (tenant, requestId).
       Invariants: principal authenticated · tenant matches · membership
       active · company in scope · role authorized for the fiscalEffect ·
       status == pending_review · envelope current == envelope reviewed ·
-      reason required.
+      reason required. Atomic `BEGIN IMMEDIATE` transition, immutable
+      `approval_events` (both reviewed/resulting envelope hashes), versioned
+      policy `approval-policy/v0.4.0`, frozen error codes, surfaces:
+      HTTP `/accounting/memories/{id}/approve` · MCP `accounting_approve`
+      (fail-closed without session) · CLI `auth login` + authenticated
+      `approve`. Implemented in commits 9d4211c..65af686.
 - [ ] **2. Conflictos adjudicables** (`AccountingJudgment`): an agent may
       PROPOSE a contradiction (`supports`/`contradicts`/`explains`/
       `reconciles`/`reverses`/`supersedes`) but never confirm it.
