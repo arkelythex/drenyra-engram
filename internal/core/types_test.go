@@ -1,6 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
-// no float is ever used for money. This module contains no monetary fields and
-// tests the observation core model validators and scope helpers.
+// no float is ever used for money. This module tests the v2 core model: scope
+// helpers, validators, content hashing and the v1→v2 legacy mappings. No money
+// value is computed here.
 
 package core
 
@@ -148,39 +149,57 @@ func TestAssertValidContent(t *testing.T) {
 	}
 }
 
-func TestAssertValidProvenance(t *testing.T) {
-	valid := Provenance{Actor: "agent", Timestamp: "2026-01-15T12:00:00.000Z", Source: "cli"}
-	if err := AssertValidProvenance(valid); err != nil {
-		t.Fatalf("valid provenance rejected: %v", err)
+func TestAssertValidSource(t *testing.T) {
+	valid := Source{
+		System:    "drenyra-core",
+		Reference: "F001-948",
+		ActorID:   "maria.torres",
+		ActorKind: ActorKindHuman,
+		Session:   "s-1",
+	}
+	if err := AssertValidSource(valid); err != nil {
+		t.Fatalf("valid source rejected: %v", err)
 	}
 
-	t.Run("empty actor rejected", func(t *testing.T) {
+	t.Run("empty system rejected", func(t *testing.T) {
 		bad := valid
-		bad.Actor = ""
-		if err := AssertValidProvenance(bad); err == nil || !strings.Contains(err.Error(), "actor") {
-			t.Fatalf("expected actor error, got %v", err)
+		bad.System = ""
+		if err := AssertValidSource(bad); err == nil || !strings.Contains(err.Error(), "system") {
+			t.Fatalf("expected system error, got %v", err)
 		}
 	})
 
-	t.Run("unparseable timestamp rejected", func(t *testing.T) {
+	t.Run("unknown actorKind rejected", func(t *testing.T) {
 		bad := valid
-		bad.Timestamp = "not-a-date"
-		if err := AssertValidProvenance(bad); err == nil || !strings.Contains(err.Error(), "timestamp") {
-			t.Fatalf("expected timestamp error, got %v", err)
+		bad.ActorKind = "robot"
+		if err := AssertValidSource(bad); err == nil || !strings.Contains(err.Error(), "actorKind") {
+			t.Fatalf("expected actorKind error, got %v", err)
 		}
 	})
 
-	t.Run("empty source rejected", func(t *testing.T) {
+	t.Run("human without actorId rejected", func(t *testing.T) {
 		bad := valid
-		bad.Source = ""
-		if err := AssertValidProvenance(bad); err == nil || !strings.Contains(err.Error(), "source") {
-			t.Fatalf("expected source error, got %v", err)
+		bad.ActorID = ""
+		if err := AssertValidSource(bad); err == nil || !strings.Contains(err.Error(), "actorId") {
+			t.Fatalf("expected actorId error, got %v", err)
 		}
 	})
 
-	t.Run("session is optional", func(t *testing.T) {
-		if err := AssertValidProvenance(valid); err != nil {
-			t.Fatalf("session-less provenance rejected: %v", err)
+	t.Run("agent without actorId is valid", func(t *testing.T) {
+		agent := valid
+		agent.ActorID = ""
+		agent.ActorKind = ActorKindAgent
+		if err := AssertValidSource(agent); err != nil {
+			t.Fatalf("actorId-less agent source rejected: %v", err)
+		}
+	})
+
+	t.Run("system actor without actorId is valid", func(t *testing.T) {
+		sys := valid
+		sys.ActorID = ""
+		sys.ActorKind = ActorKindSystem
+		if err := AssertValidSource(sys); err != nil {
+			t.Fatalf("actorId-less system source rejected: %v", err)
 		}
 	})
 }
@@ -279,21 +298,46 @@ func TestParseDateTime(t *testing.T) {
 	}
 }
 
-func TestCloneObservationCopiesValidity(t *testing.T) {
-	obs := Observation{
-		Identity:        Identity{ID: "id-1", TopicKey: "topic"},
-		Title:           "t",
-		Type:            "policy",
-		Scope:           Scope{Kind: ScopeKindInstitutional},
-		Content:         Content{What: "w", Why: "y", Where: "r", Learned: "l"},
-		AuthorityStatus: StatusDraft,
-		Validity:        &Validity{ExpiresAt: "2025-01-01T00:00:00.000Z"},
-		Provenance:      Provenance{Actor: "a", Timestamp: "2026-01-15T12:00:00.000Z", Source: "s"},
-		Revision:        1,
+func TestCloneMemoryCopiesPointersAndSlices(t *testing.T) {
+	memory := AccountingMemory{
+		Identity:     Identity{ID: "id-1", TopicKey: "topic"},
+		Title:        "t",
+		Kind:         KindRule,
+		Scope:        Scope{Kind: ScopeKindInstitutional},
+		Content:      Content{What: "w", Why: "y", Where: "r", Learned: "l"},
+		Status:       StatusActive,
+		FiscalEffect: FiscalEffectNone,
+		EffectiveAt:  "2026-01-15T12:00:00.000Z",
+		RecordedAt:   "2026-01-15T12:00:00.000Z",
+		Source:       Source{System: "s", ActorKind: ActorKindAgent},
+		Validity:     &Validity{ExpiresAt: "2025-01-01T00:00:00.000Z"},
+		EvidenceRefs: []string{"xml:1"},
+		RuleRefs:     []string{"rule:1"},
+		Confidence:   floatPtr(0.9),
+		Materiality:  int64Ptr(1000),
+		ContentHash:  "hash",
+		Revision:     1,
 	}
-	cloned := CloneObservation(obs)
+	cloned := CloneMemory(memory)
 	cloned.Validity.ExpiresAt = "mutated"
-	if obs.Validity.ExpiresAt == "mutated" {
+	cloned.Confidence = floatPtr(0.1)
+	cloned.Materiality = int64Ptr(1)
+	cloned.EvidenceRefs[0] = "mutated"
+	cloned.RuleRefs[0] = "mutated"
+
+	if memory.Validity.ExpiresAt == "mutated" {
 		t.Fatal("clone must not share the validity pointer")
 	}
+	if *memory.Confidence != 0.9 {
+		t.Fatal("clone must not share the confidence pointer")
+	}
+	if *memory.Materiality != 1000 {
+		t.Fatal("clone must not share the materiality pointer")
+	}
+	if memory.EvidenceRefs[0] == "mutated" || memory.RuleRefs[0] == "mutated" {
+		t.Fatal("clone must not share the ref slices")
+	}
 }
+
+func floatPtr(v float64) *float64 { return &v }
+func int64Ptr(v int64) *int64     { return &v }
