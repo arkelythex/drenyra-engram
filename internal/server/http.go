@@ -210,6 +210,11 @@ func (h *HTTPServer) Handler() http.Handler {
 	// strict body, Idempotency-Key).
 	mux.HandleFunc("POST /accounting/closings", h.requireToken(h.handleCloseCreate))
 	mux.HandleFunc("POST /accounting/periods/{period}/reopen", h.authenticate(h.handlePeriodReopen))
+	// Period-over-period comparison (v0.5.0, design §4/§6): a PURE scope-first
+	// read over one company's two periods — same shared token guard as the
+	// other read surfaces; both scopes come from the query
+	// (?ruc= + ?organizationId= + from/to periods), so no body is needed.
+	mux.HandleFunc("GET /accounting/periods/compare", h.requireToken(h.handlePeriodCompare))
 	// Deprecated v0.3 approval surface: stays compiled but is DISABLED by default
 	// in the daemon (v0.5.0 removes it). Mounted only behind an explicit opt-in
 	// (EnableLegacyApprove) for the migration window.
@@ -596,9 +601,9 @@ func writeApprovalError(w http.ResponseWriter, err error) {
 // selected with the ?ruc= (and optional ?organizationId=) query parameters, the
 // same scope derivation as the accounting GET routes.
 type closeCreateInput struct {
-	Period string             `json:"period"`
-	Totals []core.CloseTotal  `json:"totals"`
-	Reason string             `json:"reason"`
+	Period string              `json:"period"`
+	Totals []core.CloseTotal   `json:"totals"`
+	Reason string              `json:"reason"`
 	Source judgmentSourceInput `json:"source"`
 }
 
@@ -752,6 +757,39 @@ func closeErrorStatus(code string) (int, bool) {
 		return http.StatusConflict, true
 	}
 	return 0, false
+}
+
+// handlePeriodCompare serves GET /accounting/periods/compare?ruc=<11>&from=YYYYMM&to=YYYYMM
+// (v0.5.0, design §4/§6). Both periods belong to the same company, so one
+// ?ruc= (plus optional ?organizationId=) derives the two exact scopes; the
+// service validates everything. The shared close-surface error envelope maps
+// the typed failures: INVALID_PERIOD (malformed or equal periods) and
+// INVALID_RUC → 400, COMPANY_SCOPE_DENIED (never reachable through this
+// single-company route, but frozen for the shared service) → 403. The result
+// is the deterministic core.PeriodComparison JSON — a pure read, no writes.
+func (h *HTTPServer) handlePeriodCompare(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	ruc := query.Get("ruc")
+	fromScope := core.Scope{
+		Kind:           core.ScopeKindCompany,
+		OrganizationID: query.Get("organizationId"),
+		CompanyID:      ruc,
+		RUC:            ruc,
+		Period:         query.Get("from"),
+	}
+	toScope := core.Scope{
+		Kind:           core.ScopeKindCompany,
+		OrganizationID: query.Get("organizationId"),
+		CompanyID:      ruc,
+		RUC:            ruc,
+		Period:         query.Get("to"),
+	}
+	comparison, err := ComparePeriods(r.Context(), h.api, fromScope, toScope)
+	if err != nil {
+		writeCloseError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
 }
 
 // writeCloseError writes the close-surface error envelope. The frozen close and
@@ -1105,16 +1143,16 @@ type reconciliationSourceInput struct {
 // provenance-only source. Any authority field in the body is REJECTED with 400
 // (DisallowUnknownFields), never ignored.
 type reconciliationProposeInput struct {
-	LeftMemoryID     string                     `json:"leftMemoryId"`
-	RightMemoryID    string                     `json:"rightMemoryId"`
-	Method           string                     `json:"method"`
-	Currency         string                     `json:"currency"`
-	LeftAmountCents  int64                      `json:"leftAmountCents"`
-	RightAmountCents int64                      `json:"rightAmountCents"`
-	ToleranceCents   int64                      `json:"toleranceCents"`
-	Reason           string                     `json:"reason"`
-	PredecessorID    string                     `json:"predecessorId"`
-	Source           reconciliationSourceInput  `json:"source"`
+	LeftMemoryID     string                    `json:"leftMemoryId"`
+	RightMemoryID    string                    `json:"rightMemoryId"`
+	Method           string                    `json:"method"`
+	Currency         string                    `json:"currency"`
+	LeftAmountCents  int64                     `json:"leftAmountCents"`
+	RightAmountCents int64                     `json:"rightAmountCents"`
+	ToleranceCents   int64                     `json:"toleranceCents"`
+	Reason           string                    `json:"reason"`
+	PredecessorID    string                    `json:"predecessorId"`
+	Source           reconciliationSourceInput `json:"source"`
 }
 
 // reconciliationConfirmInput is the STRICT authenticated body of the confirm

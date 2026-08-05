@@ -95,6 +95,8 @@ func run(args []string) int {
 		return cmdLinkEvidence(args[1:])
 	case "period-summary":
 		return cmdPeriodSummary(args[1:])
+	case "compare-periods":
+		return cmdComparePeriods(args[1:])
 	case "close":
 		return cmdClose(args[1:])
 	case "timeline":
@@ -2048,6 +2050,58 @@ func cmdPeriodSummary(args []string) int {
 }
 
 // ──────────────────────────────────────────────
+// compare-periods — period-over-period comparison (v0.5.0, design §4/§6)
+// ──────────────────────────────────────────────
+
+func cmdComparePeriods(args []string) int {
+	fs := flag.NewFlagSet("compare-periods", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	from := fs.String("from", "", "fiscal period YYYYMM of the from scope (required)")
+	to := fs.String("to", "", "fiscal period YYYYMM of the to scope (required)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--from": true, "--to": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	if strings.TrimSpace(*from) == "" || strings.TrimSpace(*to) == "" {
+		fs.Usage()
+		return 2
+	}
+	fromScope, err := cliCompanyScope(rest[0], *from)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+	toScope, err := cliCompanyScope(rest[0], *to)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	comparison, err := server.ComparePeriods(context.Background(), api, fromScope, toScope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(comparison)
+}
+
+// ──────────────────────────────────────────────
 // close — monthly close surfaces (v0.5.0 close foundation, design §6)
 // ──────────────────────────────────────────────
 
@@ -2378,6 +2432,7 @@ Usage:
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
+  drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]
   drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
   drenyra-engram close show <memory-id> [--db <path>]
   drenyra-engram close reopen <ruc> --period YYYYMM --expected-close <id> --reason <text> [--db <path>]   (authenticated human gate)

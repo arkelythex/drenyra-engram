@@ -637,6 +637,14 @@ func ToolCatalog() []map[string]any {
 			}, "scope"),
 		},
 		{
+			"name":        "accounting_compare_periods",
+			"description": "Period-over-period comparison (v0.5.0, design §4): deterministic chain/status/pending/close deltas between two exact company scopes of the same tenant, company and RUC with distinct YYYYMM periods. Pure read — no schema, no writes. from_scope and to_scope are JSON company scopes (the same wire shape as accounting_period_summary's scope).",
+			"inputSchema": objectSchema(map[string]any{
+				"from_scope": stringSchema(`JSON company scope with the from period (required)`),
+				"to_scope":   stringSchema(`JSON company scope with the to period (required)`),
+			}, "from_scope", "to_scope"),
+		},
+		{
 			"name":        "accounting_context",
 			"description": "Current accounting memory for a scope: latest revision per (topicKey, scope) chain.",
 			"inputSchema": objectSchema(map[string]any{
@@ -1519,6 +1527,38 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(summary)), nil
+
+	case "accounting_compare_periods":
+		// Strict snake_case decode (design §6): the tool accepts EXACTLY its two
+		// declared arguments — from_scope and to_scope are JSON company scopes
+		// (the same wire shape every scope-taking tool uses). Unknown fields are
+		// rejected, never silently ignored.
+		var args struct {
+			FromScope string `json:"from_scope"`
+			ToScope   string `json:"to_scope"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("from_scope", args.FromScope); err != nil {
+			return nil, err
+		}
+		if err := requireParams("to_scope", args.ToScope); err != nil {
+			return nil, err
+		}
+		fromScope, err := decodeScope(args.FromScope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		toScope, err := decodeScope(args.ToScope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		comparison, err := ComparePeriods(context.Background(), m.api, fromScope, toScope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(comparison)), nil
 
 	case "accounting_context":
 		var args struct {

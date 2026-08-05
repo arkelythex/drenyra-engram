@@ -637,7 +637,7 @@ func TestCLIUsageErrorsForNewCommands(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("help exit = %d, want 0", code)
 		}
-		for _, cmd := range []string{"compare", "approve", "reject", "void", "supersede", "period-summary"} {
+		for _, cmd := range []string{"compare", "approve", "reject", "void", "supersede", "period-summary", "compare-periods"} {
 			if !strings.Contains(stdout, cmd) {
 				t.Fatalf("help output missing %q: %s", cmd, stdout)
 			}
@@ -1147,4 +1147,123 @@ func TestCLISeedLocalDevPrintsTokenOnce(t *testing.T) {
 	if session.AuthenticationMethod != auth.AuthMethodLocalDev || session.AssuranceLevel != auth.AssuranceStandard {
 		t.Fatalf("seeded session = %+v, want local_dev + standard assurance", session)
 	}
+}
+
+// ──────────────────────────────────────────────
+// compare-periods — CLI surface (v0.5.0, design §4/§6)
+// ──────────────────────────────────────────────
+
+// cliFixtureJSON builds a save fixture for the CLI's company scope (org "cli",
+// companyId := ruc) in the given period.
+func cliFixtureJSON(t *testing.T, topicKey, what string, period string) string {
+	t.Helper()
+	raw, err := json.Marshal(core.SaveInput{
+		TopicKey: topicKey,
+		Title:    "IGV base rate",
+		Kind:     core.KindRule,
+		Scope: core.Scope{
+			Kind:           core.ScopeKindCompany,
+			OrganizationID: "cli",
+			CompanyID:      cliRucA,
+			RUC:            cliRucA,
+			Period:         period,
+		},
+		Content:      core.Content{What: what, Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
+		FiscalEffect: core.FiscalEffectNone,
+		EffectiveAt:  period[0:4] + "-" + period[4:6] + "-01T00:00:00.000Z",
+		Source:       core.Source{System: "cli", ActorID: "cli-user", ActorKind: core.ActorKindAgent, Session: "compare-" + period},
+	})
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	return string(raw)
+}
+
+// writeCLIFixture writes a save fixture into a temp file and returns its path.
+func writeCLIFixture(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture %s: %v", name, err)
+	}
+	return path
+}
+
+// TestCLIComparePeriods is the compare-periods smoke: two periods of the same
+// company with a changed chain (same topic, new content) and a new chain; the
+// CLI emits the deterministic JSON report.
+func TestCLIComparePeriods(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	dir := t.TempDir()
+
+	// 202401: the standard a.json fixture (tax.igv.rate, 18%).
+	if stdout, stderr, code := runCLI(t, "save", fixturePath(t, "a.json"), "--db", db); code != 0 {
+		t.Fatalf("save july fixture (exit %d): %s %s", code, stdout, stderr)
+	}
+	// 202402: the same chain with NEW content (18.5%) plus a brand-new chain.
+	changedFixture := writeCLIFixture(t, dir, "changed.json", cliFixtureJSON(t, "tax.igv.rate", "IGV base rate is 18.5 percent", "202402"))
+	newFixture := writeCLIFixture(t, dir, "new.json", cliFixtureJSON(t, "account/4011/ventas-feb", "ventas de febrero", "202402"))
+	if stdout, stderr, code := runCLI(t, "save", changedFixture, "--db", db); code != 0 {
+		t.Fatalf("save changed fixture (exit %d): %s %s", code, stdout, stderr)
+	}
+	if stdout, stderr, code := runCLI(t, "save", newFixture, "--db", db); code != 0 {
+		t.Fatalf("save new fixture (exit %d): %s %s", code, stdout, stderr)
+	}
+
+	stdout, stderr, code := runCLI(t, "compare-periods", cliRucA, "--from", "202401", "--to", "202402", "--db", db)
+	if code != 0 {
+		t.Fatalf("compare-periods (exit %d): %s %s", code, stdout, stderr)
+	}
+	var got core.PeriodComparison
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("decode compare-periods output: %v\n%s", err, stdout)
+	}
+	if got.From != "202401" || got.To != "202402" {
+		t.Fatalf("periods = %q/%q, want 202401/202402", got.From, got.To)
+	}
+	if got.Counts.FromTotal != 1 || got.Counts.ToTotal != 2 || got.Counts.Delta != 1 {
+		t.Fatalf("counts = %+v, want fromTotal 1, toTotal 2, delta +1", got.Counts)
+	}
+	if len(got.Chains.Changed) != 1 || got.Chains.Changed[0].TopicKey != "tax.igv.rate" {
+		t.Fatalf("changed = %+v, want exactly tax.igv.rate", got.Chains.Changed)
+	}
+	if len(got.Chains.New) != 1 || got.Chains.New[0].TopicKey != "account/4011/ventas-feb" {
+		t.Fatalf("new = %+v, want exactly account/4011/ventas-feb", got.Chains.New)
+	}
+	if len(got.Chains.Removed) != 0 || got.Chains.UnchangedCount != 0 {
+		t.Fatalf("removed/unchanged = %d/%d, want 0/0", len(got.Chains.Removed), got.Chains.UnchangedCount)
+	}
+}
+
+// TestCLIComparePeriodsUsageErrors covers the CLI validation envelope: a missing
+// company, a missing --from/--to and an equal-period pair all fail without a
+// report.
+func TestCLIComparePeriodsUsageErrors(t *testing.T) {
+	t.Run("missing ruc", func(t *testing.T) {
+		_, _, code := runCLI(t, "compare-periods", "--from", "202401", "--to", "202402", "--db", filepath.Join(t.TempDir(), "engram.db"))
+		if code != 2 {
+			t.Fatalf("compare-periods without ruc exit = %d, want 2", code)
+		}
+	})
+	t.Run("missing from", func(t *testing.T) {
+		_, _, code := runCLI(t, "compare-periods", cliRucA, "--to", "202402", "--db", filepath.Join(t.TempDir(), "engram.db"))
+		if code != 2 {
+			t.Fatalf("compare-periods without --from exit = %d, want 2", code)
+		}
+	})
+	t.Run("equal periods", func(t *testing.T) {
+		db := filepath.Join(t.TempDir(), "engram.db")
+		dir := t.TempDir()
+		fromFixture := writeCLIFixture(t, dir, "from.json", cliFixtureJSON(t, "tax.igv.rate", "IGV base rate is 18 percent", "202401"))
+		if stdout, stderr, code := runCLI(t, "save", fromFixture, "--db", db); code != 0 {
+			t.Fatalf("seed save (exit %d): %s %s", code, stdout, stderr)
+		}
+		_, stderr, code := runCLI(t, "compare-periods", cliRucA, "--from", "202401", "--to", "202401", "--db", db)
+		if code != 1 {
+			t.Fatalf("equal-periods exit = %d, want 1; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "INVALID_PERIOD") {
+			t.Fatalf("stderr must carry INVALID_PERIOD: %q", stderr)
+		}
+	})
 }
