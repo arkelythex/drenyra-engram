@@ -155,6 +155,8 @@ func (s *Signer) Sign(ctx context.Context, q Queryer, payload core.ReceiptPayloa
 		row.MemoryID = payload.SubjectID
 	} else if payload.SubjectType == core.SubjectTypeJudgment {
 		row.JudgmentID = payload.SubjectID
+	} else if payload.SubjectType == core.SubjectTypeEvidenceObject {
+		row.EvidenceObjectID = payload.SubjectID
 	} else {
 		row.ReconciliationID = payload.SubjectID
 	}

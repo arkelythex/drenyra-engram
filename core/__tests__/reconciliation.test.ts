@@ -93,13 +93,14 @@ describe("reconciliation model mirror (v0.5.0)", () => {
 	});
 
 	it("freezes the lifecycle transition matrix", () => {
-		const legal: Record<Reconciliation["status"], Reconciliation["status"][]> = {
-			proposed: ["confirmed", "rejected", "withdrawn", "superseded"],
-			confirmed: ["superseded"],
-			rejected: [],
-			withdrawn: [],
-			superseded: [],
-		};
+		const legal: Record<Reconciliation["status"], Reconciliation["status"][]> =
+			{
+				proposed: ["confirmed", "rejected", "withdrawn", "superseded"],
+				confirmed: ["superseded"],
+				rejected: [],
+				withdrawn: [],
+				superseded: [],
+			};
 		for (const from of ALL_STATUSES) {
 			for (const to of ALL_STATUSES) {
 				expect(isLegalReconciliationTransition(from, to)).toBe(
@@ -114,12 +115,22 @@ describe("reconciliation model mirror (v0.5.0)", () => {
 		expect(canRejectReconciliation("proposed")).toBe(true);
 		expect(canWithdrawReconciliation("proposed")).toBe(true);
 		expect(canSupersedeReconciliation("confirmed")).toBe(true);
-		for (const status of ["confirmed", "rejected", "withdrawn", "superseded"] as const) {
+		for (const status of [
+			"confirmed",
+			"rejected",
+			"withdrawn",
+			"superseded",
+		] as const) {
 			expect(canConfirmReconciliation(status)).toBe(false);
 			expect(canRejectReconciliation(status)).toBe(false);
 			expect(canWithdrawReconciliation(status)).toBe(false);
 		}
-		for (const status of ["proposed", "rejected", "withdrawn", "superseded"] as const) {
+		for (const status of [
+			"proposed",
+			"rejected",
+			"withdrawn",
+			"superseded",
+		] as const) {
 			expect(canSupersedeReconciliation(status)).toBe(false);
 		}
 	});
@@ -137,7 +148,9 @@ describe("reconciliation model mirror (v0.5.0)", () => {
 		await expect(computeReconciliationHash(baseReconciliation())).resolves.toBe(
 			"3f57f9ac0457ad9d391cdd188fecc581bd77805c196041908459a3e850307000",
 		);
-		await expect(computeReconciliationHash(confirmedReconciliation())).resolves.toBe(
+		await expect(
+			computeReconciliationHash(confirmedReconciliation()),
+		).resolves.toBe(
 			"0c163b541c86acfea21bd50ceb19212ae7e60a11518add4ebcd1868e47d4b0ed",
 		);
 	});

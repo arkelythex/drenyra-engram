@@ -68,17 +68,77 @@ describe("period comparison mirror (v0.5.0)", () => {
 		// obligation/igv-621 is REMOVED. Expect: new=1, removed=1, changed=1,
 		// unchanged=1, no status changes.
 		const from = await Promise.all([
-			comparisonMemory("j1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo"),
-			comparisonMemory("j2", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%"),
-			comparisonMemory("j3", "obligation/igv-621", "obligation", "active", "Obligacion PDT 621", "declarar IGV julio"),
+			comparisonMemory(
+				"j1",
+				"account/4011",
+				"fact",
+				"active",
+				"Ventas julio",
+				"ventas del periodo",
+			),
+			comparisonMemory(
+				"j2",
+				"fact/igv-tasa",
+				"fact",
+				"active",
+				"Tasa IGV",
+				"tasa vigente 18%",
+			),
+			comparisonMemory(
+				"j3",
+				"obligation/igv-621",
+				"obligation",
+				"active",
+				"Obligacion PDT 621",
+				"declarar IGV julio",
+			),
 		]);
 		const to = await Promise.all([
-			reperiod(await comparisonMemory("a1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo CORREGIDAS"), "202608"),
-			reperiod(await comparisonMemory("a2", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%"), "202608"),
-			reperiod(await comparisonMemory("a3", "account/4011/ventas-agosto", "fact", "active", "Ventas agosto", "ventas de agosto"), "202608"),
+			reperiod(
+				await comparisonMemory(
+					"a1",
+					"account/4011",
+					"fact",
+					"active",
+					"Ventas julio",
+					"ventas del periodo CORREGIDAS",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"a2",
+					"fact/igv-tasa",
+					"fact",
+					"active",
+					"Tasa IGV",
+					"tasa vigente 18%",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"a3",
+					"account/4011/ventas-agosto",
+					"fact",
+					"active",
+					"Ventas agosto",
+					"ventas de agosto",
+				),
+				"202608",
+			),
 		]);
 
-		const got = await computePeriodComparison("202607", "202608", from, to, [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			from,
+			to,
+			[],
+			[],
+			"open",
+			"open",
+		);
 
 		expect(got.from).toBe("202607");
 		expect(got.to).toBe("202608");
@@ -105,16 +165,48 @@ describe("period comparison mirror (v0.5.0)", () => {
 
 	it("reports a status-only change in BOTH changed and statusChanges", async () => {
 		const from = await Promise.all([
-			comparisonMemory("j1", "adjust/aj-001", "decision", "pending_review", "Ajuste AJ-001", "ajuste por comprobante tardio"),
+			comparisonMemory(
+				"j1",
+				"adjust/aj-001",
+				"decision",
+				"pending_review",
+				"Ajuste AJ-001",
+				"ajuste por comprobante tardio",
+			),
 		]);
 		const to = await Promise.all([
-			reperiod(await comparisonMemory("a1", "adjust/aj-001", "decision", "approved", "Ajuste AJ-001", "ajuste por comprobante tardio"), "202608"),
+			reperiod(
+				await comparisonMemory(
+					"a1",
+					"adjust/aj-001",
+					"decision",
+					"approved",
+					"Ajuste AJ-001",
+					"ajuste por comprobante tardio",
+				),
+				"202608",
+			),
 		]);
 
-		const got = await computePeriodComparison("202607", "202608", from, to, [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			from,
+			to,
+			[],
+			[],
+			"open",
+			"open",
+		);
 
 		expect(got.chains.changed).toEqual([
-			{ topicKey: "adjust/aj-001", fromId: "j1", toId: "a1", kind: "decision", title: "Ajuste AJ-001" },
+			{
+				topicKey: "adjust/aj-001",
+				fromId: "j1",
+				toId: "a1",
+				kind: "decision",
+				title: "Ajuste AJ-001",
+			},
 		]);
 		expect(got.chains.unchangedCount).toBe(0);
 		expect(got.statusChanges).toEqual([
@@ -129,46 +221,165 @@ describe("period comparison mirror (v0.5.0)", () => {
 	});
 
 	it("never trips on write-time metadata (recordedAt/revision)", async () => {
-		const fromMem = await comparisonMemory("j1", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%");
-		const toMem = reperiod(await comparisonMemory("a1", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%"), "202608");
+		const fromMem = await comparisonMemory(
+			"j1",
+			"fact/igv-tasa",
+			"fact",
+			"active",
+			"Tasa IGV",
+			"tasa vigente 18%",
+		);
+		const toMem = reperiod(
+			await comparisonMemory(
+				"a1",
+				"fact/igv-tasa",
+				"fact",
+				"active",
+				"Tasa IGV",
+				"tasa vigente 18%",
+			),
+			"202608",
+		);
 		fromMem.recordedAt = "2026-07-01T00:00:00Z";
 		toMem.recordedAt = "2026-08-01T00:00:00Z";
 		fromMem.revision = 1;
 		toMem.revision = 2;
 
-		const got = await computePeriodComparison("202607", "202608", [fromMem], [toMem], [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			[fromMem],
+			[toMem],
+			[],
+			[],
+			"open",
+			"open",
+		);
 		expect(got.chains.changed).toEqual([]);
 		expect(got.chains.unchangedCount).toBe(1);
 	});
 
 	it("treats evidence/rule refs as SETS (order-insensitive, growth-sensitive)", async () => {
-		const base = await comparisonMemory("j1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo");
-		const reordered = reperiod(await comparisonMemory("a1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo"), "202608");
+		const base = await comparisonMemory(
+			"j1",
+			"account/4011",
+			"fact",
+			"active",
+			"Ventas julio",
+			"ventas del periodo",
+		);
+		const reordered = reperiod(
+			await comparisonMemory(
+				"a1",
+				"account/4011",
+				"fact",
+				"active",
+				"Ventas julio",
+				"ventas del periodo",
+			),
+			"202608",
+		);
 		reordered.evidenceRefs = ["xml/ventas.xml", "cdr/ventas.cdr"];
 		base.evidenceRefs = ["cdr/ventas.cdr", "xml/ventas.xml"];
-		const got = await computePeriodComparison("202607", "202608", [base], [reordered], [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			[base],
+			[reordered],
+			[],
+			[],
+			"open",
+			"open",
+		);
 		expect(got.chains.changed).toEqual([]);
 		expect(got.chains.unchangedCount).toBe(1);
 
-		const grown = reperiod(await comparisonMemory("a2", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo"), "202608");
-		grown.evidenceRefs = ["xml/ventas.xml", "cdr/ventas.cdr", "extracto/ventas.pdf"];
-		const base2 = await comparisonMemory("j2", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo");
+		const grown = reperiod(
+			await comparisonMemory(
+				"a2",
+				"account/4011",
+				"fact",
+				"active",
+				"Ventas julio",
+				"ventas del periodo",
+			),
+			"202608",
+		);
+		grown.evidenceRefs = [
+			"xml/ventas.xml",
+			"cdr/ventas.cdr",
+			"extracto/ventas.pdf",
+		];
+		const base2 = await comparisonMemory(
+			"j2",
+			"account/4011",
+			"fact",
+			"active",
+			"Ventas julio",
+			"ventas del periodo",
+		);
 		base2.evidenceRefs = ["xml/ventas.xml", "cdr/ventas.cdr"];
-		const got2 = await computePeriodComparison("202607", "202608", [base2], [grown], [], [], "open", "open");
+		const got2 = await computePeriodComparison(
+			"202607",
+			"202608",
+			[base2],
+			[grown],
+			[],
+			[],
+			"open",
+			"open",
+		);
 		expect(got2.chains.changed).toHaveLength(1);
 	});
 
 	it("derives the pending-item digest delta keyed by chain", async () => {
 		const fromPending: ClosePendingItem[] = [
-			{ memoryId: "mem-pend-a", topicKey: "adjust/aj-001", kind: "", status: "", title: "", effectiveAt: "" },
-			{ memoryId: "mem-pend-b", topicKey: "obligation/igv-621", kind: "", status: "", title: "", effectiveAt: "" },
+			{
+				memoryId: "mem-pend-a",
+				topicKey: "adjust/aj-001",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
+			{
+				memoryId: "mem-pend-b",
+				topicKey: "obligation/igv-621",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
 		];
 		const toPending: ClosePendingItem[] = [
-			{ memoryId: "mem-pend-b2", topicKey: "obligation/igv-621", kind: "", status: "", title: "", effectiveAt: "" },
-			{ memoryId: "mem-pend-c", topicKey: "exception/banco-002", kind: "", status: "", title: "", effectiveAt: "" },
+			{
+				memoryId: "mem-pend-b2",
+				topicKey: "obligation/igv-621",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
+			{
+				memoryId: "mem-pend-c",
+				topicKey: "exception/banco-002",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
 		];
 
-		const got = await computePeriodComparison("202607", "202608", [], [], fromPending, toPending, "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			[],
+			[],
+			fromPending,
+			toPending,
+			"open",
+			"open",
+		);
 
 		expect(got.pendingItems).toEqual({
 			from: 2,
@@ -180,22 +391,84 @@ describe("period comparison mirror (v0.5.0)", () => {
 	});
 
 	it("carries the close state pair", async () => {
-		const got = await computePeriodComparison("202607", "202608", [], [], [], [], "closed", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			[],
+			[],
+			[],
+			[],
+			"closed",
+			"open",
+		);
 		expect(got.closeState).toEqual({ from: "closed", to: "open" });
 	});
 
 	it("stable-sorts arrays by topic key then memory ID", async () => {
 		const from = await Promise.all([
-			comparisonMemory("jz", "topic/zeta", "fact", "active", "Z", "contenido z"),
-			comparisonMemory("ja", "topic/alfa", "fact", "active", "A", "contenido a"),
+			comparisonMemory(
+				"jz",
+				"topic/zeta",
+				"fact",
+				"active",
+				"Z",
+				"contenido z",
+			),
+			comparisonMemory(
+				"ja",
+				"topic/alfa",
+				"fact",
+				"active",
+				"A",
+				"contenido a",
+			),
 		]);
 		const to = await Promise.all([
-			reperiod(await comparisonMemory("az", "topic/zeta", "fact", "active", "Z", "contenido z CAMBIADO"), "202608"),
-			reperiod(await comparisonMemory("ab", "topic/bravo", "fact", "active", "B", "contenido b"), "202608"),
-			reperiod(await comparisonMemory("aa", "topic/alfa", "fact", "active", "A", "contenido a"), "202608"),
+			reperiod(
+				await comparisonMemory(
+					"az",
+					"topic/zeta",
+					"fact",
+					"active",
+					"Z",
+					"contenido z CAMBIADO",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"ab",
+					"topic/bravo",
+					"fact",
+					"active",
+					"B",
+					"contenido b",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"aa",
+					"topic/alfa",
+					"fact",
+					"active",
+					"A",
+					"contenido a",
+				),
+				"202608",
+			),
 		]);
 
-		const got = await computePeriodComparison("202607", "202608", from, to, [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			from,
+			to,
+			[],
+			[],
+			"open",
+			"open",
+		);
 
 		expect(got.chains.new.map((c) => c.topicKey)).toEqual(["topic/bravo"]);
 		expect(got.chains.removed).toEqual([]);
@@ -205,29 +478,150 @@ describe("period comparison mirror (v0.5.0)", () => {
 
 	it("is deterministic with a fixed narrative delta summary", async () => {
 		const from = await Promise.all([
-			comparisonMemory("j1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo"),
-			comparisonMemory("j2", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%"),
-			comparisonMemory("j3", "obligation/igv-621", "obligation", "active", "Obligacion PDT 621", "declarar IGV julio"),
-			comparisonMemory("j4", "exception/banco-001", "exception", "active", "Diferencia banco", "extracto vs libro"),
-			comparisonMemory("j5", "adjust/aj-001", "decision", "pending_review", "Ajuste AJ-001", "ajuste por comprobante tardio"),
+			comparisonMemory(
+				"j1",
+				"account/4011",
+				"fact",
+				"active",
+				"Ventas julio",
+				"ventas del periodo",
+			),
+			comparisonMemory(
+				"j2",
+				"fact/igv-tasa",
+				"fact",
+				"active",
+				"Tasa IGV",
+				"tasa vigente 18%",
+			),
+			comparisonMemory(
+				"j3",
+				"obligation/igv-621",
+				"obligation",
+				"active",
+				"Obligacion PDT 621",
+				"declarar IGV julio",
+			),
+			comparisonMemory(
+				"j4",
+				"exception/banco-001",
+				"exception",
+				"active",
+				"Diferencia banco",
+				"extracto vs libro",
+			),
+			comparisonMemory(
+				"j5",
+				"adjust/aj-001",
+				"decision",
+				"pending_review",
+				"Ajuste AJ-001",
+				"ajuste por comprobante tardio",
+			),
 		]);
 		const to = await Promise.all([
-			reperiod(await comparisonMemory("a1", "account/4011", "fact", "active", "Ventas julio", "ventas del periodo CORREGIDAS"), "202608"),
-			reperiod(await comparisonMemory("a2", "fact/igv-tasa", "fact", "active", "Tasa IGV", "tasa vigente 18%"), "202608"),
-			reperiod(await comparisonMemory("a3", "account/4011/ventas-agosto", "fact", "active", "Ventas agosto", "ventas de agosto"), "202608"),
-			reperiod(await comparisonMemory("a4", "adjust/aj-001", "decision", "approved", "Ajuste AJ-001", "ajuste por comprobante tardio"), "202608"),
+			reperiod(
+				await comparisonMemory(
+					"a1",
+					"account/4011",
+					"fact",
+					"active",
+					"Ventas julio",
+					"ventas del periodo CORREGIDAS",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"a2",
+					"fact/igv-tasa",
+					"fact",
+					"active",
+					"Tasa IGV",
+					"tasa vigente 18%",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"a3",
+					"account/4011/ventas-agosto",
+					"fact",
+					"active",
+					"Ventas agosto",
+					"ventas de agosto",
+				),
+				"202608",
+			),
+			reperiod(
+				await comparisonMemory(
+					"a4",
+					"adjust/aj-001",
+					"decision",
+					"approved",
+					"Ajuste AJ-001",
+					"ajuste por comprobante tardio",
+				),
+				"202608",
+			),
 		]);
 		const fromPending: ClosePendingItem[] = [
-			{ memoryId: "j5", topicKey: "adjust/aj-001", kind: "", status: "", title: "", effectiveAt: "" },
-			{ memoryId: "j3", topicKey: "obligation/igv-621", kind: "", status: "", title: "", effectiveAt: "" },
-			{ memoryId: "j4", topicKey: "exception/banco-001", kind: "", status: "", title: "", effectiveAt: "" },
+			{
+				memoryId: "j5",
+				topicKey: "adjust/aj-001",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
+			{
+				memoryId: "j3",
+				topicKey: "obligation/igv-621",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
+			{
+				memoryId: "j4",
+				topicKey: "exception/banco-001",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
 		];
 		const toPending: ClosePendingItem[] = [
-			{ memoryId: "j3", topicKey: "obligation/igv-621", kind: "", status: "", title: "", effectiveAt: "" },
+			{
+				memoryId: "j3",
+				topicKey: "obligation/igv-621",
+				kind: "",
+				status: "",
+				title: "",
+				effectiveAt: "",
+			},
 		];
 
-		const first = await computePeriodComparison("202607", "202608", from, to, fromPending, toPending, "closed", "open");
-		const second = await computePeriodComparison("202607", "202608", from, to, fromPending, toPending, "closed", "open");
+		const first = await computePeriodComparison(
+			"202607",
+			"202608",
+			from,
+			to,
+			fromPending,
+			toPending,
+			"closed",
+			"open",
+		);
+		const second = await computePeriodComparison(
+			"202607",
+			"202608",
+			from,
+			to,
+			fromPending,
+			toPending,
+			"closed",
+			"open",
+		);
 
 		expect(JSON.stringify(first)).toBe(JSON.stringify(second));
 		expect(first.narrative.length).toBeGreaterThan(0);
@@ -236,7 +630,16 @@ describe("period comparison mirror (v0.5.0)", () => {
 	});
 
 	it("handles empty periods", async () => {
-		const got = await computePeriodComparison("202607", "202608", [], [], [], [], "open", "open");
+		const got = await computePeriodComparison(
+			"202607",
+			"202608",
+			[],
+			[],
+			[],
+			[],
+			"open",
+			"open",
+		);
 		expect(got.counts).toEqual({
 			fromTotal: 0,
 			toTotal: 0,
@@ -244,7 +647,12 @@ describe("period comparison mirror (v0.5.0)", () => {
 			byKindDelta: {},
 			byStatusDelta: {},
 		});
-		expect(got.chains).toEqual({ new: [], removed: [], changed: [], unchangedCount: 0 });
+		expect(got.chains).toEqual({
+			new: [],
+			removed: [],
+			changed: [],
+			unchangedCount: 0,
+		});
 		expect(got.statusChanges).toEqual([]);
 	});
 });

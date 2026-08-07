@@ -58,6 +58,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -98,7 +99,22 @@ import (
 // period_closures projection (the write gate's authoritative source) plus the
 // immutable period_closure_events ledger (docs/architecture/
 // close-intelligence-v0.5.md §2.3 and §7).
-const schemaVersion = 6
+//
+// v7 (v0.6.0 rule foundation): adds observations.policy_rule_json (NULL for
+// legacy/non-rule memories; the canonical policy-rule metadata participates in
+// the content/envelope hashes) — docs/architecture/fiscal-policy-memory-v0.6.md
+// §3.
+//
+// v8 (v0.7.0 evidence objects): adds the immutable evidence_objects table (the
+// WORM metadata records — content-addressed id = SHA-256 hex of the bytes,
+// exact tenant/company/RUC/period scope, provenance, stored_at; no-update /
+// no-delete triggers) with its scope index, and REBUILDS the receipts table
+// with the subject CHECK extended to 'evidence_object', the action CHECK
+// extended to 'object_stored' and the fourth typed FK evidence_object_id
+// (SQLite cannot alter a CHECK, so the table is copied and swapped inside the
+// migration transaction — byte-preserving every v7 row) —
+// docs/architecture/evidence-object-v0.7.md §3.
+const schemaVersion = 8
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -175,6 +191,33 @@ type Store interface {
 	// the memory_reopened receipt on the close memory's chain. It NEVER edits the
 	// approved close memory.
 	ReopenPeriod(ctx context.Context, cmd core.ReopenPeriodCommand, principal auth.VerifiedApprovalPrincipal, policy authz.ApprovalAuthorizationPolicy) (core.ReopenPeriodResult, error)
+	// StoreObject captures ONE artifact WORM-style under its deterministic
+	// content address (v0.7.0): the SHA-256 hex of the bytes IS the object id.
+	// Identical bytes already stored → NO-OP (created=false, no row, no
+	// receipt). Writes enforce the closed-period gate (PERIOD_CLOSED inside a
+	// closed exact company period) and emit the object_stored receipt atomically
+	// for genuinely new objects. Object bytes are data, never instructions.
+	StoreObject(ctx context.Context, input core.ObjectStoreInput) (core.ObjectStoreResult, error)
+	// GetObject reads one object SCOPE-FIRST: the caller's exact scope must
+	// equal the stored scope or the object is invisible (OBJECT_NOT_FOUND).
+	// The stored bytes are re-hashed on every read and any mismatch fails
+	// closed (OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH — no silent repair).
+	GetObject(ctx context.Context, objectID string, scope core.Scope) (core.EvidenceObject, []byte, error)
+	// EvidenceObjectByID resolves one object METADATA by id (no bytes, no scope
+	// filter — used by verification's availability layer, which classifies refs
+	// as object-backed vs legacy). ok=false when the id has no row.
+	EvidenceObjectByID(ctx context.Context, objectID string) (core.EvidenceObject, bool)
+	// VerifyObjectBytes re-hashes the stored WORM bytes of one object; nil when
+	// they match the content address, a typed corruption error otherwise
+	// (OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH). Read-only, no repair.
+	VerifyObjectBytes(ctx context.Context, objectID string) error
+	// ObjectAvailability resolves which of the given evidence refs are
+	// OBJECT-BACKED (they identify stored evidence objects whose WORM bytes
+	// re-hash to their content address) and returns their metadata. A ref that
+	// resolves to a row whose bytes are missing/corrupt FAILS CLOSED (typed
+	// corruption error) — corruption is evidence, never a silent skip. Refs
+	// with no row are simply absent from the result (legacy/unresolved).
+	ObjectAvailability(ctx context.Context, refs []string) (map[string]core.EvidenceObject, error)
 	Close() error
 }
 
@@ -204,6 +247,13 @@ type SQLiteStore struct {
 	// disables receipt emission entirely — the default for callers that never
 	// attach one (imports, read-only surfaces, tests).
 	signer ReceiptSigner
+	// objectsRoot is the LOCAL WORM object-store root (v0.7.0): the top-level
+	// directory under which evidence object bytes live at their
+	// content-addressed relative paths. The convention is safe and explicit
+	// (never $HOME, never a shared dir): the default is
+	// <dir-of-db>/objects, overridable via OpenWithObjects (the CLI/HTTP/MCP
+	// surfaces surface it as --objects / $DRENYRA_ENGRAM_OBJECTS).
+	objectsRoot string
 }
 
 // ReceiptSigner mints and persists an immutable receipt for one covered act. The
@@ -216,18 +266,35 @@ type ReceiptSigner interface {
 	Sign(ctx context.Context, q Queryer, payload core.ReceiptPayload, issuedAt string) (core.SignedReceipt, error)
 }
 
-// Open opens (creating if needed) the SQLite database at path and applies the
-// versioned schema. Fresh stores bootstrap to the v2 layout exactly, then run
-// the SAME additive migration chain used for existing stores
-// (v2→v3→v4→v5→v6) — one tested migration path. A v1 store is migrated
-// additively (single transaction), then the v2→v3, v3→v4, v4→v5 and v5→v6
-// migrations each run in their own single transaction. A corrupt or
-// unsupported store fails closed: it never fabricates data
+// defaultObjectsRoot derives the safe explicit local objects root for a store
+// path: <dir-of-db>/objects (e.g. ./engram.db → ./objects). Relative DB paths
+// stay relative (consistent with the repo's ./engram.db default); the root is
+// never a parent of the DB dir and never a shared/user-home location.
+func defaultObjectsRoot(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), "objects")
+}
+
+// Open opens (creating if needed) the SQLite database at path with the
+// DEFAULT objects root (<dir-of-db>/objects) and applies the versioned
+// schema. Fresh stores bootstrap to the v2 layout exactly, then run the SAME
+// additive migration chain used for existing stores
+// (v2→v3→v4→v5→v6→v7→v8) — one tested migration path. A v1 store is migrated
+// additively (single transaction), then the v2→v3, v3→v4, v4→v5, v5→v6,
+// v6→v7 and v7→v8 migrations each run in their own single transaction. A
+// corrupt or unsupported store fails closed: it never fabricates data
 // (contracts/provenance.md frozen policy). An OPTIONAL receipt signer may be
 // attached at open (nil signer → no receipt emission); the store↔signer
 // construction cycle (the signer needs the opened store) is resolved by the
 // adapter via SetReceiptSigner right after Open.
 func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
+	return OpenWithObjects(path, defaultObjectsRoot(path), signers...)
+}
+
+// OpenWithObjects opens the SQLite store with an EXPLICIT local WORM objects
+// root (v0.7.0). Callers with a configured root (CLI --objects,
+// $DRENYRA_ENGRAM_OBJECTS) use this; every other caller keeps Open's safe
+// default. All other semantics are identical to Open.
+func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
@@ -253,8 +320,8 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
 	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4,
-	// v4→v5 and v5→v6 migrations each run in their own single transaction before
-	// use.
+	// v4→v5, v5→v6, v6→v7 and v7→v8 migrations each run in their own single
+	// transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -293,6 +360,20 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 			_ = db.Close()
 			return nil, err
 		}
+		version = 6
+	}
+	if version == 6 {
+		if err := migrateV6ToV7(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 7
+	}
+	if version == 7 {
+		if err := migrateV7ToV8(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 		version = schemaVersion
 	}
 	if version != schemaVersion {
@@ -304,7 +385,7 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite store: at most one receipt signer may be attached")
 	}
-	st := &SQLiteStore{db: db}
+	st := &SQLiteStore{db: db, objectsRoot: objectsRoot}
 	if len(signers) == 1 {
 		st.signer = signers[0]
 	}
@@ -1108,6 +1189,251 @@ func migrateV5ToV6(db *sql.DB) error {
 	return nil
 }
 
+// migrateV6ToV7 upgrades a schema_version=6 store to v7 IN ONE TRANSACTION
+// (docs/architecture/fiscal-policy-memory-v0.6.md §3):
+//
+//	(a) observations gains the optional policy_rule_json column (NULL for
+//	    legacy/non-rule memories; immutable with the memory) and the
+//	    observations immutability guard is reinstalled to protect it;
+//	(b) schema_version = 7 ONLY after the whole migration succeeded — same
+//	    transaction, so a failure above rolls everything back.
+//
+// The column must be ABSENT before mutation: a pre-existing column means a
+// foreign or partial migration and fails the step closed (the v5→v6
+// fail-closed pattern). No existing row is backfilled or re-hashed — NULL
+// means legacy/unversioned (v0.6 rollout: no automatic backfill, because
+// choosing a historical policy attribution is a fiscal assertion).
+func migrateV6ToV7(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v6→v7: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	existing, err := tableColumns(ctx, tx, "observations")
+	if err != nil {
+		return fmt.Errorf("migrate v6→v7: read observations columns: %w", err)
+	}
+	if existing["policy_rule_json"] {
+		return fmt.Errorf("migrate v6→v7: observations.policy_rule_json already exists — foreign or partial migration, fail closed")
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE observations ADD COLUMN policy_rule_json TEXT NULL`); err != nil {
+		return fmt.Errorf("migrate v6→v7: add observations.policy_rule_json: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TRIGGER IF EXISTS observations_immutable_content`); err != nil {
+		return fmt.Errorf("migrate v6→v7: drop v6 guard: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, immutabilityTriggerV7DDL); err != nil {
+		return fmt.Errorf("migrate v6→v7: install v7 guard: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '7' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v6→v7: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v6→v7: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// migrateV7ToV8 upgrades a schema_version=7 store to v8 IN ONE TRANSACTION
+// (docs/architecture/evidence-object-v0.7.md §3):
+//
+//	(a) the immutable evidence_objects table (the WORM metadata records) with
+//	    its scope index and its no-update/no-delete triggers;
+//	(b) the receipts table REBUILT with the subject CHECK extended to
+//	    'evidence_object', the action CHECK extended to 'object_stored' and the
+//	    fourth typed FK evidence_object_id (SQLite cannot alter a CHECK, so the
+//	    migration creates a byte-identical staging table with the extended
+//	    CHECKs and the fourth FK, copies every row byte-preserved with
+//	    evidence_object_id NULL, swaps the old table out and renames the new
+//	    table into place, then recreates the receipts indexes and triggers).
+//	    Existing receipts stay byte-valid; the DDL-level closed action/subject
+//	    sets stay in parity with core.ReceiptAction / core.SubjectType;
+//	(c) schema_version = 8 ONLY after the whole migration succeeded.
+//
+// On any failure the transaction rolls back and the store stays v7. No IF NOT
+// EXISTS is used: a pre-existing evidence_objects table is a corruption signal
+// and fails the migration closed. No historical object is backfilled — objects
+// only exist after the v0.7.0 feature stores them.
+func migrateV7ToV8(db *sql.DB) error {
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("migrate v7→v8: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	// (a) The evidence_objects base table — created BEFORE the receipts rebuild:
+	// the rebuild's row copy resolves the evidence_object_id FK target at DML
+	// time, so the target table must already exist.
+	if _, err := tx.ExecContext(ctx, evidenceObjectsDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: create evidence_objects: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, evidenceObjectsScopeIndexDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: create evidence_objects scope index: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, evidenceObjectsNoUpdateDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: create evidence_objects no-update trigger: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, evidenceObjectsNoDeleteDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: create evidence_objects no-delete trigger: %w", err)
+	}
+
+	// (b) The receipts table rebuild (extended subject/action CHECKs + the fourth
+	// typed FK).
+	if _, err := tx.ExecContext(ctx, receiptsV8DDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: create receipts_v8: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, receiptsV8CopyDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: copy receipts rows: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, dropReceiptsDDL); err != nil {
+		return fmt.Errorf("migrate v7→v8: swap out v7 receipts: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `ALTER TABLE receipts_v8 RENAME TO receipts`); err != nil {
+		return fmt.Errorf("migrate v7→v8: rename receipts_v8: %w", err)
+	}
+	for _, ddl := range []string{
+		receiptsSingletonIndexDDL, receiptsSubjectTimeIndexDDL, receiptsKeyTimeIndexDDL,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v7→v8: create receipts index: %w", err)
+		}
+	}
+	for _, ddl := range []string{receiptsNoUpdateDDL, receiptsNoDeleteDDL} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("migrate v7→v8: create receipts trigger: %w", err)
+		}
+	}
+
+	// (c) schema_version = 8 ONLY after the whole migration succeeded — same
+	// transaction, so a failure above rolls everything back.
+	if _, err := tx.ExecContext(ctx, `UPDATE schema_meta SET value = '8' WHERE key = 'schema_version'`); err != nil {
+		return fmt.Errorf("migrate v7→v8: set schema_version: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("migrate v7→v8: commit: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// v8 evidence-object objects — CREATE statements per
+// docs/architecture/evidence-object-v0.7.md §3.
+
+// evidenceObjectsDDL is the immutable evidence_objects metadata table (v0.7.0):
+// one row per stored object, id = the content address (SHA-256 hex of the
+// bytes), size is INTEGER-affinity bytes (a REAL is a type violation), the
+// exact tenant/company/RUC/period scope tuple, the capture provenance and the
+// content-addressed rel_path (UNIQUE — the layout is deterministic). The row is
+// the immutable provenance anchor of the object_stored receipt; the BYTES live
+// on the WORM filesystem at root/rel_path, never in the database.
+const evidenceObjectsDDL = `
+        CREATE TABLE evidence_objects (
+          id TEXT PRIMARY KEY,
+          sha256 TEXT NOT NULL,
+          size INTEGER NOT NULL CHECK(size >= 0),
+          content_type TEXT NOT NULL DEFAULT '',
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          ruc TEXT NOT NULL,
+          period TEXT NOT NULL DEFAULT '',
+          source_system TEXT NOT NULL,
+          source_reference TEXT NOT NULL DEFAULT '',
+          source_actor_id TEXT NOT NULL DEFAULT '',
+          source_actor_kind TEXT NOT NULL,
+          stored_by TEXT NOT NULL,
+          stored_at TEXT NOT NULL,
+          rel_path TEXT NOT NULL UNIQUE,
+          CHECK(sha256 = id),
+          CHECK(ruc GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'),
+          CHECK(period = '' OR period GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]')
+        );
+        `
+
+const evidenceObjectsScopeIndexDDL = `CREATE INDEX idx_evidence_objects_scope
+        ON evidence_objects(tenant_id, company_id, ruc, period);`
+
+const evidenceObjectsNoUpdateDDL = `
+        CREATE TRIGGER evidence_objects_no_update BEFORE UPDATE ON evidence_objects BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_EVIDENCE_OBJECT: content, scope and provenance never change after write'); END;
+        `
+
+const evidenceObjectsNoDeleteDDL = `
+        CREATE TRIGGER evidence_objects_no_delete BEFORE DELETE ON evidence_objects BEGIN
+          SELECT RAISE(ABORT,'IMMUTABLE_EVIDENCE_OBJECT: deletion is forbidden (WORM); a future approved purge is a documented deferral'); END;
+        `
+
+// receiptsV8DDL is the v8 receipts table: the v7 layout verbatim (every CHECK,
+// FK, exactly-one-typed-FK constraint and the unique
+// (subject_type, subject_id, action, payload_hash)) with ONLY the subject CHECK
+// extended to 'evidence_object', the action CHECK extended to 'object_stored'
+// and the fourth typed FK evidence_object_id (the exactly-one-typed-FK CHECK
+// moves from 3 to 4 columns). The table is created under a staging name inside
+// the migration and renamed into place after the row copy.
+const receiptsV8DDL = `
+        CREATE TABLE receipts_v8 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject_type TEXT NOT NULL CHECK(subject_type IN ('memory','judgment','reconciliation','evidence_object')),
+          subject_id TEXT NOT NULL,
+          action TEXT NOT NULL CHECK(action IN
+            ('memory_recorded','memory_approved','memory_rejected','memory_voided',
+             'relation_confirmed','relation_rejected','evidence_linked','memory_superseded',
+             'memory_closed','memory_reopened','reconciliation_confirmed','reconciliation_rejected',
+             'object_stored')),
+          tenant_id TEXT NOT NULL,
+          company_id TEXT NOT NULL,
+          fiscal_period_id TEXT NOT NULL,
+          payload_hash TEXT NOT NULL,
+          previous_receipt_hash TEXT NOT NULL,
+          principal_id TEXT NOT NULL,
+          membership_id TEXT NOT NULL,
+          policy_version TEXT NOT NULL,
+          algorithm TEXT NOT NULL CHECK(algorithm='Ed25519'),
+          key_id TEXT NOT NULL REFERENCES signing_keys(key_id),
+          signature BLOB NOT NULL,
+          issued_at TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          receipt_hash TEXT NOT NULL UNIQUE,
+          memory_id TEXT REFERENCES observations(id),
+          judgment_id TEXT REFERENCES judgments(id),
+          reconciliation_id TEXT REFERENCES reconciliations(id),
+          evidence_object_id TEXT REFERENCES evidence_objects(id),
+          UNIQUE(subject_type, subject_id, action, payload_hash),
+          CHECK(((memory_id IS NULL) + (judgment_id IS NULL) + (reconciliation_id IS NULL) + (evidence_object_id IS NULL)) = 3),
+          CHECK(COALESCE(memory_id, judgment_id, reconciliation_id, evidence_object_id) = subject_id)
+        );
+        `
+
+// receiptsV8CopyDDL copies every v7 receipt row byte-preserved into the staging
+// table (explicit column order — the schema must not depend on ordinal order).
+// v7 rows never carry an evidence-object subject, so evidence_object_id copies
+// as NULL.
+const receiptsV8CopyDDL = `
+        INSERT INTO receipts_v8 (id, subject_type, subject_id, action, tenant_id, company_id,
+          fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
+          policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
+          memory_id, judgment_id, reconciliation_id, evidence_object_id)
+        SELECT id, subject_type, subject_id, action, tenant_id, company_id,
+          fiscal_period_id, payload_hash, previous_receipt_hash, principal_id, membership_id,
+          policy_version, algorithm, key_id, signature, issued_at, payload_json, receipt_hash,
+          memory_id, judgment_id, reconciliation_id, NULL FROM receipts;
+        `
+
 // v6 tables and supporting objects — CREATE statements per
 // docs/architecture/close-intelligence-v0.5.md §2.3 and §7.
 
@@ -1234,6 +1560,20 @@ const immutabilityTriggerV6DDL = `
                          what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
                          expires_at, actor, timestamp, source, session, source_json, content_hash,
                          evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, close_snapshot_json, revision ON observations
+    BEGIN
+        SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
+    END;
+    `
+
+// immutabilityTriggerV7DDL is the v7 observations guard: the v6 column list
+// plus policy_rule_json (the canonical rule metadata bytes are immutable with
+// the memory).
+const immutabilityTriggerV7DDL = `
+    CREATE TRIGGER observations_immutable_content
+    BEFORE UPDATE OF id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
+                         what, why, where_text, learned, fiscal_effect, effective_at, recorded_at, observed_at,
+                         expires_at, actor, timestamp, source, session, source_json, content_hash,
+                         evidence_refs_json, rule_refs_json, confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, revision ON observations
     BEGIN
         SELECT RAISE(ABORT, 'IMMUTABLE_OBSERVATION: content, scope and provenance never change after write');
     END;
@@ -2023,8 +2363,8 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
 		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
@@ -2033,7 +2373,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
-		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), memory.ReceiptID, memory.SupersedesID,
+		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), nullablePolicyRuleJSON(memory.PolicyRule), memory.ReceiptID, memory.SupersedesID,
 		revision,
 	)
 	if err != nil {
@@ -2136,6 +2476,7 @@ func buildMemory(input core.SaveInput, id string, revision int, status core.Memo
 		// participate in the envelope hash (frozen decision).
 		MaterialityLevel: materialityLevel,
 		CloseSnapshot:    core.CloneCloseSnapshot(input.CloseSnapshot),
+		PolicyRule:       core.ClonePolicyRule(input.PolicyRule),
 		ReceiptID:        input.ReceiptID,
 		Revision:         revision,
 	}
@@ -2158,6 +2499,16 @@ func nullableCloseSnapshotJSON(v *core.CloseSnapshot) any {
 		return nil
 	}
 	return string(core.CanonicalCloseSnapshotJSON(v))
+}
+
+// nullablePolicyRuleJSON serializes an optional PolicyRule as its canonical
+// JSON bytes (nil → NULL in SQLite; legacy and non-rule memories store NULL).
+// The canonical bytes are the authoritative persisted rule metadata.
+func nullablePolicyRuleJSON(v *core.PolicyRule) any {
+	if v == nil {
+		return nil
+	}
+	return string(core.CanonicalPolicyRuleJSON(v))
 }
 
 // legacyStatusFor maps a v2 status to the v1 authority_status vocabulary for
@@ -2261,7 +2612,7 @@ func nullableInt(v *int64) any {
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 	expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-	confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision`
+	confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface {
@@ -2278,7 +2629,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 	var (
 		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
 		sourceJSON, contentHash, identityHashVal, envelopeHashVal, evidenceRefsJSON, ruleRefsJSON sql.NullString
-		supersedesID, receiptID, materialityLevelVal, closeSnapshotJSON                           sql.NullString
+		supersedesID, receiptID, materialityLevelVal, closeSnapshotJSON, policyRuleJSON           sql.NullString
 		confidence                                                                                sql.NullFloat64
 		materiality                                                                               sql.NullInt64
 	)
@@ -2286,7 +2637,7 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		&id, &topicKey, &title, &typ, &kind, &scopeKind, &orgID, &companyID, &ruc, &period,
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
 		&expiresAt, &validityEffectiveAtVal, &validitySourceVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
-		&confidence, &materiality, &materialityLevelVal, &closeSnapshotJSON, &receiptID, &supersedesID, &revision,
+		&confidence, &materiality, &materialityLevelVal, &closeSnapshotJSON, &policyRuleJSON, &receiptID, &supersedesID, &revision,
 	); err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -2332,6 +2683,23 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 			return core.AccountingMemory{}, fmt.Errorf("corrupt store: observations.close_snapshot_json of %s is not valid snapshot JSON: %w", id, err)
 		}
 		memory.CloseSnapshot = &snapshot
+	}
+	if policyRuleJSON.Valid && policyRuleJSON.String != "" {
+		var rule core.PolicyRule
+		dec := json.NewDecoder(strings.NewReader(policyRuleJSON.String))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&rule); err != nil {
+			// The stored column is canonical engine-written JSON; an unparseable
+			// or unknown-field row is corruption and fails the read closed.
+			return core.AccountingMemory{}, fmt.Errorf("corrupt store: observations.policy_rule_json of %s is not valid policy rule JSON: %w", id, err)
+		}
+		// Re-canonicalization guard: the stored bytes must round-trip
+		// byte-identically through the canonical serializer (this also rejects
+		// trailing data and any non-canonical property/tag order).
+		if got := string(core.CanonicalPolicyRuleJSON(&rule)); got != policyRuleJSON.String {
+			return core.AccountingMemory{}, fmt.Errorf("corrupt store: observations.policy_rule_json of %s is not canonical policy rule JSON (re-canonicalization mismatch)", id)
+		}
+		memory.PolicyRule = &rule
 	}
 	if expiresAt != "" || validityEffectiveAtVal.String != "" {
 		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt, Source: validitySourceVal.String}
@@ -4695,8 +5063,8 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, close_snapshot_json, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
 		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
@@ -4705,7 +5073,7 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
-		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), built.ReceiptID, built.SupersedesID,
+		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), nullablePolicyRuleJSON(built.PolicyRule), built.ReceiptID, built.SupersedesID,
 		built.Revision,
 	); err != nil {
 		return false, fmt.Errorf("persistence error: import observation: %w", err)
@@ -4965,8 +5333,8 @@ func (s *SQLiteStore) BeginReceiptTx(ctx context.Context) (*sql.Tx, error) {
 // It never starts or commits a transaction: the caller's tx owns atomicity.
 func (s *SQLiteStore) RegisterPublicKey(ctx context.Context, q Queryer, keyID, algorithm, publicKey, createdAt string) error {
 	if _, err := q.ExecContext(ctx, `
-    		INSERT OR IGNORE INTO signing_keys (key_id, algorithm, public_key, created_at)
-    		VALUES (?, ?, ?, ?)`,
+	INSERT OR IGNORE INTO signing_keys (key_id, algorithm, public_key, created_at)
+	VALUES (?, ?, ?, ?)`,
 		keyID, algorithm, publicKey, createdAt,
 	); err != nil {
 		return fmt.Errorf("register signing key %s: %w", keyID, err)
@@ -4979,7 +5347,7 @@ func (s *SQLiteStore) RegisterPublicKey(ctx context.Context, q Queryer, keyID, a
 // It never starts or commits a transaction — the caller's tx owns atomicity.
 func (s *SQLiteStore) RevokePublicKey(ctx context.Context, q Queryer, keyID, revokedAt string) error {
 	res, err := q.ExecContext(ctx, `
-    		UPDATE signing_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL`,
+	UPDATE signing_keys SET revoked_at = ? WHERE key_id = ? AND revoked_at IS NULL`,
 		revokedAt, keyID,
 	)
 	if err != nil {
@@ -5019,9 +5387,9 @@ func (s *SQLiteStore) LookupSigningKey(ctx context.Context, q Queryer, keyID str
 func (s *SQLiteStore) LatestReceiptChainHead(ctx context.Context, q Queryer, subjectType core.SubjectType, subjectID string) (string, error) {
 	var receiptHash string
 	err := q.QueryRowContext(ctx, `
-    		SELECT receipt_hash FROM receipts
-    		WHERE subject_type = ? AND subject_id = ?
-    		ORDER BY issued_at DESC, rowid DESC LIMIT 1`,
+	SELECT receipt_hash FROM receipts
+	WHERE subject_type = ? AND subject_id = ?
+	ORDER BY issued_at DESC, rowid DESC LIMIT 1`,
 		string(subjectType), subjectID,
 	).Scan(&receiptHash)
 	if err == sql.ErrNoRows {
@@ -5059,6 +5427,7 @@ type ReceiptRow struct {
 	MemoryID            string
 	JudgmentID          string
 	ReconciliationID    string
+	EvidenceObjectID    string
 }
 
 // InsertReceipt persists a signed receipt row. The schema guarantees
@@ -5068,7 +5437,7 @@ type ReceiptRow struct {
 // duplicate emission). It never starts or commits a transaction — the
 // caller's tx owns atomicity.
 func (s *SQLiteStore) InsertReceipt(ctx context.Context, q Queryer, row ReceiptRow) error {
-	var memoryID, judgmentID, reconciliationID any
+	var memoryID, judgmentID, reconciliationID, evidenceObjectID any
 	if row.MemoryID != "" {
 		memoryID = row.MemoryID
 	}
@@ -5078,17 +5447,20 @@ func (s *SQLiteStore) InsertReceipt(ctx context.Context, q Queryer, row ReceiptR
 	if row.ReconciliationID != "" {
 		reconciliationID = row.ReconciliationID
 	}
+	if row.EvidenceObjectID != "" {
+		evidenceObjectID = row.EvidenceObjectID
+	}
 	if _, err := q.ExecContext(ctx, `
-    		INSERT INTO receipts (
-    			subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
-    			payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version,
-    			algorithm, key_id, signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id, reconciliation_id
-    		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	INSERT INTO receipts (
+	subject_type, subject_id, action, tenant_id, company_id, fiscal_period_id,
+	payload_hash, previous_receipt_hash, principal_id, membership_id, policy_version,
+	algorithm, key_id, signature, issued_at, payload_json, receipt_hash, memory_id, judgment_id, reconciliation_id, evidence_object_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(row.SubjectType), row.SubjectID, string(row.Action),
 		row.TenantID, row.CompanyID, row.FiscalPeriodID,
 		row.PayloadHash, row.PreviousReceiptHash, row.PrincipalID, row.MembershipID, row.PolicyVersion,
 		row.Algorithm, row.KeyID, row.Signature, row.IssuedAt,
-		row.PayloadJSON, row.ReceiptHash, memoryID, judgmentID, reconciliationID,
+		row.PayloadJSON, row.ReceiptHash, memoryID, judgmentID, reconciliationID, evidenceObjectID,
 	); err != nil {
 		return fmt.Errorf("insert receipt %s: %w", row.ReceiptHash, err)
 	}
@@ -5263,6 +5635,8 @@ func (s *SQLiteStore) ReceiptActProvenance(ctx context.Context, subjectType core
 		return s.transitionLogProvenance(ctx, subjectID, strings.TrimPrefix(string(action), "memory_"), issuedAt)
 	case core.ReceiptActionEvidenceLinked:
 		return s.evidenceLinkProvenance(ctx, subjectID, issuedAt)
+	case core.ReceiptActionObjectStored:
+		return s.objectStoredProvenance(ctx, subjectID, issuedAt)
 	default:
 		return core.ActProvenance{}, false, fmt.Errorf("provenance: unknown receipt action %q", action)
 	}
@@ -5490,6 +5864,26 @@ func (s *SQLiteStore) evidenceLinkProvenance(ctx context.Context, memoryID, issu
 	return core.ActProvenance{Action: "linked", Timestamp: ts, PrincipalID: actor}, true, nil
 }
 
+// objectStoredProvenance maps the immutable evidence_objects row to the
+// snapshot an object_stored receipt must match (v0.7.0): the stored_at
+// timestamp and the stored_by actor ARE the immutable provenance anchor of the
+// capture (the row never updates — evidence_objects_no_update). A row whose
+// stored_at differs from the receipt's issued_at is not the act (the receipt
+// chain and the row are written in the same transaction, so any mismatch is
+// corruption, surfaced as ambiguity/no-match).
+func (s *SQLiteStore) objectStoredProvenance(ctx context.Context, objectID, issuedAt string) (core.ActProvenance, bool, error) {
+	var storedBy, storedAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT stored_by, stored_at FROM evidence_objects WHERE id = ? AND stored_at = ?`, objectID, issuedAt).Scan(&storedBy, &storedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.ActProvenance{}, false, nil
+	}
+	if err != nil {
+		return core.ActProvenance{}, false, err
+	}
+	return core.ActProvenance{Action: "stored", Timestamp: storedAt, PrincipalID: storedBy}, true, nil
+}
+
 // EvidenceLinkRefs returns the CURRENT evidence_links rows of a memory — the
 // immutable snapshot of what evidence is available now (design §3; the
 // verification engine reads it through the store, never raw SQL).
@@ -5538,19 +5932,20 @@ type DoctorReport struct {
 	Relations        int    `json:"relations"`
 	EvidenceLinks    int    `json:"evidenceLinks"`
 	RuleLinks        int    `json:"ruleLinks"`
+	EvidenceObjects  int    `json:"evidenceObjects"`
 	PendingApprovals int    `json:"pendingApprovals"`
 }
 
 // Doctor verifies the schema (fail closed on corruption) and reports counts.
 func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 	// Fail closed: every expected table and the immutability guard must exist.
-	for _, table := range []string{"schema_meta", "observations", "relations", "transition_log", "evidence_links", "rule_links"} {
+	for _, table := range []string{"schema_meta", "observations", "relations", "transition_log", "evidence_links", "rule_links", "evidence_objects"} {
 		var name string
 		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
 			return DoctorReport{}, fmt.Errorf("corrupt store: expected table %q is missing: %w", table, err)
 		}
 	}
-	for _, trigger := range []string{"observations_no_delete", "observations_immutable_content"} {
+	for _, trigger := range []string{"observations_no_delete", "observations_immutable_content", "evidence_objects_no_update", "evidence_objects_no_delete"} {
 		var triggerName string
 		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trigger).Scan(&triggerName); err != nil {
 			return DoctorReport{}, fmt.Errorf("corrupt store: immutability trigger %q missing: %w", trigger, err)
@@ -5577,6 +5972,7 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 		{`SELECT COUNT(*) FROM relations`, &report.Relations},
 		{`SELECT COUNT(*) FROM evidence_links`, &report.EvidenceLinks},
 		{`SELECT COUNT(*) FROM rule_links`, &report.RuleLinks},
+		{`SELECT COUNT(*) FROM evidence_objects`, &report.EvidenceObjects},
 		{`SELECT COUNT(*) FROM observations WHERE status = 'pending_review'`, &report.PendingApprovals},
 	}
 	for _, c := range counts {

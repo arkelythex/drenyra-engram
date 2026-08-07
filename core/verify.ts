@@ -41,6 +41,7 @@ import {
 	RECEIPT_ACTIONS,
 	RECEIPT_ALGORITHM,
 	RECEIPT_SUBJECT_TYPES,
+	type EvidenceObject,
 	type ReceiptAction,
 	type ReceiptPayload,
 	type SignedReceipt,
@@ -110,6 +111,7 @@ export const LAYER_CHAIN_LINK = "chain link";
 export const LAYER_PRINCIPAL_PROVENANCE = "principal provenance";
 export const LAYER_SUPERSESSION_CHAIN = "supersession chain";
 export const LAYER_EVIDENCE_AVAILABILITY = "evidence availability";
+export const LAYER_OBJECT_AVAILABILITY = "object availability";
 export const LAYER_RULE_AVAILABILITY = "rule availability";
 export const LAYER_JUDGMENT_HASH = "judgment hash";
 
@@ -954,6 +956,74 @@ export function verifyEvidenceAvailability(
 		LAYER_EVIDENCE_AVAILABILITY,
 		"every declared evidence ref is linked and the current envelope matches the committed head result",
 	);
+}
+
+/**
+ * Object-level availability layer (v0.7.0): classifies every declared evidence
+ * ref as OBJECT-BACKED (resolves to a stored EvidenceObject row) or
+ * LEGACY/UNRESOLVED (arbitrary external reference — the pre-v0.7 semantics,
+ * fully backward compatible, reported never failed). resolved maps each ref
+ * that resolves to a stored object to its metadata; the SERVICE resolves rows
+ * and verifies their WORM bytes BEFORE calling this layer (a
+ * resolved-but-corrupt object is a FAILED layer via verifyObjectBytesIntegrity,
+ * never a passed one). Mirrors core.VerifyObjectAvailability.
+ *
+ * Outcomes: skipped when there are no declared refs or when NONE resolves to
+ * an object (legacy refs named); passed when every object-backed ref is
+ * present and byte-verified (legacy refs named as byte-unverified); failed
+ * only via verifyObjectBytesIntegrity.
+ */
+export function verifyObjectAvailability(
+	refs: string[],
+	resolved: Record<string, EvidenceObject>,
+): VerificationLayer {
+	const canonical = canonicalRefs(refs);
+	if (canonical.length === 0) {
+		return layerSkipped(
+			LAYER_OBJECT_AVAILABILITY,
+			"no declared evidence refs — object availability not applicable",
+		);
+	}
+	const legacy = canonical.filter((ref) => !(ref in resolved));
+	if (legacy.length === canonical.length) {
+		return layerSkipped(
+			LAYER_OBJECT_AVAILABILITY,
+			`no declared evidence ref resolves to a stored evidence object — legacy/unresolved refs stay backward compatible and byte-unverified: ${legacy.join(", ")}`,
+		);
+	}
+	let detail = `${canonical.length - legacy.length} object-backed evidence refs resolve to stored objects with verified bytes`;
+	if (legacy.length > 0) {
+		detail += `; legacy/unresolved refs left byte-unverified: ${legacy.join(", ")}`;
+	}
+	return layerPassed(LAYER_OBJECT_AVAILABILITY, detail);
+}
+
+/**
+ * WORM byte-integrity layer: passed when the stored bytes of every
+ * object-backed ref re-hash to their content addresses, failed when err
+ * carries a corruption code (OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH —
+ * fail closed, no silent repair). err === null passes. The error text names the
+ * failing object. Mirrors core.VerifyObjectBytesIntegrity.
+ */
+export function verifyObjectBytesIntegrity(
+	err: string | null,
+): VerificationLayer {
+	if (err === null) {
+		return layerPassed(
+			LAYER_OBJECT_AVAILABILITY,
+			"object WORM bytes re-hash to their stored content addresses",
+		);
+	}
+	return layerFailed(
+		LAYER_OBJECT_AVAILABILITY,
+		`object-backed evidence ref fails WORM byte integrity: ${err}`,
+	);
+}
+
+/** Sorted, deduplicated, non-empty ref set — the canonical order the pure
+ * layers classify. Mirrors core.canonicalRefsList. */
+function canonicalRefs(refs: string[]): string[] {
+	return [...new Set(refs.filter((ref) => ref !== ""))].sort();
 }
 
 /**

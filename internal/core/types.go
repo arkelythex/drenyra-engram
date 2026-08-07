@@ -32,9 +32,12 @@
 package core
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -305,6 +308,149 @@ type Validity struct {
 }
 
 // ──────────────────────────────────────────────
+// PolicyRule — v0.6.0 rule metadata (design §2.1)
+// ──────────────────────────────────────────────
+
+// PolicyRule is the OPTIONAL policy metadata of a rule memory (kind=rule,
+// v0.6.0 — docs/architecture/fiscal-policy-memory-v0.6.md §2.1). It records
+// WHERE the rule comes from (jurisdiction), WHICH regime/family it belongs to
+// (legislation) and WHO issued or owns it (authority); tags are free-form
+// searchable markers. The engine validates SYNTAX only — never geopolitical or
+// legal truth. Canonical bytes are persisted verbatim in
+// observations.policy_rule_json (schema v7) and PARTICIPATE in the content and
+// envelope hashes through the self-describing policyRule/v0.6 contribution
+// (which also carries the vigencia window); nil on every non-rule memory
+// (contributes the empty string, so pre-v0.6 hashes are byte-identical).
+type PolicyRule struct {
+	// Jurisdiction is required, uppercase, matching ^[A-Z][A-Z0-9-]{1,15}$
+	// (e.g. PE, LATAM, INTL).
+	Jurisdiction string `json:"jurisdiction"`
+	// Legislation identifies the regime/family (e.g. NATIONAL-TAX); required.
+	Legislation string `json:"legislation"`
+	// Authority records the issuer/policy owner; required non-empty.
+	Authority string `json:"authority"`
+	// Tags are optional, trimmed, non-empty, deduplicated and lexicographically
+	// sorted for canonicalization (the canonical JSON always carries the sorted
+	// set; the struct keeps caller order).
+	Tags []string `json:"tags"`
+}
+
+// policyRuleJurisdictionPattern freezes the jurisdiction syntax: one uppercase
+// ASCII letter followed by 1..15 uppercase letters/digits/hyphens.
+var policyRuleJurisdictionPattern = regexp.MustCompile(`^[A-Z][A-Z0-9-]{1,15}$`)
+
+// AssertValidPolicyRule fails closed on malformed rule metadata: nil is valid
+// (legacy memory), a present rule requires kind=rule plus a syntactically valid
+// jurisdiction and non-empty legislation/authority; every tag must be trimmed
+// and non-empty (order/dedup are canonicalized, not rejected).
+func AssertValidPolicyRule(kind MemoryKind, p *PolicyRule) error {
+	if p == nil {
+		return nil
+	}
+	if kind != KindRule {
+		return fmt.Errorf("INVALID_POLICY_RULE: policyRule is allowed only on kind=rule memories, got %q", kind)
+	}
+	if !policyRuleJurisdictionPattern.MatchString(p.Jurisdiction) {
+		return fmt.Errorf("INVALID_POLICY_RULE: jurisdiction must match ^[A-Z][A-Z0-9-]{1,15}$ (e.g. PE, LATAM, INTL), got %q", p.Jurisdiction)
+	}
+	if strings.TrimSpace(p.Legislation) == "" {
+		return fmt.Errorf("INVALID_POLICY_RULE: legislation must be a non-empty string")
+	}
+	if strings.TrimSpace(p.Authority) == "" {
+		return fmt.Errorf("INVALID_POLICY_RULE: authority must be a non-empty string")
+	}
+	for _, tag := range p.Tags {
+		if strings.TrimSpace(tag) == "" {
+			return fmt.Errorf("INVALID_POLICY_RULE: tags must be trimmed non-empty strings")
+		}
+	}
+	return nil
+}
+
+// ClonePolicyRule returns a defensive deep copy of a PolicyRule: the tags slice
+// is copied so callers can never mutate stored metadata through a clone. A nil
+// rule stays nil (the empty contribution keeps pre-v0.6 hashes unchanged).
+func ClonePolicyRule(p *PolicyRule) *PolicyRule {
+	if p == nil {
+		return nil
+	}
+	rule := *p
+	rule.Tags = append([]string(nil), p.Tags...)
+	return &rule
+}
+
+// CanonicalPolicyRuleJSON returns the canonical compact UTF-8 JSON bytes of a
+// PolicyRule: the FIXED property order jurisdiction, legislation, authority,
+// tags, JSON string escaping, NO HTML escaping (matching the receipt
+// canonicalizers — Go escapes <,>,& by default, disabling it keeps Go and
+// TypeScript bytes identical). Tags are deduplicated and lexicographically
+// sorted so the canonical bytes depend only on the tag SET; an empty tag set
+// serializes as []. These are the exact bytes persisted in
+// observations.policy_rule_json (schema v7) and the bytes that participate in
+// the content/envelope hashes. Marshaling cannot fail (fixed value shapes) — a
+// failure is an internal invariant violation and fails closed via panic.
+func CanonicalPolicyRuleJSON(p *PolicyRule) []byte {
+	canonical := struct {
+		Jurisdiction string   `json:"jurisdiction"`
+		Legislation  string   `json:"legislation"`
+		Authority    string   `json:"authority"`
+		Tags         []string `json:"tags"`
+	}{
+		Jurisdiction: p.Jurisdiction,
+		Legislation:  p.Legislation,
+		Authority:    p.Authority,
+		Tags:         sortedUniqueTags(p.Tags),
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(canonical); err != nil {
+		panic("policy rule: canonical marshal failed: " + err.Error())
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
+}
+
+// sortedUniqueTags returns the deduplicated, lexicographically sorted tag set;
+// an empty/nil input yields an empty non-nil slice so the canonical JSON always
+// carries "tags":[] (never null).
+func sortedUniqueTags(tags []string) []string {
+	seen := make(map[string]struct{}, len(tags))
+	out := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// policyRuleCanonicalContribution is the canonical hash contribution of an
+// optional PolicyRule (v0.6.0, design §2.1): the empty string when absent, so
+// every memory WITHOUT rule metadata hashes byte-identically to its pre-v0.6
+// value (frozen v0.3 hash contract — a NEW optional field on NEW memories never
+// silently re-hashes existing rows). When present it is the self-describing
+// element "policyRule/v0.6\x00<canonical>\x00<validity.effectiveAt>\x00
+// <validity.expiresAt>\x00<validity.source>", so the vigencia window is part of
+// the v0.6 policy-rule hash (a rule changing only its window gets a new
+// revision) while legacy Validity exclusion stays frozen outside the extension.
+func policyRuleCanonicalContribution(m AccountingMemory) string {
+	if m.PolicyRule == nil {
+		return ""
+	}
+	effectiveAt, expiresAt, source := "", "", ""
+	if m.Validity != nil {
+		effectiveAt = m.Validity.EffectiveAt
+		expiresAt = m.Validity.ExpiresAt
+		source = m.Validity.Source
+	}
+	return "policyRule/v0.6\x00" + string(CanonicalPolicyRuleJSON(m.PolicyRule)) +
+		"\x00" + effectiveAt + "\x00" + expiresAt + "\x00" + source
+}
+
+// ──────────────────────────────────────────────
 // Relations
 // ──────────────────────────────────────────────
 
@@ -412,6 +558,13 @@ type AccountingMemory struct {
 	// PARTICIPATE in the content and envelope hashes; nil on every non-close
 	// memory (contributes the empty string, so pre-v6 envelopes are unchanged).
 	CloseSnapshot *CloseSnapshot `json:"closeSnapshot,omitempty"`
+	// PolicyRule is the OPTIONAL policy metadata of a rule memory (kind=rule —
+	// v0.6.0, design §2.1). Canonical bytes are persisted verbatim in
+	// observations.policy_rule_json (schema v7) and PARTICIPATE in the content
+	// and envelope hashes via the self-describing policyRule/v0.6 contribution
+	// (which also carries the vigencia window); nil on every non-rule memory
+	// (contributes the empty string, so pre-v0.6 envelopes are unchanged).
+	PolicyRule *PolicyRule `json:"policyRule,omitempty"`
 	// ContentHash is the canonical SHA-256 of the semantic content (see
 	// ComputeContentHash). Computed at write, never editable.
 	ContentHash string `json:"contentHash"`
@@ -473,7 +626,13 @@ type SaveInput struct {
 	// HTTP/MCP/CLI never construct closing memories through generic save: the
 	// CreateClose service is the canonical path (design §2.1).
 	CloseSnapshot *CloseSnapshot `json:"closeSnapshot,omitempty"`
-	ReceiptID     string         `json:"receiptId,omitempty"`
+	// PolicyRule is the OPTIONAL policy metadata of a rule memory (kind=rule —
+	// v0.6.0, design §2.1). Validated at write (INVALID_POLICY_RULE on any
+	// non-rule kind or malformed fields); canonical bytes are persisted verbatim
+	// in observations.policy_rule_json (schema v7) and participate in the
+	// content/envelope hashes only when present.
+	PolicyRule *PolicyRule `json:"policyRule,omitempty"`
+	ReceiptID  string      `json:"receiptId,omitempty"`
 }
 
 // WriteOutcome is the save (upsert) outcome. Conflict and Unknown are the
@@ -619,6 +778,9 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 	if m.CloseSnapshot != nil {
 		cloned.CloseSnapshot = CloneCloseSnapshot(m.CloseSnapshot)
 	}
+	if m.PolicyRule != nil {
+		cloned.PolicyRule = ClonePolicyRule(m.PolicyRule)
+	}
 	cloned.EvidenceRefs = append([]string(nil), m.EvidenceRefs...)
 	cloned.RuleRefs = append([]string(nil), m.RuleRefs...)
 	return cloned
@@ -674,6 +836,13 @@ func ComputeContentHash(m AccountingMemory) string {
 		// (frozen v0.3 hash contract — legacy envelopes never re-hash).
 		parts = append(parts, contribution)
 	}
+	if contribution := policyRuleCanonicalContribution(m); contribution != "" {
+		// Same contract as the snapshot (v0.6.0): only memories WITH rule
+		// metadata contribute; the element also carries the vigencia window, so a
+		// rule changing only its Validity hashes differently. Pre-v0.6 canonical
+		// strings stay byte-identical.
+		parts = append(parts, contribution)
+	}
 	canonical := strings.Join(parts, "\x00")
 	sum := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(sum[:])
@@ -723,6 +892,12 @@ func ComputeEnvelopeHash(m AccountingMemory) string {
 	if contribution := closeSnapshotCanonicalContribution(m.CloseSnapshot); contribution != "" {
 		// Same contract as the content hash: only memories WITH a snapshot
 		// contribute; pre-v6 envelopes stay byte-identical.
+		parts = append(parts, contribution)
+	}
+	if contribution := policyRuleCanonicalContribution(m); contribution != "" {
+		// Same contract as the content hash (v0.6.0): only memories WITH rule
+		// metadata contribute (carrying the vigencia window); pre-v0.6 envelopes
+		// stay byte-identical.
 		parts = append(parts, contribution)
 	}
 	canonical := strings.Join(parts, "\x00")
@@ -876,6 +1051,9 @@ func AssertValidMemory(m AccountingMemory) error {
 	}
 	if !IsValidMemoryKind(m.Kind) {
 		return fmt.Errorf("INVALID_KIND: unknown memory kind %q — expected fact|evidence|decision|rule|exception|control|obligation|summary", m.Kind)
+	}
+	if err := AssertValidPolicyRule(m.Kind, m.PolicyRule); err != nil {
+		return err
 	}
 	if !IsValidMemoryStatus(m.Status) {
 		return fmt.Errorf("INVALID_STATUS: unknown memory status %q — expected active|pending_review|approved|rejected|superseded|voided", m.Status)

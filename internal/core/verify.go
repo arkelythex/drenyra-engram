@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -105,6 +106,7 @@ const (
 	LayerPrincipalProvenance     = "principal provenance"
 	LayerSupersessionChain       = "supersession chain"
 	LayerEvidenceAvailability    = "evidence availability"
+	LayerObjectAvailability      = "object availability"
 	LayerRuleAvailability        = "rule availability"
 	LayerJudgmentHash            = "judgment hash"
 )
@@ -555,6 +557,85 @@ func VerifyEvidenceAvailability(declaredRefs, currentLinks []string, currentEnve
 		return layerFailed(LayerEvidenceAvailability, fmt.Sprintf("current envelope %s differs from the committed head result %s", currentEnvelope, committedEnvelope))
 	}
 	return layerPassed(LayerEvidenceAvailability, "every declared evidence ref is linked and the current envelope matches the committed head result")
+}
+
+// VerifyObjectAvailability is the v0.7.0 object-level availability layer
+// (docs/architecture/evidence-object-v0.7.md §6): it classifies every declared
+// evidence ref as OBJECT-BACKED (the ref resolves to a stored EvidenceObject
+// row) or LEGACY/UNRESOLVED (an arbitrary external reference — the pre-v0.7
+// semantics, which stay fully backward compatible and are reported, never
+// silently treated as bytes the engine can vouch for).
+//
+// refs is the deduplicated declared evidence-ref set (same input the evidence
+// availability layer uses); resolved maps each ref that resolves to a stored
+// evidence object to its metadata — the SERVICE resolves rows and verifies
+// their WORM bytes before calling this layer (a resolved-but-corrupt object is
+// a FAILED layer produced by VerifyObjectBytesIntegrity, never a passed one).
+//
+// Layer outcomes (fail closed, never break legacy data):
+//   - skipped when there are no declared refs (object availability is not
+//     applicable);
+//   - skipped when NO declared ref resolves to an evidence object — every ref
+//     is legacy/unresolved and is reported by name (backward compatible:
+//     legacy data is never failed by the new layer);
+//   - passed when every object-backed ref is present and byte-verified, with
+//     any legacy refs named as left byte-unverified;
+//   - failed ONLY via VerifyObjectBytesIntegrity for a resolved object whose
+//     bytes are missing or re-hash to a different digest (corruption is
+//     evidence, never a silent skip).
+func VerifyObjectAvailability(refs []string, resolved map[string]EvidenceObject) VerificationLayer {
+	refs = canonicalRefsList(refs)
+	if len(refs) == 0 {
+		return layerSkipped(LayerObjectAvailability, "no declared evidence refs — object availability not applicable")
+	}
+	legacy := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if _, ok := resolved[ref]; !ok {
+			legacy = append(legacy, ref)
+		}
+	}
+	if len(legacy) == len(refs) {
+		return layerSkipped(LayerObjectAvailability,
+			"no declared evidence ref resolves to a stored evidence object — legacy/unresolved refs stay backward compatible and byte-unverified: "+strings.Join(legacy, ", "))
+	}
+	detail := fmt.Sprintf("%d object-backed evidence refs resolve to stored objects with verified bytes", len(refs)-len(legacy))
+	if len(legacy) > 0 {
+		detail += "; legacy/unresolved refs left byte-unverified: " + strings.Join(legacy, ", ")
+	}
+	return layerPassed(LayerObjectAvailability, detail)
+}
+
+// VerifyObjectBytesIntegrity is the WORM byte-integrity layer: passed when the
+// stored bytes of every object-backed ref re-hash to their content addresses,
+// failed when err carries a corruption code (OBJECT_BYTES_MISSING |
+// OBJECT_HASH_MISMATCH — the store fails closed, silent repair is forbidden).
+// err == nil passes. The error text identifies the failing object (the store
+// wraps the typed corruption error with the object id).
+func VerifyObjectBytesIntegrity(err error) VerificationLayer {
+	if err == nil {
+		return layerPassed(LayerObjectAvailability, "object WORM bytes re-hash to their stored content addresses")
+	}
+	return layerFailed(LayerObjectAvailability, "object-backed evidence ref fails WORM byte integrity: "+err.Error())
+}
+
+// canonicalRefsList returns the sorted, deduplicated, non-empty ref set — the
+// canonical order the pure layers classify (order-independent, like
+// canonicalRefs in types.go).
+func canonicalRefsList(refs []string) []string {
+	seen := make(map[string]struct{}, len(refs))
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // VerifyRuleAvailability requires every dynamically declared rule ref (the

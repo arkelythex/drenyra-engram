@@ -33,7 +33,11 @@ import {
 	type Reconciliation,
 	type SignedReceipt,
 } from "../types.js";
-import { computeContentHash, computePeriodComparison, computeReconciliationHash } from "../types.js";
+import {
+	computeContentHash,
+	computePeriodComparison,
+	computeReconciliationHash,
+} from "../types.js";
 import { NodeSeedSigner, receiptHash, verifyReceipt } from "../receipt.js";
 
 /** The pinned parity seed (32×0x01), shared with the Go tests. */
@@ -144,9 +148,7 @@ interface V05ParityFixture {
 const V05_PARITY_PATH = resolve(process.cwd(), "testdata", "v05-parity.json");
 
 function loadV05ParityFixture(): V05ParityFixture {
-	return JSON.parse(
-		readFileSync(V05_PARITY_PATH, "utf-8"),
-	) as V05ParityFixture;
+	return JSON.parse(readFileSync(V05_PARITY_PATH, "utf-8")) as V05ParityFixture;
 }
 
 function decodeBase64(value: string): Uint8Array {
@@ -174,7 +176,10 @@ async function accountingMemoryFromFixture(
 		fiscalEffect: m.fiscalEffect as AccountingMemory["fiscalEffect"],
 		effectiveAt: m.effectiveAt,
 		recordedAt: m.recordedAt,
-		source: { system: m.source.system, actorKind: m.source.actorKind as "agent" },
+		source: {
+			system: m.source.system,
+			actorKind: m.source.actorKind as "agent",
+		},
 		supersedesId: m.supersedesId === "" ? undefined : m.supersedesId,
 		evidenceRefs: [...m.evidenceRefs],
 		ruleRefs: [...m.ruleRefs],
@@ -194,7 +199,9 @@ function reconciliationFromFixture(
 		tenantId: String(wire.tenantId),
 		companyId: String(wire.companyId),
 		fiscalPeriodId:
-			wire.fiscalPeriodId === undefined ? undefined : String(wire.fiscalPeriodId),
+			wire.fiscalPeriodId === undefined
+				? undefined
+				: String(wire.fiscalPeriodId),
 		leftMemoryId: String(wire.leftMemoryId),
 		rightMemoryId: String(wire.rightMemoryId),
 		method: String(wire.method),
@@ -210,9 +217,10 @@ function reconciliationFromFixture(
 				(wire.proposer as { actorId?: unknown }).actorId === undefined
 					? undefined
 					: String((wire.proposer as { actorId: unknown }).actorId),
-			actorKind: String(
-				(wire.proposer as { actorKind: unknown }).actorKind,
-			) as "human" | "agent" | "system",
+			actorKind: String((wire.proposer as { actorKind: unknown }).actorKind) as
+				| "human"
+				| "agent"
+				| "system",
 		},
 		proposalReason: String(wire.proposalReason),
 		resolution:
@@ -238,9 +246,10 @@ function reconciliationFromFixture(
 							(wire.adjudicator as { assuranceLevel: unknown }).assuranceLevel,
 						),
 						authenticatedAt: String(
-							(wire.adjudicator as { authenticatedAt: unknown }).authenticatedAt,
+							(wire.adjudicator as { authenticatedAt: unknown })
+								.authenticatedAt,
 						),
-				  } as PrincipalSnapshot),
+					} as PrincipalSnapshot),
 		policyVersion:
 			wire.policyVersion === undefined ? undefined : String(wire.policyVersion),
 		predecessorId:
@@ -248,7 +257,8 @@ function reconciliationFromFixture(
 		supersedesId:
 			wire.supersedesId === undefined ? undefined : String(wire.supersedesId),
 		proposedAt: String(wire.proposedAt),
-		decidedAt: wire.decidedAt === undefined ? undefined : String(wire.decidedAt),
+		decidedAt:
+			wire.decidedAt === undefined ? undefined : String(wire.decidedAt),
 	};
 }
 
@@ -298,7 +308,9 @@ describe("v0.5.0 parity fixture (Go↔TS shared vectors)", () => {
 			expect(receipt.previousReceiptHash).toBe(prev);
 			// Closed enums, payload/envelope equality, canonical payload hash,
 			// keyId and the Ed25519 signature all recompute against the seed.
-			expect(() => verifyReceipt(receipt, v.payloads[i], publicKey)).not.toThrow();
+			expect(() =>
+				verifyReceipt(receipt, v.payloads[i], publicKey),
+			).not.toThrow();
 			const recomputed = receiptHash(receipt);
 			expect(recomputed).toBe(v.expected.receiptHashes[i]);
 			expect(receipt.action).toBe(v.expected.actions[i]);
@@ -431,7 +443,10 @@ describe("v0.5.0 parity fixture (Go↔TS shared vectors)", () => {
 		// Configured: the fixture context satisfies the bounded CurrentContext
 		// shape (compile-time) and the field-level contract.
 		const configured = v.configured as unknown as CurrentContext;
-		expect(configured.scope).toMatchObject({ kind: "company", period: "202608" });
+		expect(configured.scope).toMatchObject({
+			kind: "company",
+			period: "202608",
+		});
 		expect(configured.periodSummary.closureState).toBe("open");
 		expect(configured.periodSummary.latestClose).toBe("");
 		expect(configured.recentChains.length).toBeLessThanOrEqual(20);

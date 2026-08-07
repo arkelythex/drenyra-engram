@@ -153,12 +153,12 @@ type v05parityFixture struct {
 				PayloadVersions []string `json:"payloadVersions"`
 			} `json:"expected"`
 		} `json:"close_receipts"`
-		BlockedWrite v05parityBlocked `json:"blocked_write"`
+		BlockedWrite   v05parityBlocked `json:"blocked_write"`
 		Reconciliation struct {
-			Proposed  core.Reconciliation  `json:"proposed"`
-			Confirmed core.Reconciliation  `json:"confirmed"`
-			Receipt   core.SignedReceipt   `json:"receipt"`
-			Payload   core.ReceiptPayload  `json:"payload"`
+			Proposed  core.Reconciliation `json:"proposed"`
+			Confirmed core.Reconciliation `json:"confirmed"`
+			Receipt   core.SignedReceipt  `json:"receipt"`
+			Payload   core.ReceiptPayload `json:"payload"`
 			Expected  struct {
 				ProposedHash      string `json:"proposedHash"`
 				ConfirmedHash     string `json:"confirmedHash"`

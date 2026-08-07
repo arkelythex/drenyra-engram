@@ -1531,13 +1531,15 @@ export async function computeReconciliationHash(
 
 /**
  * Subject kind of an Ed25519 action receipt (v0.4.0 Step 3): an immutable
- * memory observation, an accounting judgment, or a first-class reconciliation
- * (v0.5.0). Mirrors core.SubjectType.
+ * memory observation, an accounting judgment, a first-class reconciliation
+ * (v0.5.0), or an EvidenceObject (v0.7.0 — the subject id is the
+ * content-addressed SHA-256 hex of the artifact bytes). Mirrors core.SubjectType.
  */
 export const RECEIPT_SUBJECT_TYPES = [
 	"memory",
 	"judgment",
 	"reconciliation",
+	"evidence_object",
 ] as const;
 
 export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
@@ -1561,6 +1563,7 @@ export const RECEIPT_ACTIONS = [
 	"memory_reopened",
 	"reconciliation_confirmed",
 	"reconciliation_rejected",
+	"object_stored",
 ] as const;
 
 export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];
@@ -1576,6 +1579,17 @@ export const RECEIPT_PAYLOAD_VERSION = "receipt-payload/v0.4.0";
  * core.ReceiptPayloadVersionV05.
  */
 export const RECEIPT_PAYLOAD_VERSION_V05 = "receipt-payload/v0.5.0";
+
+/**
+ * Payload version stamped on the v0.7.0 action (object_stored).
+ * Canonicalization is version-agnostic (the payload SHAPE is unchanged — the
+ * object identity rides the existing evidenceRef field, the scope rides the
+ * existing tenant/company/fiscalPeriod fields and the claimed actor rides
+ * principalId), so verifiers keep accepting v0.4.0/v0.5.0 payloads unchanged
+ * AND accept v0.7.0 payloads without a protocol break (the versioned
+ * protocol decision). Mirrors core.ReceiptPayloadVersionV07.
+ */
+export const RECEIPT_PAYLOAD_VERSION_V07 = "receipt-payload/v0.7.0";
 
 /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
 export const RECEIPT_ALGORITHM = "Ed25519";
@@ -1641,6 +1655,44 @@ export interface ReceiptPayload {
 	principalAuthenticatedAt: string;
 	policyVersion: string;
 	issuedAt: string;
+}
+
+export interface EvidenceObject {
+	objectId: string;
+	sha256: string;
+	// byte length of the artifact — a JSON integer, never a float, never money
+	size: number;
+	contentType: string;
+	tenantId: string;
+	companyId: string;
+	ruc: string;
+	period: string;
+	sourceSystem: string;
+	sourceReference: string;
+	sourceActorId: string;
+	sourceActorKind: ActorKind;
+	storedBy: string;
+	storedAt: string;
+	relPath: string;
+}
+
+/**
+ * Input for storing ONE evidence object (v0.7.0): the artifact bytes, an
+ * optional MIME hint, the exact company scope and the capture provenance.
+ * Mirrors core.ObjectStoreInput.
+ */
+export interface ObjectStoreInput {
+	bytes: Uint8Array;
+	contentType?: string;
+	scope: MemoryScope;
+	source: MemorySource;
+}
+
+/** Outcome of a store attempt: the stored object plus whether THIS call
+ * created it (false = content-addressed duplicate no-op). */
+export interface ObjectStoreResult {
+	object: EvidenceObject;
+	created: boolean;
 }
 
 // ──────────────────────────────────────────────

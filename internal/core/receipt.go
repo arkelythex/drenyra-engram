@@ -47,11 +47,15 @@ const (
 	// SubjectTypeReconciliation is a first-class reconciliation subject
 	// (v0.5.0 — adjudicated reconciliations; design §3.2).
 	SubjectTypeReconciliation SubjectType = "reconciliation"
+	// SubjectTypeEvidenceObject is an immutable EvidenceObject subject
+	// (v0.7.0 local-first slice — docs/architecture/evidence-object-v0.7.md).
+	// The subject id is the content-addressed SHA-256 hex of the object bytes.
+	SubjectTypeEvidenceObject SubjectType = "evidence_object"
 )
 
 // IsValidSubjectType reports whether t is a known receipt subject type.
 func IsValidSubjectType(t SubjectType) bool {
-	return t == SubjectTypeMemory || t == SubjectTypeJudgment || t == SubjectTypeReconciliation
+	return t == SubjectTypeMemory || t == SubjectTypeJudgment || t == SubjectTypeReconciliation || t == SubjectTypeEvidenceObject
 }
 
 // ReceiptAction is a covered act. The set is CLOSED — an unknown action fails
@@ -104,9 +108,15 @@ const (
 	// reconciliation (v0.5.0): same coverage as reconciliation_confirmed; a
 	// rejected proposal projects no relation.
 	ReceiptActionReconciliationRejected ReceiptAction = "reconciliation_rejected"
+	// ReceiptActionObjectStored covers a genuinely NEW EvidenceObject write
+	// (v0.7.0): the immutable capture of an artifact under its deterministic
+	// content address. The payload's EvidenceRef carries the object id (the
+	// SHA-256 hex — the object's identity); a content-addressed duplicate
+	// (identical bytes already stored) is a NO-OP and emits NOTHING.
+	ReceiptActionObjectStored ReceiptAction = "object_stored"
 )
 
-// IsValidReceiptAction reports whether a is one of the twelve closed actions.
+// IsValidReceiptAction reports whether a is one of the thirteen closed actions.
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
@@ -114,7 +124,8 @@ func IsValidReceiptAction(a ReceiptAction) bool {
 		ReceiptActionRelationConfirmed, ReceiptActionRelationRejected,
 		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded,
 		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened,
-		ReceiptActionReconciliationConfirmed, ReceiptActionReconciliationRejected:
+		ReceiptActionReconciliationConfirmed, ReceiptActionReconciliationRejected,
+		ReceiptActionObjectStored:
 		return true
 	}
 	return false
@@ -132,6 +143,15 @@ const ReceiptPayloadVersion = "receipt-payload/v0.4.0"
 // envelope hash), so verifiers accept both v0.4.0 and v0.5.0 payloads unchanged
 // (design §2.5: “verifiers continue accepting v0.4”).
 const ReceiptPayloadVersionV05 = "receipt-payload/v0.5.0"
+
+// ReceiptPayloadVersionV07 is the payload version stamped on the v0.7.0 action
+// (object_stored). Canonicalization is version-agnostic (the payload SHAPE is
+// unchanged — the object identity rides the existing evidenceRef field, the
+// scope rides the existing tenant/company/fiscalPeriod fields and the claimed
+// actor rides principalId), so verifiers keep accepting v0.4.0/v0.5.0 payloads
+// unchanged AND accept v0.7.0 payloads without a protocol break (design §5 —
+// the versioned protocol decision). Existing receipts never re-version.
+const ReceiptPayloadVersionV07 = "receipt-payload/v0.7.0"
 
 // ReceiptAlgorithm is the frozen signing algorithm.
 const ReceiptAlgorithm = "Ed25519"
@@ -444,7 +464,7 @@ func sha256HexBytes(data []byte) string {
 // RECEIPT_KEY_MISMATCH, RECEIPT_SIGNATURE_INVALID.
 func VerifyReceipt(r SignedReceipt, payload ReceiptPayload, publicKey []byte) error {
 	if !IsValidSubjectType(r.SubjectType) {
-		return receiptErr(CodeReceiptInvalid, "unknown subjectType %q — expected memory|judgment", r.SubjectType)
+		return receiptErr(CodeReceiptInvalid, "unknown subjectType %q — expected memory|judgment|reconciliation|evidence_object", r.SubjectType)
 	}
 	if !IsValidReceiptAction(r.Action) {
 		return receiptErr(CodeReceiptInvalid, "unknown action %q — the action set is closed", r.Action)

@@ -27,6 +27,7 @@ import { randomUUID, createHash } from "node:crypto";
 import {
 	ApprovalError,
 	RECEIPT_PAYLOAD_VERSION,
+	RECEIPT_PAYLOAD_VERSION_V07,
 	assertValidContent,
 	assertValidMemory,
 	assertValidScope,
@@ -48,6 +49,7 @@ import {
 	type ApproveMemoryCommand,
 	type ConfirmJudgmentCommand,
 	type ConfirmJudgmentResult,
+	type EvidenceObject,
 	type JudgmentEvent,
 	type MemoryRelation,
 	type MemoryRelationRecord,
@@ -55,6 +57,8 @@ import {
 	type MemorySource,
 	type MemoryStatus,
 	type MemoryWriteResult,
+	type ObjectStoreInput,
+	type ObjectStoreResult,
 	type PrincipalSnapshot,
 	type ProposeJudgmentCommand,
 	type ProposeJudgmentResult,
@@ -82,6 +86,12 @@ import {
 	type JudgmentAuthorizationDecision,
 } from "../authz/judgment-policy.js";
 import { receiptHash, type ReceiptSigner } from "../core/receipt.js";
+import {
+	computeObjectId,
+	cloneEvidenceObject,
+	objectRelPath,
+	validateObjectScope,
+} from "../core/evidence-object.js";
 
 /**
  * Non-policy acts (save, supersession, reject/void transitions, evidence
@@ -211,6 +221,17 @@ export interface MemoryStore {
 	/** Attaches a rule/policy reference AFTER write; a duplicate is a no-op.
 	 * Rule links are NOT covered by the closed receipt action set. */
 	addRuleLink(memoryId: string, ref: string, actor: string): void;
+	/** Captures ONE evidence object WORM-style (v0.7.0): the identity is the
+	 * SHA-256 hex of the bytes; a content-addressed duplicate is a NO-OP
+	 * (created=false, no receipt). Mirrors store.SQLiteStore.StoreObject. */
+	storeObject(input: ObjectStoreInput): ObjectStoreResult;
+	/** Reads one object SCOPE-FIRST and re-hashes the stored bytes (v0.7.0):
+	 * a caller whose exact scope differs from the stored scope gets
+	 * OBJECT_NOT_FOUND; corrupt bytes fail closed (never repaired). */
+	getObject(
+		objectId: string,
+		scope: MemoryScope,
+	): { object: EvidenceObject; bytes: Uint8Array };
 }
 
 /** In-memory implementation. Data is lost when the process exits. */
@@ -224,6 +245,13 @@ export class InMemoryMemoryStore implements MemoryStore {
 	// ── v0.4.0 Step 3 immutable receipts (mirror of the receipts table: no
 	// update/delete paths ever). ──
 	private readonly receiptRecords: SignedReceipt[] = [];
+	// ── v0.7.0 evidence objects (mirror of evidence_objects + WORM bytes: the
+	// in-memory adapter keeps bytes in memory; the Go engine persists them on
+	// the filesystem). ──
+	private readonly objects = new Map<
+		string,
+		{ object: EvidenceObject; bytes: Uint8Array }
+	>();
 	private readonly idempotency = new Map<
 		string,
 		{
@@ -582,6 +610,118 @@ export class InMemoryMemoryStore implements MemoryStore {
 	 */
 	addRuleLink(memoryId: string, ref: string, actor: string): void {
 		this.addLink("rule", memoryId, ref, actor);
+	}
+
+	/**
+	 * Captures ONE evidence object WORM-style (v0.7.0, mirror of
+	 * SQLiteStore.StoreObject): the identity is the SHA-256 hex of the bytes; a
+	 * content-addressed duplicate is a NO-OP (created=false — no new record, no
+	 * receipt); a genuinely new object stores its bytes and emits the
+	 * object_stored receipt atomically (v0.7.0 payload version, unchanged shape).
+	 * The surface can NEVER approve anything — storing is a provenance-recorded
+	 * capture.
+	 */
+	storeObject(input: ObjectStoreInput): ObjectStoreResult {
+		const scopeErr = validateObjectScope(input.scope);
+		if (scopeErr !== null) {
+			throw new Error(`INVALID_OBJECT_SCOPE: ${scopeErr}`);
+		}
+		// The validator guarantees the company shape; narrow the union for the
+		// flat scope fields.
+		const s = input.scope as MemoryScope & {
+			organizationId: string;
+			companyId: string;
+			ruc: string;
+			period?: string;
+		};
+		const objectId = computeObjectId(input.bytes);
+		const existing = this.objects.get(objectId);
+		if (existing !== undefined) {
+			// Content-addressed duplicate: identical bytes are the SAME object.
+			return { object: cloneEvidenceObject(existing.object), created: false };
+		}
+		const now = new Date().toISOString();
+		const object: EvidenceObject = {
+			objectId,
+			sha256: objectId,
+			size: input.bytes.byteLength,
+			contentType: input.contentType ?? "",
+			tenantId: s.organizationId,
+			companyId: s.companyId,
+			ruc: s.ruc,
+			period: s.period ?? "",
+			sourceSystem: input.source.system,
+			sourceReference: input.source.reference ?? "",
+			sourceActorId: input.source.actorId ?? "",
+			sourceActorKind: input.source.actorKind,
+			storedBy: input.source.actorId ?? "",
+			storedAt: now,
+			relPath: objectRelPath(objectId),
+		};
+		this.objects.set(objectId, { object, bytes: new Uint8Array(input.bytes) });
+		this.emitReceipt({
+			version: RECEIPT_PAYLOAD_VERSION_V07,
+			subjectType: "evidence_object",
+			subjectId: objectId,
+			action: "object_stored",
+			tenantId: s.organizationId,
+			companyId: s.companyId,
+			fiscalPeriodId: s.period ?? "",
+			reviewedEnvelopeHash: "",
+			resultingEnvelopeHash: "",
+			reviewedJudgmentHash: "",
+			resultingJudgmentHash: "",
+			fromMemoryId: "",
+			fromEnvelopeHash: "",
+			toMemoryId: "",
+			toEnvelopeHash: "",
+			successorId: "",
+			evidenceRef: objectId,
+			reason: "",
+			principalId: input.source.actorId ?? "",
+			membershipId: "",
+			principalRoles: [],
+			authenticationMethod: "",
+			assuranceLevel: "",
+			principalAuthenticatedAt: "",
+			policyVersion: KERNEL_POLICY_VERSION,
+			issuedAt: now,
+		});
+		return { object: cloneEvidenceObject(object), created: true };
+	}
+
+	/**
+	 * Reads one object SCOPE-FIRST (v0.7.0, mirror of SQLiteStore.GetObject): the
+	 * caller's exact scope must equal the stored scope (OBJECT_NOT_FOUND
+	 * otherwise — cross-tenant invisibility) and the stored bytes are re-hashed
+	 * on every read (a mismatch fails closed, never repaired).
+	 */
+	getObject(
+		objectId: string,
+		scope: MemoryScope,
+	): { object: EvidenceObject; bytes: Uint8Array } {
+		const entry = this.objects.get(objectId);
+		if (entry === undefined) {
+			throw new Error(`OBJECT_NOT_FOUND: ${objectId}`);
+		}
+		if (
+			scope.kind !== "company" ||
+			entry.object.tenantId !== scope.organizationId ||
+			entry.object.companyId !== scope.companyId ||
+			entry.object.ruc !== scope.ruc ||
+			entry.object.period !== (scope.period ?? "")
+		) {
+			throw new Error(`OBJECT_NOT_FOUND: ${objectId}`);
+		}
+		if (computeObjectId(entry.bytes) !== objectId) {
+			throw new Error(
+				`OBJECT_HASH_MISMATCH: stored bytes of ${objectId} re-hash to a different content address (corruption, no silent repair)`,
+			);
+		}
+		return {
+			object: cloneEvidenceObject(entry.object),
+			bytes: new Uint8Array(entry.bytes),
+		};
 	}
 
 	/**
