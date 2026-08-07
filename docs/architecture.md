@@ -1,6 +1,6 @@
 # Drenyra Engram — Architecture
 
-> **Last updated:** 2026-08-01.
+> **Last updated:** 2026-08-07.
 
 ## Position in the ecosystem
 
@@ -37,9 +37,9 @@ Receipt certifica.    Receipt certifies.
 Profesional autoriza. A professional authorizes.
 ```
 
-- The engine stores and retrieves knowledge. It has no authority model.
-- No observation is ever treated as approval, permission, or authorization.
-- Cross-consumer integration must route approvals through Drenyra AI gates and human professionals, never through memory.
+- The engine stores and retrieves knowledge. It does not authorize business operations.
+- The engine does implement authenticated professional review, immutable act receipts, and offline integrity verification; those certify Engram's own state transitions, not accounting correctness or permission to execute an external action.
+- No observation is ever treated as approval or authorization by a consumer. Cross-consumer business authorization must route through the owning application policy and human professionals.
 
 ## Core model
 
@@ -78,4 +78,4 @@ Local and cloud stores sync with explicit semantics: tombstone-aware, provenance
 
 ## Repository scope
 
-This repo is the memory engine. It does **not** contain authorization, receipts, or gates (that is `arkelythex/drenyra-ai`), the product UI (that is `arkelythex/Drenyra`), or the Pi harness (that is `arkelythex/drenyra-pi`).
+This repo is the memory engine and contains professional approval, judgment, receipt, and verification primitives for its own immutable state transitions. It does **not** authorize external business operations, provide the product UI (that is `arkelythex/Drenyra`), or provide the Pi harness (that is `arkelythex/drenyra-pi`). The owning application remains responsible for business authorization and external side effects.

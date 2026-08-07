@@ -24,6 +24,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -728,6 +729,24 @@ func ToolCatalog() []map[string]any {
 			}, "scope"),
 		},
 		{
+			"name":        "accounting_object_store",
+			"description": "Store ONE evidence object WORM-style (v0.7.0): artifact bytes as standard padded base64, exact company scope, capture source. Identity is the SHA-256 of the bytes; identical bytes already stored is a NO-OP (created=false). Writes to a CLOSED exact company period fail with PERIOD_CLOSED. This surface can NEVER approve anything — storing is a provenance-recorded capture, not an authorization.",
+			"inputSchema": objectSchema(map[string]any{
+				"bytesB64":    stringSchema("artifact bytes as standard padded base64"),
+				"contentType": stringSchema("optional MIME hint, stored verbatim"),
+				"scope":       stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"}`),
+				"source":      stringSchema(`JSON capture provenance: {"system":"...","actorId":"...","actorKind":"agent|system","reference":"..."}`),
+			}, "bytesB64", "scope", "source"),
+		},
+		{
+			"name":        "accounting_object_get",
+			"description": "Get one evidence object SCOPE-FIRST (v0.7.0): the caller's exact scope must equal the stored scope (cross-tenant invisibility — OBJECT_NOT_FOUND otherwise). The stored bytes are re-hashed on every read; corruption fails closed. Returns the metadata plus the artifact bytes as base64.",
+			"inputSchema": objectSchema(map[string]any{
+				"objectId": stringSchema("content address (64 lowercase hex SHA-256 digits)"),
+				"scope":    stringSchema(`JSON exact company scope of the object`),
+			}, "objectId", "scope"),
+		},
+		{
 			"name":        "accounting_doctor",
 			"description": "Store health snapshot: schema version, storage, counts. Fails closed on corruption.",
 			"inputSchema": objectSchema(nil),
@@ -1042,6 +1061,81 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(memory)), nil
+
+	case "accounting_object_store":
+		// v0.7.0 EvidenceObject capture — STORE ONLY, never approval. The
+		// artifact bytes arrive as standard padded base64; the exact company
+		// scope and the capture provenance are explicit arguments.
+		var args struct {
+			BytesB64    string `json:"bytesB64"`
+			ContentType string `json:"contentType"`
+			Scope       string `json:"scope"`
+			Source      string `json:"source"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("bytesB64", args.BytesB64); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		if err := requireParams("source", args.Source); err != nil {
+			return nil, err
+		}
+		bytes, err := base64.StdEncoding.DecodeString(args.BytesB64)
+		if err != nil {
+			return errTextContent(errors.New("INVALID_OBJECT: bytesB64 must be standard padded base64")), nil
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		var source core.Source
+		if err := json.Unmarshal([]byte(args.Source), &source); err != nil {
+			return errTextContent(fmt.Errorf("INVALID_OBJECT: source must be JSON: %w", err)), nil
+		}
+		result, err := m.api.StoreObject(context.Background(), core.ObjectStoreInput{
+			Bytes:       bytes,
+			ContentType: args.ContentType,
+			Scope:       scope,
+			Source:      source,
+		})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
+	case "accounting_object_get":
+		// v0.7.0 EvidenceObject read — SCOPE-FIRST: the caller's exact scope
+		// must equal the stored scope (OBJECT_NOT_FOUND otherwise); the stored
+		// bytes are re-hashed on every read.
+		var args struct {
+			ObjectID string `json:"objectId"`
+			Scope    string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("objectId", args.ObjectID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		obj, bytes, err := m.api.GetObject(context.Background(), args.ObjectID, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(map[string]any{
+			"object":   obj,
+			"bytesB64": base64.StdEncoding.EncodeToString(bytes),
+		})), nil
 
 	case "accounting_search":
 		var args struct {

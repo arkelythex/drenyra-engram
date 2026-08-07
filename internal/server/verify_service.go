@@ -36,6 +36,16 @@ type VerificationStore interface {
 	ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string) (core.ActProvenance, bool, error)
 	EvidenceLinkRefs(ctx context.Context, memoryID string) ([]string, error)
 	RuleLinkRefs(ctx context.Context, memoryID string) ([]string, error)
+	// ObjectAvailability resolves which declared evidence refs are object-backed
+	// and verifies their WORM bytes (v0.7.0); a resolved-but-corrupt object
+	// fails closed with a typed corruption error.
+	ObjectAvailability(ctx context.Context, refs []string) (map[string]core.EvidenceObject, error)
+	// EvidenceObjectByID resolves one object's METADATA by id (the evidence
+	// object verification subject).
+	EvidenceObjectByID(ctx context.Context, objectID string) (core.EvidenceObject, bool)
+	// VerifyObjectBytes re-hashes the stored WORM bytes of one object; nil when
+	// they match the content address, a typed corruption error otherwise.
+	VerifyObjectBytes(ctx context.Context, objectID string) error
 	SigningKeyForVerify(ctx context.Context, keyID string) (store.SigningKeyRecord, error)
 	FindByID(id string) (core.AccountingMemory, bool)
 	GetJudgment(ctx context.Context, id string) (core.AccountingJudgment, bool)
@@ -96,7 +106,20 @@ func VerifyMemory(ctx context.Context, st VerificationStore, memoryID string) (c
 		core.ComputeEnvelopeHash(memory), latestCommittedEnvelope(payloads),
 	))
 
-	// 10. rule availability — dynamic refs row-backed + head envelope.
+	// 10. object availability (v0.7.0) — every declared ref that resolves to a
+	// stored evidence object must have verified WORM bytes; legacy/unresolved
+	// refs stay backward compatible and are reported, never failed.
+	resolvedObjects, err := st.ObjectAvailability(ctx, declaredEvidenceRefs(payloads))
+	if err != nil {
+		// A resolved-but-corrupt object is EVIDENCE: report a failed layer, not
+		// a report-building error (the report must still end with NOT ASSERTED).
+		report.Layers = append(report.Layers, core.VerifyObjectBytesIntegrity(err))
+		core.Finalize(&report)
+		return report, nil
+	}
+	report.Layers = append(report.Layers, core.VerifyObjectAvailability(declaredEvidenceRefs(payloads), resolvedObjects))
+
+	// 11. rule availability — dynamic refs row-backed + head envelope.
 	ruleLinks, err := st.RuleLinkRefs(ctx, memoryID)
 	if err != nil {
 		return core.VerificationReport{}, fmt.Errorf("verify memory %s: read rule links: %w", memoryID, err)
@@ -248,6 +271,43 @@ func VerifyReceipt(ctx context.Context, st VerificationStore, target core.Receip
 	})
 	core.Finalize(report)
 	return *report, nil
+}
+
+// VerifyEvidenceObject verifies the FULL signed chain of one evidence-object
+// subject (v0.7.0 — docs/architecture/evidence-object-v0.7.md §6): the six
+// receipt layers over the object_stored chain, principal provenance (the
+// immutable evidence_objects row is the provenance anchor of the capture), then
+// the WORM byte-integrity layer (the stored bytes must re-hash to the content
+// address — corruption fails closed, no silent repair). Verification is
+// read-only and never asserts accounting correctness.
+func VerifyEvidenceObject(ctx context.Context, st VerificationStore, objectID string) (core.VerificationReport, error) {
+	obj, ok := st.EvidenceObjectByID(ctx, objectID)
+	if !ok {
+		return core.VerificationReport{}, fmt.Errorf("%w: evidence object %s", ErrSubjectNotFound, objectID)
+	}
+	scope := core.SubjectScope{
+		TenantID:       obj.TenantID,
+		CompanyID:      obj.CompanyID,
+		FiscalPeriodID: obj.Period,
+	}
+	report, payloads, err := verifyReceiptLayers(ctx, st, core.SubjectTypeEvidenceObject, objectID, scope)
+	if err != nil {
+		return core.VerificationReport{}, err
+	}
+
+	// 7. principal provenance — the object_stored receipt matches the immutable
+	// evidence_objects row (stored_by + stored_at).
+	provInstances := make([]core.VerificationLayer, len(payloads))
+	for i, p := range payloads {
+		provInstances[i] = provenanceLayer(ctx, st, core.SubjectTypeEvidenceObject, objectID, p)
+	}
+	report.Layers = append(report.Layers, core.AggregateLayers(core.LayerPrincipalProvenance, provInstances))
+
+	// 8. WORM byte integrity — the stored bytes re-hash to the content address.
+	report.Layers = append(report.Layers, core.VerifyObjectBytesIntegrity(st.VerifyObjectBytes(ctx, objectID)))
+
+	core.Finalize(&report)
+	return report, nil
 }
 
 // verifyReceiptLayers runs the six pure receipt layers over the subject's full
@@ -479,6 +539,12 @@ func subjectScopeOf(ctx context.Context, st VerificationStore, receipt core.Sign
 			return core.SubjectScope{}, fmt.Errorf("%w: judgment %s", ErrSubjectNotFound, receipt.SubjectID)
 		}
 		return judgmentScope(j), nil
+	case core.SubjectTypeEvidenceObject:
+		o, ok := st.EvidenceObjectByID(ctx, receipt.SubjectID)
+		if !ok {
+			return core.SubjectScope{}, fmt.Errorf("%w: evidence object %s", ErrSubjectNotFound, receipt.SubjectID)
+		}
+		return core.SubjectScope{TenantID: o.TenantID, CompanyID: o.CompanyID, FiscalPeriodID: o.Period}, nil
 	default:
 		return core.SubjectScope{}, fmt.Errorf("%w: unknown subjectType %q", ErrInvalidReceiptTarget, receipt.SubjectType)
 	}

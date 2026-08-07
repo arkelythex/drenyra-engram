@@ -74,6 +74,15 @@ func classify(err error) *apiError {
 	switch {
 	case closeCode(err) != "":
 		return &apiError{status: http.StatusConflict, code: closeCode(err), message: err.Error()}
+	case objectCode(err) == objectCodeNotFound:
+		return &apiError{status: http.StatusNotFound, code: objectCodeNotFound, message: err.Error()}
+	case objectCode(err) == objectCodeInvalid:
+		return &apiError{status: http.StatusBadRequest, code: objectCodeInvalid, message: err.Error()}
+	case objectCode(err) != "":
+		// OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH — WORM corruption is
+		// evidence and fails closed (5xx), never a client error and never a
+		// silent repair.
+		return &apiError{status: http.StatusInternalServerError, code: objectCode(err), message: err.Error()}
 	case IsNotFound(err):
 		return &apiError{status: http.StatusNotFound, code: "NOT_FOUND", message: err.Error()}
 	case IsConflict(err):
@@ -83,6 +92,30 @@ func classify(err error) *apiError {
 	default:
 		return &apiError{status: http.StatusInternalServerError, code: "INTERNAL", message: err.Error()}
 	}
+}
+
+// Object error codes frozen by the store's WORM surfaces
+// (internal/store/object_store.go). classify maps them before the generic
+// prefixes so the wire codes stay stable on the HTTP routes.
+const (
+	objectCodeNotFound  = "OBJECT_NOT_FOUND"
+	objectCodeInvalid   = "INVALID_OBJECT"
+	objectCodeBytesMiss = "OBJECT_BYTES_MISSING"
+	objectCodeHashDiff  = "OBJECT_HASH_MISMATCH"
+)
+
+// objectCode returns the frozen object-surface error code carried by err, or "".
+func objectCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	for _, code := range []string{objectCodeNotFound, objectCodeInvalid, objectCodeBytesMiss, objectCodeHashDiff} {
+		if strings.HasPrefix(msg, code) {
+			return code
+		}
+	}
+	return ""
 }
 
 // closeCode is the frozen error code carried by a close-surface error, or "".
@@ -233,6 +266,13 @@ func (h *HTTPServer) Handler() http.Handler {
 	// strict body, Idempotency-Key).
 	mux.HandleFunc("POST /accounting/closings", h.requireToken(h.handleCloseCreate))
 	mux.HandleFunc("POST /accounting/periods/{period}/reopen", h.authenticate(h.handlePeriodReopen))
+	// Evidence objects (v0.7.0 local-first slice): STORE + GET surfaces that
+	// can NEVER approve anything. Store takes the artifact bytes as base64 in
+	// a JSON body (same shape as the MCP tool); get is scope-first
+	// (?ruc= + ?organizationId= + ?period=). Both carry the shared token
+	// guard — no authenticated principal, no approval semantics.
+	mux.HandleFunc("POST /accounting/objects", h.requireToken(h.handleObjectStore))
+	mux.HandleFunc("GET /accounting/objects/{objectId}", h.requireToken(h.handleObjectGet))
 	// Period-over-period comparison (v0.5.0, design §4/§6): a PURE scope-first
 	// read over one company's two periods — same shared token guard as the
 	// other read surfaces; both scopes come from the query

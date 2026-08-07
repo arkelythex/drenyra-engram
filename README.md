@@ -6,10 +6,10 @@
 
 <p>
 <a href="https://github.com/arkelythex/drenyra-engram/releases"><img src="https://img.shields.io/github/v/release/arkelythex/drenyra-engram" alt="Release"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-Proprietary-red.svg" alt="License: Proprietary"></a>
 <img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
-<img src="https://img.shields.io/badge/tests-280%20Go%20%2B%2031%20TS-green" alt="Tests">
+<img src="https://img.shields.io/badge/tests-277%20TS%20%2B%20Go%20suite-green" alt="Tests">
 </p>
 
 </div>
@@ -22,13 +22,14 @@
 > is contractual, never public. See the Drenyra
 > [Private Product Policy](https://github.com/arkelythex/Drenyra/blob/main/docs/products/private-product-policy.md).
 >
-> **v0.3.0 — Accounting Memory Kernel** (released): 8 accounting kinds, the
-> human-approval gate for memories with fiscal effect, triple timestamps
-> (effectiveAt/recordedAt/observedAt), structured source, canonical hashes
-> (content/identity/envelope), 17 relations, the `accounting_*` MCP surface
-> (10 tools) and the explainable period summary (killer demo: why did account
-> 4011 end with this balance). Next: `v0.4.0` Evidence, Conflict and Judgment.
-> v0.2.0 released 2026-08-03. See the [ROADMAP](ROADMAP.md).
+> **v0.7.0 — Evidence Objects (local-first)** (implemented in this repository):
+> v0.3 Accounting Memory Kernel, v0.4 authenticated approvals, judgments,
+> Ed25519 receipts, offline verification, v0.5 close intelligence, and the
+> v0.7.0 local-first evidence-object slice (content-addressed WORM object
+> bytes, schema-v8 immutable metadata, `object_stored` receipts, scoped
+> store/get, object-level rehash verification, CLI/HTTP/MCP surfaces) are
+> implemented and tested. Fiscal Policy Memory (v0.6.0) is in progress. See the
+> [ROADMAP](ROADMAP.md) and the [due-diligence audit](docs/due-diligence/2026-08-product-architecture-audit.md).
 
 Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
 
@@ -63,6 +64,13 @@ a business action.
 - **Evidence-backed relations** — 17 relations (`supports`, `contradicts`,
   `explains`, `reconciles`, `reverses`, `approved_by`, …) turn memory into
   an accounting knowledge graph.
+- **Local-first evidence objects (v0.7.0)** — immutable artifact bytes
+  (XML/PDF/CDR/extracto) stored WRITE-ONCE-READ-MANY under a
+  content-addressed layout (`objects/<sha[0:2]>/<sha[2:4]>/<sha256>`); the
+  object id IS the SHA-256 of the bytes (identical bytes → duplicate NO-OP),
+  schema-v8 immutable metadata, `object_stored` receipts, scoped store/get,
+  and `verify object` re-hashing stored bytes. Deferred: retention, legal
+  hold, export, purge, cloud storage.
 - **Canonical content hashes** — `contentHash` identifies the immutable
   content; history never mutates, supersession is explicit and atomic.
 - **Institutional knowledge** — policies, conventions, and precedents that
@@ -75,8 +83,8 @@ a business action.
 - **Explainable period summary** — the killer demo: why did account 4011 end
   with this balance (facts, approved adjustments, rules applied, evidence,
   late exceptions — ordered by accounting-effective date).
-- **MCP, HTTP, CLI** — same engine, multiple surfaces (24 MCP tools: 14
-  `engram_*` + 10 `accounting_*`).
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (37 MCP tools: 24
+  `accounting_*` + 13 `engram_*`).
 
 ## Quick start
 
@@ -89,6 +97,9 @@ drenyra-engram review
 drenyra-engram promote
 drenyra-engram supersede
 drenyra-engram doctor
+drenyra-engram object store <file> --ruc <11 digits>   # v0.7.0 evidence object (WORM)
+drenyra-engram object get <sha256> --ruc <11 digits>   # scope-first read
+drenyra-engram verify object <sha256>                  # rehash + full signed chain
 drenyra-engram mcp     # MCP server over stdio (agents)
 drenyra-engram serve   # HTTP REST /v1 + MCP /mcp (127.0.0.1)
 ```

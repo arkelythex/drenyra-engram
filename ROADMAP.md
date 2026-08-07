@@ -1,6 +1,6 @@
 # Drenyra Engram — Roadmap
 
-> **Last updated:** 2026-08-05. Status: alpha (v0.3.0 Accounting Memory Kernel released).
+> **Last updated:** 2026-08-07. Status: alpha (v0.7.0 local-first EvidenceObject slice delivered; v0.5.0 Close Intelligence released).
 >
 > **Version nomenclature (frozen):** `v0.3.0` is the Accounting Memory Kernel.
 > The original vision's "V0.2 Evidence and Judgment" is NOT closed by it —
@@ -137,7 +137,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
     > offline) and all 12 acceptance criteria closed.
     > See contracts/approval.md, contracts/judgment.md, contracts/receipts.md,
     > contracts/verification.md.
-- [ ] **Acceptance criteria** (all 12 must pass to close the milestone):
+- [x] **Acceptance criteria:** all 12 v0.4 criteria are closed; see the four contracts and the milestone implementation commits above.
       1 agent proposes a contradiction but cannot confirm it · 2 an
       authenticated human without company access cannot approve · 3 an
       authorized accountant approves exactly the envelope reviewed · 4 the
@@ -149,7 +149,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       superseded memory produces a new pending_review revision · 12 the
       verifier never presents cryptographic integrity as accounting
       correctness.
-- [ ] **Secuencia de implementación**: feat(auth) ApprovalPrincipal ·
+- [x] **Implementation sequence:** ApprovalPrincipal, authorization, optimistic concurrency, judgment lifecycle, Ed25519 receipts, key lifecycle, offline verification, Go↔TS vectors, CLI surfaces, and contract documentation are complete for v0.4.
       feat(authz) authorize by tenant/company/role/fiscalEffect ·
       feat(concurrency) approve against expected envelope hash · feat(judgment)
       proposed/confirmed/rejected lifecycle · feat(receipts) canonical signed
@@ -157,7 +157,11 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       feat(verify) memory/judgment/receipt offline · test(protocol) Go↔TS
       signature golden vectors · feat(cli) judgment + verification commands ·
       docs freeze v0.4 contracts and threat model.
-- [ ] Evidence object store references (XML/PDF/CDR beyond refs)
+- [x] Evidence object store references (XML/PDF/CDR beyond refs) — **local-first
+      slice delivered as v0.7.0** (see Phase 6b): content-addressed WORM object
+      bytes, schema-v8 metadata, `object_stored` receipts, scoped store/get,
+      object-level rehash availability verification, CLI/HTTP/MCP surfaces.
+      Retention/legal-hold/export/purge/cloud remain DEFERRED.
 - [ ] Materiality-aware period views
 
 ## Phase 5 — Close Intelligence (v0.5.0) — COMPLETE
@@ -196,6 +200,50 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 - [ ] Regulatory-change impact reconstruction
 - [ ] Rule used in a historical decision, reconstructible
 
+## Phase 6b — Evidence Objects (v0.7.0) — DELIVERED (local-first slice)
+
+> The EvidenceObject local-first slice (schema v8 on top of the v0.6 rule
+> foundation in schema v7). Deferred production stages are listed explicitly
+> below — they are NOT implemented.
+
+- [x] **Local content-addressed WORM object bytes**: layout
+      `objects/<sha[0:2]>/<sha[2:4]>/<sha256>`; the object id IS the SHA-256 hex
+      of the bytes (`ComputeObjectID`); identical bytes → duplicate store is a
+      NO-OP (`created=false`, no receipt); no overwrite/delete API; path escape
+      fails closed as corruption; no silent repair
+      — [internal/store/object_store.go](internal/store/object_store.go).
+- [x] **Schema v8 immutable object metadata**: `evidence_objects` table with
+      no-update/no-delete triggers and scope index; one-transaction v7→v8
+      migration (receipts table copied+swapped to extend the subject CHECK to
+      `evidence_object`, the action CHECK to `object_stored`, and add the typed
+      FK) — [internal/store/store.go](internal/store/store.go).
+- [x] **`object_stored` receipt**: emitted atomically inside the store
+      transaction for genuinely new objects; subjectType `evidence_object`
+      — [contracts/receipts.md](contracts/receipts.md).
+- [x] **Scoped store/get**: exact tenant/company/RUC/period scope (institutional
+      objects rejected); reads are scope-first — exact scope must match
+      — [contracts/scope.md](contracts/scope.md).
+- [x] **Object-level rehash availability verification**: `verify object` runs the
+      six receipt layers + principal provenance + WORM byte integrity (stored
+      bytes re-hash to the content address); `verify memory` reports object
+      availability for refs that resolve to stored objects (legacy refs stay
+      backward compatible, reported never failed)
+      — [contracts/verification.md](contracts/verification.md).
+- [x] **Surfaces**: CLI `object store|get` + `verify object`; HTTP
+      `POST /accounting/objects`, `GET /accounting/objects/{objectId}`; MCP
+      `accounting_object_store`, `accounting_object_get`.
+- [x] **Go/TS coverage**: Go suite green (`internal/core`, `internal/store`,
+      `internal/server`, `cmd`) and TypeScript suite green (277 tests / 20 files
+      incl. `core/evidence-object.ts` mirror + `store/memory-store.ts` v0.7
+      mirror).
+
+**Explicitly DEFERRED (not implemented):** retention expiry (no retention
+clock), legal hold, export, purge/deletion, cloud/remote object storage, OCR
+or content search over objects, SUNAT/ERP object ingestion, and production
+object-store operations (backup/restore drills, encryption-at-rest/TDE,
+recovery objectives). Architecture: docs/architecture/evidence-object-v0.7.md;
+threat model: docs/security/evidence-lifecycle-and-threat-model.md.
+
 ## Phase 7 — Institutional Accounting Brain (v1.0.0)
 
 - [ ] Accounting firms: shared memory with controlled sync
@@ -206,6 +254,7 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 ## Non-goals (for now)
 
 - Authorization engine (that is `arkelythex/drenyra-ai` gates + human approval)
-- Cloud offering (deferred to `arkelythex/drenyra-cloud`)
+- Cloud offering (deferred to `arkelythex/drenyra-cloud`) — including
+  cloud/remote **object** storage for evidence objects
 - PostgreSQL in this repo (local-first; PostgreSQL is the Drenyra ecosystem's
   authoritative store, ADR-002)

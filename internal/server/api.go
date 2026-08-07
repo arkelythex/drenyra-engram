@@ -24,6 +24,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -165,6 +166,22 @@ func (a *API) Transitions() ([]core.StatusTransitionRecord, error) {
 // Doctor returns the store health snapshot (schema guards, counts).
 func (a *API) Doctor() (store.DoctorReport, error) {
 	return a.Store.Doctor()
+}
+
+// StoreObject captures ONE evidence object WORM-style (v0.7.0): the API is a
+// thin delegation over the store (closed-period gate, content-addressed
+// duplicate no-op and the atomic object_stored receipt all live in the
+// store). The surface can NEVER approve anything — storing an object is a
+// provenance-recorded capture, not an authorization.
+func (a *API) StoreObject(ctx context.Context, input core.ObjectStoreInput) (core.ObjectStoreResult, error) {
+	return a.Store.StoreObject(ctx, input)
+}
+
+// GetObject reads one object SCOPE-FIRST: the caller's exact scope must equal
+// the stored scope (cross-tenant invisibility) and the stored bytes are
+// re-hashed on every read (corruption fails closed, no silent repair).
+func (a *API) GetObject(ctx context.Context, objectID string, scope core.Scope) (core.EvidenceObject, []byte, error) {
+	return a.Store.GetObject(ctx, objectID, scope)
 }
 
 // ──────────────────────────────────────────────

@@ -93,6 +93,8 @@ func run(args []string) int {
 		return cmdVoid(args[1:])
 	case "link-evidence":
 		return cmdLinkEvidence(args[1:])
+	case "object":
+		return cmdObject(args[1:])
 	case "period-summary":
 		return cmdPeriodSummary(args[1:])
 	case "compare-periods":
@@ -128,14 +130,27 @@ func run(args []string) int {
 // immutable Ed25519 receipt inside its own transaction, below the adapter. The
 // signer is attached right after Open because the signer itself needs the opened
 // store (the store↔signer construction cycle); nil signer → no emission. The
-// keyring is created lazily on the FIRST covered mutation.
+// keyring is created lazily on the FIRST covered mutation. The WORM evidence
+// object root (v0.7.0) follows the same explicit convention as the DB path:
+// $DRENYRA_ENGRAM_OBJECTS when set, otherwise <dir-of-db>/objects.
 func openStore(path string) (*store.SQLiteStore, error) {
-	st, err := store.Open(path)
+	st, err := store.OpenWithObjects(path, defaultObjectsRoot(path))
 	if err != nil {
 		return nil, err
 	}
 	st.SetReceiptSigner(receipts.NewSigner(st, receipts.DefaultKeyringPath()))
 	return st, nil
+}
+
+// defaultObjectsRoot resolves the safe explicit local WORM object root for a
+// DB path: $DRENYRA_ENGRAM_OBJECTS when set, otherwise <dir-of-db>/objects
+// (consistent with the repo's env-or-default convention — never $HOME, never a
+// shared directory).
+func defaultObjectsRoot(dbPath string) string {
+	if root := os.Getenv("DRENYRA_ENGRAM_OBJECTS"); root != "" {
+		return root
+	}
+	return filepath.Join(filepath.Dir(dbPath), "objects")
 }
 
 func cmdSave(args []string) int {
@@ -1723,6 +1738,8 @@ func cmdVerify(args []string) int {
 		return cmdVerifyJudgment(args[1:])
 	case "receipt":
 		return cmdVerifyReceipt(args[1:])
+	case "object":
+		return cmdVerifyObject(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown verify subcommand %q\n", args[0])
 		return 2
@@ -1733,6 +1750,7 @@ func printVerifyUsage(w *os.File) {
 	fmt.Fprintln(w, "usage: drenyra-engram verify memory <id> [--db <path>]")
 	fmt.Fprintln(w, "       drenyra-engram verify judgment <id> [--db <path>]")
 	fmt.Fprintln(w, "       drenyra-engram verify receipt <hash|id> [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram verify object <sha256> [--db <path>]   (v0.7.0 evidence object)")
 }
 
 // cmdVerifyMemory verifies the FULL signed chain of one memory subject (design
@@ -1841,6 +1859,202 @@ func cmdVerifyReceipt(args []string) int {
 		return failVerify("verify receipt: %v", err)
 	}
 	return emitVerifyReport(report)
+}
+
+// cmdVerifyObject verifies the FULL signed chain of one evidence-object subject
+// (v0.7.0): the six receipt layers over the object_stored chain, principal
+// provenance (the immutable evidence_objects row) and the WORM byte-integrity
+// layer (the stored bytes re-hash to the content address — corruption fails
+// closed, no silent repair).
+func cmdVerifyObject(args []string) int {
+	fs := flag.NewFlagSet("verify object", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify object <sha256> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return failVerify("verify object: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	report, err := server.VerifyEvidenceObject(context.Background(), st, rest[0])
+	if err != nil {
+		return failVerify("verify object: %v", err)
+	}
+	return emitVerifyReport(report)
+}
+
+// ──────────────────────────────────────────────
+// object — v0.7.0 WORM evidence object surface
+// ──────────────────────────────────────────────
+
+// cmdObject dispatches the v0.7.0 evidence-object subcommands: store and get.
+// Both are provenance-recorded captures/reads — NEITHER can approve anything
+// (non-authorization boundary).
+func cmdObject(args []string) int {
+	if len(args) == 0 {
+		printObjectUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "store":
+		return cmdObjectStore(args[1:])
+	case "get":
+		return cmdObjectGet(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown object subcommand %q\n", args[0])
+		printObjectUsage(os.Stderr)
+		return 2
+	}
+}
+
+func printObjectUsage(w *os.File) {
+	fmt.Fprintln(w, "usage: drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--content-type <mime>] [--actor <name>] [--source-system <system>] [--reference <ref>] [--objects <dir>] [--db <path>]")
+	fmt.Fprintln(w, "       drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--objects <dir>] [--db <path>]   (scope-first: exact scope must match)")
+}
+
+// objectCLIScope builds the CLI's exact company scope for objects: the same
+// convention as every other CLI surface (organizationId defaults to "cli",
+// companyId is derived from the RUC). The scope is EXACT — an object stored
+// with a period is only readable with that period.
+func objectCLIScope(organization, ruc, period string) (core.Scope, error) {
+	if organization == "" {
+		organization = cliOrganizationID
+	}
+	scope := core.Scope{
+		Kind:           core.ScopeKindCompany,
+		OrganizationID: organization,
+		CompanyID:      ruc,
+		RUC:            ruc,
+		Period:         period,
+	}
+	if err := core.AssertValidScope(scope); err != nil {
+		return core.Scope{}, err
+	}
+	return scope, nil
+}
+
+// cmdObjectStore captures ONE evidence object WORM-style: the artifact bytes
+// are read from <file>, the identity is their SHA-256, a duplicate store is a
+// no-op and genuinely new objects mint the object_stored receipt atomically.
+func cmdObjectStore(args []string) int {
+	fs := flag.NewFlagSet("object store", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	contentType := fs.String("content-type", "", "optional MIME hint, stored verbatim")
+	actor := fs.String("actor", "cli", "actor id recorded as the capture provenance (default cli)")
+	sourceSystem := fs.String("source-system", "cli", "system that produced the artifact (default cli)")
+	reference := fs.String("reference", "", "optional external reference (e.g. F001-948)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--content-type <mime>] [--actor <name>] [--source-system <system>] [--reference <ref>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true, "--content-type": true, "--actor": true, "--source-system": true, "--reference": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	scope, err := objectCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		return fail("%v", err)
+	}
+	bytes, err := os.ReadFile(rest[0])
+	if err != nil {
+		return fail("read %s: %v", rest[0], err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	result, err := st.StoreObject(context.Background(), core.ObjectStoreInput{
+		Bytes:       bytes,
+		ContentType: *contentType,
+		Scope:       scope,
+		Source: core.Source{
+			System:    *sourceSystem,
+			Reference: *reference,
+			ActorID:   *actor,
+			ActorKind: core.ActorKindAgent,
+		},
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdObjectGet reads one evidence object SCOPE-FIRST: the caller's exact scope
+// must equal the stored scope (cross-tenant invisibility — OBJECT_NOT_FOUND
+// otherwise); the stored bytes are re-hashed on every read (corruption fails
+// closed). The artifact bytes are written to stdout AFTER the metadata line on
+// stderr, so pipes stay byte-safe.
+func cmdObjectGet(args []string) int {
+	fs := flag.NewFlagSet("object get", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	scope, err := objectCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	obj, bytes, err := st.GetObject(context.Background(), rest[0], scope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	meta, err := json.Marshal(obj)
+	if err != nil {
+		return fail("encode metadata: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "%s\n", meta)
+	if _, err := os.Stdout.Write(bytes); err != nil {
+		return fail("write bytes: %v", err)
+	}
+	return 0
 }
 
 // emitVerifyReport prints the verification report as indent-2 JSON for BOTH
@@ -2445,6 +2659,8 @@ Usage:
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
+  drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
+  drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--db <path>]   (scope-first read)
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]
   drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
@@ -2457,9 +2673,11 @@ Usage:
   drenyra-engram verify memory <id> [--db <path>]
   drenyra-engram verify judgment <id> [--db <path>]
   drenyra-engram verify receipt <hash|id> [--db <path>]
+  drenyra-engram verify object <sha256> [--db <path>]   (v0.7.0 evidence object)
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
+  --objects <dir>  WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
   --period <YYYYMM> fiscal period; omitted scopes only match period-less observations
   --any            match ANY query token (default: match ALL)

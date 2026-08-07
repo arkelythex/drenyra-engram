@@ -4,8 +4,11 @@
 > no float is ever used for money; version/sequence numbers are JSON integers,
 > never floats.
 >
-> Status: frozen for v0.4.0 Step 4. Related: contracts/receipts.md,
-> contracts/approval.md, contracts/judgment.md, ADR-003.
+> Status: frozen for v0.4.0 Step 4, **extended by v0.5 reconciliations and
+> v0.7.0 evidence objects** (verify object surface, evidence_object subject,
+> object availability + WORM byte-integrity layers; the v0.4 semantics below are
+> unchanged). Related: contracts/receipts.md, contracts/approval.md,
+> contracts/judgment.md, ADR-003.
 
 ## Invariant
 
@@ -27,6 +30,7 @@ conclusion.
 drenyra-engram verify memory <id> [--db <path>]
 drenyra-engram verify judgment <id> [--db <path>]
 drenyra-engram verify receipt <hash|id> [--db <path>]
+drenyra-engram verify object <sha256> [--db <path>]      [v0.7.0 evidence object]
 ```
 
 - `verify receipt <hash>`: exactly 64 lowercase hex (portable identity).
@@ -40,7 +44,7 @@ drenyra-engram verify receipt <hash|id> [--db <path>]
 
 ```ts
 interface VerificationReport {
-  subjectType: "memory" | "judgment";
+  subjectType: "memory" | "judgment" | "reconciliation" | "evidence_object";
   subjectId: string;
   outcome: "passed" | "failed";
   receipts: Array<{ receiptHash: string; action: ReceiptAction; layers: VerificationLayer[] }>;
@@ -60,9 +64,12 @@ Receipt: `payload canonicalization` · `envelope integrity` · `signature` ·
 `signing-key validity` · `tenant/company scope` · `chain link`.
 
 Memory adds: `principal provenance` · `supersession chain` · `evidence
-availability` · `rule availability`.
+availability` · `object availability` (v0.7.0) · `rule availability`.
 
 Judgment adds: `principal provenance` · `judgment hash` · `supersession chain`.
+
+Evidence object adds (v0.7.0): `principal provenance` · `WORM byte integrity`
+(the stored bytes re-hash to the content address).
 
 Semantics:
 
@@ -93,6 +100,15 @@ Semantics:
   `evidence_links` row; the envelope recomputed from immutable refs + current
   links must equal the latest receipt's `resultingEnvelopeHash`. A link removed
   (even by direct SQL) is detected. Same for rules via `rule_links`.
+- **Object availability** (v0.7.0): every declared evidence ref that resolves to
+  a stored evidence object must have verified WORM bytes; a resolved-but-corrupt
+  object is EVIDENCE (failed layer, never a report-building error). Legacy or
+  unresolved refs (no stored object) stay backward compatible and are REPORTED,
+  never failed.
+- **WORM byte integrity** (v0.7.0, verify object): the stored object bytes are
+  re-hashed and must equal the content address (`objectId`/`sha256`); a mismatch
+  fails closed — no silent repair. This layer is read-only and proves byte
+  identity, never that the artifact's content is accounting-true.
 - **Judgment hash**: `ComputeJudgmentHash` of the current row equals the latest
   decision receipt's `resultingJudgmentHash`; the reviewed hash matches the
   immutable event snapshot.
@@ -100,6 +116,18 @@ Semantics:
 Only the chain head's resulting envelope hash is compared with current state —
 comparing every historical result would falsely fail after legitimate later
 links/transitions.
+
+## Evidence objects (v0.7.0)
+
+`verify object <sha256>` verifies the FULL signed chain of one evidence-object
+subject: the six receipt layers over the `object_stored` chain (payload
+canonicalization · envelope integrity · signature · signing-key validity ·
+tenant/company scope · chain link), principal provenance (the immutable
+`evidence_objects` row is the provenance anchor of the capture — `storedBy` +
+`storedAt` match the receipt), then the WORM byte-integrity layer (stored bytes
+re-hash to the content address). Verification is read-only over the local
+store, and it NEVER asserts that the artifact's content is correct — only that
+its bytes, chain and provenance are intact.
 
 ## Non-claims
 

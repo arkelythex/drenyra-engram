@@ -4,7 +4,9 @@
 > no float is ever used for money; version/sequence numbers are JSON integers,
 > never floats.
 >
-> Status: frozen for v0.4.0 Step 3. Related: ADR-003, contracts/approval.md,
+> Status: frozen for v0.4.0 Step 3, **extended by v0.7.0 evidence objects**
+> (new act `object_stored` + subjectType `evidence_object`; the v0.4 semantics
+> below are unchanged). Related: ADR-003, contracts/approval.md,
 > contracts/judgment.md, contracts/provenance.md.
 >
 > **Receipt integrity proves that an act happened and nobody altered it — it
@@ -23,18 +25,19 @@ envelope — `AccountingMemory.ReceiptID` is never populated after write.
 ```text
 memory_recorded      memory_approved     memory_rejected     memory_voided
 relation_confirmed   relation_rejected   evidence_linked     memory_superseded
+object_stored                                                            [v0.7.0]
 ```
 
-`subjectType` is `memory` or `judgment`. Unknown actions/subject types fail
-closed.
+`subjectType` is `memory` or `judgment` (v0.4), plus `reconciliation` (v0.5)
+and `evidence_object` (v0.7.0). Unknown actions/subject types fail closed.
 
 ## Envelope
 
 ```ts
 interface SignedReceipt {
-  subjectType: "memory" | "judgment";
+  subjectType: "memory" | "judgment" | "reconciliation" | "evidence_object";
   subjectId: string;
-  action: ReceiptAction;            // the 8 acts above
+  action: ReceiptAction;            // the 9 acts above (incl. object_stored)
   tenantId: string;
   companyId: string;                // "" for institutional subjects
   fiscalPeriodId: string;           // "" when absent
@@ -85,13 +88,20 @@ interface SignedReceipt {
 - `evidence_linked`: memory subject, pre-link + post-link envelope hashes, the
   exact evidence reference. Rule links are NOT covered; duplicate links emit
   nothing.
-- `memory_superseded`: superseded memory subject, pre/post envelope hashes,
-  successor ID.
+  - `memory_superseded`: superseded memory subject, pre/post envelope hashes,
+      successor ID.
+- `object_stored` (v0.7.0): evidence-object subject, the content-addressed
+  object id (= SHA-256 hex of the bytes), the exact tenant/company/RUC/period
+  scope, the provenance source (system/reference/actor) and storedBy/storedAt.
+  Emitted atomically inside the object-store transaction and ONLY for a
+  genuinely new object — a content-addressed duplicate (identical bytes) is a
+  NO-OP and mints no receipt.
 
 Non-policy acts use `policyVersion = "kernel/v0.4.0"`. Claimed acts (recorded,
-rejected, voided, superseded, linked) use the recorded Source/transition/link
-actor as principalId with empty membership/roles/authentication. Verified acts
-(approved, relation_*) use the full principal snapshot.
+rejected, voided, superseded, linked, object_stored) use the recorded
+Source/transition/link/store actor as principalId with empty
+membership/roles/authentication. Verified acts (approved, relation_*) use the
+full principal snapshot.
 
 ## Key lifecycle
 

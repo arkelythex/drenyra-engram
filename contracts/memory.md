@@ -124,8 +124,24 @@ with the bank movement, and a rule is `violated` or `applied`.
 
 - Local store is the default; cloud is an explicit opt-in with clear sync
   semantics (additive, provenance-preserving, conflict-visible).
-- Store layout is versioned (schema v2); migrations are additive and
-  reversible; corruption fails closed, silent repair is forbidden.
+- Store layout is versioned (schema v8 since the v0.7.0 evidence-object slice);
+  migrations are additive and reversible; corruption fails closed, silent repair
+  is forbidden.
+
+## Evidence objects (v0.7.0) — relation to this contract
+
+`evidenceRefs` in this contract are LINK records (references) that grow only
+via `evidence_linked`; the memory envelope itself never mutates. The v0.7.0
+EvidenceObject slice is a SEPARATE local WORM object store: content-addressed
+artifact bytes (object id = SHA-256 hex of the bytes), immutable schema-v8
+`evidence_objects` metadata rows, `object_stored` receipts, scoped store/get,
+and `verify object` rehash verification. A memory's `evidenceRefs` may point at
+stored objects, and `verify memory` reports object availability for refs that
+resolve to stored objects — but the memory model is unchanged: refs are
+references, the object store holds bytes. Retention expiry, legal hold, export,
+purge and cloud/remote object storage are explicitly DEFERRED — see
+docs/architecture/evidence-object-v0.7.md and
+docs/security/evidence-lifecycle-and-threat-model.md.
 
 ## Conformance
 
