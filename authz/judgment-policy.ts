@@ -39,7 +39,9 @@ export interface JudgmentAuthorizationDecision {
  * Accounting ladder rank: accountant < senior_accountant < controller. Tax roles
  * sit OUTSIDE the ladder at rank 0 and can never dominate it. (Mirror of the
  * ladder in approval-policy.ts; duplicated here so this module is
- * self-contained and the Step 1 file stays untouched.)
+ * self-contained and the Step 1 file stays untouched.) v0.8.0
+ * evidence-lifecycle roles also sit OUTSIDE the ladder at rank 0
+ * (explicit-match only, exactly like tax roles; design §8.1).
  */
 const LADDER_RANK: Record<AccountingRole, number> = {
 	accountant: 1,
@@ -47,6 +49,10 @@ const LADDER_RANK: Record<AccountingRole, number> = {
 	controller: 3,
 	tax_reviewer: 0,
 	authorized_tax_professional: 0,
+	records_compliance_officer: 0,
+	tenant_records_owner: 0,
+	tax_responsible: 0,
+	operational_accountant: 0,
 };
 
 const ASSURANCE_RANK: Record<AssuranceLevel, number> = {

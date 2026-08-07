@@ -173,20 +173,34 @@ export const ASSURANCE_LEVELS: readonly AssuranceLevel[] = [
  * Professional accounting role (v0.4.0). The ladder
  * `accountant < senior_accountant < controller` is the ONLY dominance relation;
  * tax roles are explicit and never implied. Mirrors auth.AccountingRole.
+ *
+ * v0.8.0 evidence-lifecycle roles extend the same union (design §8.1):
+ * `records_compliance_officer` / `tenant_records_owner` are default approvers,
+ * `tax_responsible` is a dual-approval second approver ONLY, and
+ * `operational_accountant` is DENY-LISTED (never requests, approves, rejects,
+ * withdraws or executes). Like tax roles, lifecycle roles sit OUTSIDE the
+ * accounting ladder at rank 0 — explicit-match only, never implied.
  */
 export type AccountingRole =
 	| "accountant"
 	| "senior_accountant"
 	| "controller"
 	| "tax_reviewer"
-	| "authorized_tax_professional";
-
+	| "authorized_tax_professional"
+	| "records_compliance_officer"
+	| "tenant_records_owner"
+	| "tax_responsible"
+	| "operational_accountant";
 export const ACCOUNTING_ROLES: readonly AccountingRole[] = [
 	"accountant",
 	"senior_accountant",
 	"controller",
 	"tax_reviewer",
 	"authorized_tax_professional",
+	"records_compliance_officer",
+	"tenant_records_owner",
+	"tax_responsible",
+	"operational_accountant",
 ];
 
 /**
@@ -240,9 +254,11 @@ export interface ApprovalAuthorizationDecision {
 /**
  * Frozen approval error codes (v0.4.0 Step 1) — the single source for the
  * HTTP/MCP mapping. Mirrors the codes in auth/errors.go. Extended in
- * v0.4.0 Step 2 with the frozen judgment lifecycle codes and in v0.5.0
+ * v0.4.0 Step 2 with the frozen judgment lifecycle codes, in v0.5.0
  * with the close (PERIOD_CLOSED, PERIOD_ALREADY_CLOSED) and reconciliation
- * (RECONCILIATION_*) codes; the existing codes are unchanged.
+ * (RECONCILIATION_*) codes, and in v0.8.0 with the evidence-lifecycle
+ * policy codes (ROLE_DENIED, APPROVER_IS_REQUESTER, DUAL_APPROVAL_REQUIRED,
+ * SAME_PRINCIPAL_SECOND_APPROVAL); the existing codes are unchanged.
  */
 export type ApprovalErrorCode =
 	| "AUTHENTICATION_REQUIRED"
@@ -271,7 +287,11 @@ export type ApprovalErrorCode =
 	| "RECONCILIATION_NOT_FOUND"
 	| "INVALID_RECONCILIATION_TRANSITION"
 	| "RECONCILIATION_CONFLICT"
-	| "RECONCILIATION_HASH_MISMATCH";
+	| "RECONCILIATION_HASH_MISMATCH"
+	| "ROLE_DENIED"
+	| "APPROVER_IS_REQUESTER"
+	| "DUAL_APPROVAL_REQUIRED"
+	| "SAME_PRINCIPAL_SECOND_APPROVAL";
 
 export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"AUTHENTICATION_REQUIRED",
@@ -295,12 +315,16 @@ export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"INVALID_JUDGMENT_TRANSITION",
 	"JUDGMENT_CONFLICT",
 	"JUDGMENT_HASH_MISMATCH",
-	"PERIOD_CLOSED",
-	"PERIOD_ALREADY_CLOSED",
-	"RECONCILIATION_NOT_FOUND",
-	"INVALID_RECONCILIATION_TRANSITION",
-	"RECONCILIATION_CONFLICT",
-	"RECONCILIATION_HASH_MISMATCH",
+"PERIOD_CLOSED",
+"PERIOD_ALREADY_CLOSED",
+"RECONCILIATION_NOT_FOUND",
+"INVALID_RECONCILIATION_TRANSITION",
+"RECONCILIATION_CONFLICT",
+"RECONCILIATION_HASH_MISMATCH",
+"ROLE_DENIED",
+"APPROVER_IS_REQUESTER",
+"DUAL_APPROVAL_REQUIRED",
+"SAME_PRINCIPAL_SECOND_APPROVAL",
 ];
 
 /**

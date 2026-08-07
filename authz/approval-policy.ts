@@ -37,6 +37,12 @@ const LADDER_RANK: Record<AccountingRole, number> = {
 	// Tax roles sit OUTSIDE the ladder at rank 0 and can never dominate it.
 	tax_reviewer: 0,
 	authorized_tax_professional: 0,
+	// v0.8.0 evidence-lifecycle roles also sit OUTSIDE the ladder at rank 0
+	// (explicit-match only, exactly like tax roles; design §8.1).
+	records_compliance_officer: 0,
+	tenant_records_owner: 0,
+	tax_responsible: 0,
+	operational_accountant: 0,
 };
 
 const ASSURANCE_RANK: Record<AssuranceLevel, number> = {

@@ -140,10 +140,14 @@ describe("canonicalEvidenceObjectJSON — pinned canonical bytes", () => {
 	});
 
 	it("uses the FIXED property order — the interface order, every key present", () => {
-		const parsed = JSON.parse(
+		const parsed: unknown = JSON.parse(
 			canonicalEvidenceObjectJSON(sampleEvidenceObject()),
-		) as Record<string, unknown>;
-		expect(Object.keys(parsed)).toEqual([...CANONICAL_PROPERTY_ORDER]);
+		);
+		expect(typeof parsed).toBe("object");
+		expect(parsed).not.toBeNull();
+		expect(Object.keys(parsed as object)).toEqual([
+			...CANONICAL_PROPERTY_ORDER,
+		]);
 	});
 
 	it("never HTML-escapes <, > or & (parity with Go)", () => {

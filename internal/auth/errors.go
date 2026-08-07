@@ -64,6 +64,22 @@ const (
 	CodeReconciliationHashMismatch      = "RECONCILIATION_HASH_MISMATCH"
 )
 
+// Frozen error codes (v0.8.0 evidence-lifecycle policy — do not rename or
+// reuse; design §8.3). ROLE_DENIED is the deny-list outcome (operational_accountant,
+// any role token containing "admin", agent and system actor kinds — it precedes
+// every allow). APPROVER_IS_REQUESTER is the SoD rule on approve; the dual-approval
+// codes gate the second approval: DUAL_APPROVAL_REQUIRED fires when a second
+// approval is attempted for a category that is not configured for dual approval,
+// SAME_PRINCIPAL_SECOND_APPROVAL when the second approver IS the first approver.
+// The blocker/state codes of §8.3 (BLOCKER_PRECEDES_APPROVAL, UNKNOWN_RETENTION_STATE,
+// HOLD_ACTIVE, ...) belong to the deferred store layer, not to the pure policy.
+const (
+	CodeRoleDenied                  = "ROLE_DENIED"
+	CodeApproverIsRequester         = "APPROVER_IS_REQUESTER"
+	CodeDualApprovalRequired        = "DUAL_APPROVAL_REQUIRED"
+	CodeSamePrincipalSecondApproval = "SAME_PRINCIPAL_SECOND_APPROVAL"
+)
+
 // Error is the typed approval/judgment/reconciliation error: a frozen code
 // plus a human message. Only ENVELOPE_MISMATCH carries
 // ExpectedEnvelopeHash/ActualEnvelopeHash, only JUDGMENT_HASH_MISMATCH and
@@ -216,4 +232,9 @@ var (
 	ErrInvalidReconciliationTransition = &Error{Code: CodeInvalidReconciliationTransition, Message: "invalid reconciliation transition"}
 	ErrReconciliationConflict          = &Error{Code: CodeReconciliationConflict, Message: "reconciliation conflict"}
 	ErrReconciliationHashMismatch      = &Error{Code: CodeReconciliationHashMismatch, Message: "reconciliation hash mismatch"}
+	// ── v0.8.0 evidence-lifecycle policy codes ──
+	ErrRoleDenied                  = &Error{Code: CodeRoleDenied, Message: "role is deny-listed for evidence lifecycle acts"}
+	ErrApproverIsRequester         = &Error{Code: CodeApproverIsRequester, Message: "the approver cannot be the requester (separation of duties)"}
+	ErrDualApprovalRequired        = &Error{Code: CodeDualApprovalRequired, Message: "a second approval requires a dual-approval-configured category"}
+	ErrSamePrincipalSecondApproval = &Error{Code: CodeSamePrincipalSecondApproval, Message: "the second approver must be a distinct principal"}
 )

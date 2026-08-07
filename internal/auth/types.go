@@ -49,6 +49,13 @@ const (
 // AccountingRole is a professional role inside the accounting ladder or the
 // explicit tax track. The ladder accountant < senior_accountant < controller is
 // the ONLY dominance relation; tax roles are explicit and never implied.
+//
+// v0.8.0 evidence-lifecycle roles extend the same union with the frozen policy
+// matrix (design §8.1): records_compliance_officer / tenant_records_owner are
+// default approvers, tax_responsible is a dual-approval second approver ONLY,
+// and operational_accountant is DENY-LISTED (never requests, approves, rejects,
+// withdraws or executes). Like tax roles, all lifecycle roles sit OUTSIDE the
+// accounting ladder at rank 0 — explicit-match only, never implied.
 type AccountingRole string
 
 const (
@@ -57,6 +64,11 @@ const (
 	RoleController                AccountingRole = "controller"
 	RoleTaxReviewer               AccountingRole = "tax_reviewer"
 	RoleAuthorizedTaxProfessional AccountingRole = "authorized_tax_professional"
+	// ── v0.8.0 evidence-lifecycle roles ──
+	RoleRecordsComplianceOfficer AccountingRole = "records_compliance_officer"
+	RoleTenantRecordsOwner       AccountingRole = "tenant_records_owner"
+	RoleTaxResponsible           AccountingRole = "tax_responsible"
+	RoleOperationalAccountant    AccountingRole = "operational_accountant"
 )
 
 // VerifiedApprovalPrincipal is the authenticated, pre-verified principal used to
