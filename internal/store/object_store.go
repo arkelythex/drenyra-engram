@@ -6,21 +6,32 @@
 // WORM contract (write-once, read-many):
 //   - identity is content-addressed: the lowercase SHA-256 hex of the bytes IS
 //     the object id (core.ComputeObjectID); identical bytes are the SAME
-//     object, so a duplicate store is a NO-OP (created=false — no new row, no
-//     receipt);
+//     object, so a same-scope duplicate store is a NO-OP (created=false — no
+//     new row, no receipt); identical bytes stored under a DIFFERENT exact
+//     scope are a typed NON-ENUMERATING conflict (OBJECT_SCOPE_CONFLICT);
 //   - the on-disk layout is deterministic and content-addressed:
 //     <objectsRoot>/objects/<sha[0:2]>/<sha[2:4]>/<sha>; no caller-controlled
-//     name ever enters the path (path traversal cannot be expressed);
-//   - a write is temp-file + fsync + atomic rename in the SAME directory, then
-//     the immutable evidence_objects row + the object_stored receipt commit in
-//     ONE SQLite transaction; a signing failure rolls the row back (a leftover
-//     orphan file is harmless — content-addressed, unreferenced, never served);
+//     name ever enters the path (path traversal cannot be expressed); symlink
+//     traversal BELOW the objects root fails closed on every read and write
+//     (OBJECT_PATH_INVALID — intermediate components are verified real
+//     directories component-by-component, never followed);
+//   - a write is temp-file + fsync + atomic rename in the SAME directory + a
+//     directory fsync, then the immutable evidence_objects row + the
+//     object_stored receipt commit in ONE SQLite transaction; a signing or
+//     real directory-sync failure rolls the row back (a leftover orphan byte
+//     file is harmless — content-addressed, unreferenced, never served);
+//     documented unsupported-filesystem directory-sync errors (EINVAL /
+//     ENOTSUP / EOPNOTSUPP / ENOSYS / EBADF, plus Windows' inability to open
+//     a directory) are tolerated — the rename itself is already atomic;
 //   - a read re-hashes the bytes and fails closed on any mismatch
 //     (OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH); silent repair is
 //     FORBIDDEN (contracts/provenance.md frozen policy);
 //   - there is NO overwrite API and NO delete API: evidence_objects rows are
 //     guarded by no-update/no-delete triggers at the schema level and the
-//     object methods expose no mutation beyond the initial store.
+//     object methods expose no mutation beyond the initial store;
+//   - doctor scans the object layer and FAILS CLOSED on rows with missing
+//     bytes or invalid paths while REPORTING orphan and temp files (never
+//     deleted, never repaired).
 //
 // Object bytes are DATA, never instructions: this layer only hashes, stores,
 // reads and re-hashes — it never parses, executes or interprets content, and
@@ -39,10 +50,13 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
 )
@@ -50,10 +64,12 @@ import (
 // Frozen object error codes (fail closed — corruption is evidence, never a
 // silent repair or a successful skip).
 const (
-	objectErrNotFound     = "OBJECT_NOT_FOUND"
-	objectErrInvalid      = "INVALID_OBJECT"
-	objectErrBytesMissing = "OBJECT_BYTES_MISSING"
-	objectErrHashMismatch = "OBJECT_HASH_MISMATCH"
+	objectErrNotFound      = "OBJECT_NOT_FOUND"
+	objectErrInvalid       = "INVALID_OBJECT"
+	objectErrBytesMissing  = "OBJECT_BYTES_MISSING"
+	objectErrHashMismatch  = "OBJECT_HASH_MISMATCH"
+	objectErrPathInvalid   = "OBJECT_PATH_INVALID"
+	objectErrScopeConflict = "OBJECT_SCOPE_CONFLICT"
 )
 
 // objectBytesCorruptionError is the typed corruption error returned when a
@@ -66,14 +82,36 @@ type objectBytesCorruptionError struct {
 
 func (e *objectBytesCorruptionError) Error() string { return e.code + ": " + e.msg }
 
+// objectPathCorruptionError is the typed error returned when an object path
+// escapes the objects root, traverses a symlink, or resolves to a
+// non-regular-file component — a path-level corruption signal that always
+// fails closed (never followed, never repaired).
+type objectPathCorruptionError struct {
+	code string
+	msg  string
+}
+
+func (e *objectPathCorruptionError) Error() string { return e.code + ": " + e.msg }
+
+// objectScopeConflictError is the typed non-enumerating duplicate-scope error.
+type objectScopeConflictError struct {
+	code string
+	msg  string
+}
+
+func (e *objectScopeConflictError) Error() string { return e.code + ": " + e.msg }
+
 // StoreObject captures ONE artifact WORM-style (v0.7.0). The exact company
 // scope and the source are validated first (fail closed); the closed-period
-// gate runs INSIDE the write transaction before any mutation; a content-
-// addressed duplicate (identical bytes already stored) is a NO-OP returning
-// created=false with no row and no receipt; a genuinely new object writes its
-// bytes temp+sync+atomic-rename, inserts the immutable evidence_objects row and
-// emits the object_stored receipt in ONE transaction (a signing failure rolls
-// the row back).
+// gate runs INSIDE the write transaction before any mutation; a same-scope
+// content-addressed duplicate (identical bytes already stored) is a NO-OP
+// returning created=false with no row and no receipt; identical bytes under a
+// DIFFERENT exact scope are a typed NON-ENUMERATING conflict
+// (OBJECT_SCOPE_CONFLICT, no scope metadata in the message); a genuinely new
+// object writes its bytes temp+sync+atomic-rename+directory-sync, inserts the
+// immutable evidence_objects row and emits the object_stored receipt in ONE
+// transaction (a signing or real directory-sync failure rolls the row back,
+// leaving at most an orphan byte file).
 func (s *SQLiteStore) StoreObject(ctx context.Context, input core.ObjectStoreInput) (core.ObjectStoreResult, error) {
 	if err := core.AssertValidObjectScope(input.Scope); err != nil {
 		return core.ObjectStoreResult{}, err
@@ -109,16 +147,28 @@ func (s *SQLiteStore) StoreObject(ctx context.Context, input core.ObjectStoreInp
 		return core.ObjectStoreResult{}, err
 	}
 
-	// Content-addressed duplicate detection: identical bytes → same id → the
-	// object already exists → NO-OP. The stored bytes must still be present on
-	// disk (a row whose file is missing is corruption, fail closed — the WORM
-	// invariant is checked on every path, including the no-op path).
-	var existingID string
-	err = conn.QueryRowContext(ctx, `SELECT id FROM evidence_objects WHERE id = ?`, objectID).Scan(&existingID)
+	// Content-addressed duplicate detection is SCOPE-AWARE (v0.7.x hardening):
+	// a row with the SAME content address stored under the SAME exact scope is
+	// the WORM no-op (created=false — no new row, no receipt); the same content
+	// address under a DIFFERENT exact scope is a typed NON-ENUMERATING conflict
+	// (OBJECT_SCOPE_CONFLICT) that discloses NO scope metadata — a cross-scope
+	// collision is a defect signal, never an oracle. The no-op path still
+	// re-checks the WORM invariant: the stored bytes must be present on disk (a
+	// row whose file is missing is corruption, fail closed).
+	var dupTenant, dupCompany, dupRUC, dupPeriod string
+	err = conn.QueryRowContext(ctx, `SELECT tenant_id, company_id, ruc, period FROM evidence_objects WHERE id = ?`, objectID).
+		Scan(&dupTenant, &dupCompany, &dupRUC, &dupPeriod)
 	if err == nil {
-		// Metadata read on the SAME connection/transaction: the connection is
-		// pinned (SetMaxOpenConns(1)), so any s.db query here would deadlock on
-		// the held transaction.
+		if dupTenant != input.Scope.OrganizationID || dupCompany != input.Scope.CompanyID ||
+			dupRUC != input.Scope.RUC || dupPeriod != input.Scope.Period {
+			// Different-scope collision: typed, non-enumerating, no mutation.
+			return core.ObjectStoreResult{}, &objectScopeConflictError{
+				code: objectErrScopeConflict,
+				msg:  "identical object bytes are already stored under a different exact scope — existing scope metadata is withheld",
+			}
+		}
+		// Same-scope duplicate: metadata read on the SAME connection/transaction
+		// (the connection is pinned — s.db would deadlock on the held tx).
 		existing, ok := s.evidenceObjectByIDOn(ctx, conn, objectID)
 		if !ok {
 			return core.ObjectStoreResult{}, &objectBytesCorruptionError{code: objectErrBytesMissing, msg: fmt.Sprintf("evidence_objects row %s exists but its metadata is unreadable", objectID)}
@@ -136,10 +186,13 @@ func (s *SQLiteStore) StoreObject(ctx context.Context, input core.ObjectStoreInp
 		return core.ObjectStoreResult{}, fmt.Errorf("persistence error: duplicate object check: %w", err)
 	}
 
-	// WORM byte write (temp + fsync + atomic rename). One captured timestamp
-	// covers the row AND the receipt (provenance continuity).
+	// WORM byte write (temp + fsync + atomic rename + directory sync). One
+	// captured timestamp covers the row AND the receipt (provenance continuity).
+	// A real (non-benign) write failure — including a real directory-sync
+	// failure — returns BEFORE the row/receipt transaction commits, so the
+	// deferred ROLLBACK leaves at most an orphan byte file.
 	now := nowISO()
-	if err := writeObjectBytes(s.objectsRoot, relPath, input.Bytes); err != nil {
+	if err := s.writeObjectBytes(relPath, input.Bytes); err != nil {
 		return core.ObjectStoreResult{}, err
 	}
 
@@ -304,24 +357,141 @@ func (s *SQLiteStore) ObjectAvailability(ctx context.Context, refs []string) (ma
 // WORM byte helpers (fail closed, no silent repair)
 // ──────────────────────────────────────────────
 
-// objectPath builds the absolute path of an object's bytes from its stored
-// rel_path and FAILS CLOSED when the resolved path escapes the objects root (a
-// corrupted rel_path is a corruption signal, never a path to follow).
-func (s *SQLiteStore) objectPath(relPath string) (string, error) {
+// effectiveObjectsRoot resolves the configured objects root to its canonical
+// path. The ROOT itself may be a symlink (an operator-configured mount, e.g.
+// --objects); what is forbidden is symlink traversal BELOW the root. A missing
+// root is created (0700) only when create is true (write paths); reads against
+// a missing root see no bytes (OBJECT_BYTES_MISSING).
+func (s *SQLiteStore) effectiveObjectsRoot(create bool) (string, error) {
 	root := filepath.Clean(s.objectsRoot)
-	full := filepath.Clean(filepath.Join(root, relPath))
-	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
-		return "", &objectBytesCorruptionError{code: objectErrInvalid,
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("persistence error: resolve objects root %s: %w", root, err)
+		}
+		if !create {
+			return "", nil
+		}
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			return "", fmt.Errorf("persistence error: create objects root %s: %w", root, err)
+		}
+		resolved, err = filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("persistence error: resolve objects root %s: %w", root, err)
+		}
+	}
+	return resolved, nil
+}
+
+// objectPathFor resolves a stored rel_path to an absolute path under the
+// EFFECTIVE objects root, failing closed on:
+//   - a lexical escape of the root (INVALID_OBJECT — a corrupted rel_path is
+//     a corruption signal, never a path to follow);
+//   - a symlinked or non-directory INTERMEDIATE component (OBJECT_PATH_INVALID
+//     — symlink traversal below the root is forbidden; the walk uses Lstat
+//     component-by-component from the resolved root, never following a link);
+//   - a symlinked or non-regular FINAL component when it exists (reads never
+//     follow a symlink; writes never target one blindly).
+//
+// When create is true the missing intermediate directories are created
+// SECURELY — one component at a time with os.Mkdir + Lstat verification, never
+// os.MkdirAll (which would follow an attacker-placed intermediate symlink) —
+// and the created directories are returned deepest-last for durability syncs.
+// When create is false a missing intermediate fails as OBJECT_BYTES_MISSING
+// (no WORM bytes can exist under a missing path). The residual TOCTOU window
+// (a component swapped between the Lstat walk and the open) is documented in
+// docs/security/evidence-lifecycle-and-threat-model.md: closing it would
+// require openat2/O_NOFOLLOW semantics, which are not portable in Go; host
+// access is the effective trust boundary.
+func (s *SQLiteStore) objectPathFor(relPath string, create bool) (string, []string, error) {
+	// Lexical containment against the CONFIGURED root first: fail closed even
+	// when the root does not exist yet — a corrupt rel_path is never probed.
+	cleanRoot := filepath.Clean(s.objectsRoot)
+	if full := filepath.Clean(filepath.Join(cleanRoot, relPath)); full != cleanRoot &&
+		!strings.HasPrefix(full, cleanRoot+string(filepath.Separator)) {
+		return "", nil, &objectBytesCorruptionError{code: objectErrInvalid,
 			msg: fmt.Sprintf("rel_path %q escapes the objects root — corruption", relPath)}
 	}
-	return full, nil
+	root, err := s.effectiveObjectsRoot(create)
+	if err != nil {
+		return "", nil, err
+	}
+	if root == "" {
+		return "", nil, &objectBytesCorruptionError{code: objectErrBytesMissing,
+			msg: "objects root does not exist — no WORM bytes can be present"}
+	}
+	full := filepath.Clean(filepath.Join(root, relPath))
+	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
+		return "", nil, &objectBytesCorruptionError{code: objectErrInvalid,
+			msg: fmt.Sprintf("rel_path %q escapes the objects root — corruption", relPath)}
+	}
+	rel, err := filepath.Rel(root, full)
+	if err != nil {
+		return "", nil, &objectBytesCorruptionError{code: objectErrInvalid,
+			msg: fmt.Sprintf("rel_path %q is not under the objects root — corruption", relPath)}
+	}
+	if rel == "." {
+		return full, nil, nil
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	cur := root
+	var created []string
+	for _, part := range parts[:len(parts)-1] {
+		cur = filepath.Join(cur, part)
+		fi, lerr := os.Lstat(cur)
+		if lerr != nil {
+			if os.IsNotExist(lerr) && create {
+				// The parent (cur's dirname) was verified a real directory in the
+				// previous iteration; os.Mkdir creates ONE component without
+				// traversing any intermediate symlink.
+				if merr := os.Mkdir(cur, 0o700); merr != nil {
+					return "", nil, fmt.Errorf("persistence error: create object path component %s: %w", cur, merr)
+				}
+				created = append(created, cur)
+				fi, lerr = os.Lstat(cur)
+			}
+			if lerr != nil {
+				if os.IsNotExist(lerr) {
+					return "", nil, &objectBytesCorruptionError{code: objectErrBytesMissing,
+						msg: fmt.Sprintf("WORM path component %s is missing (row without bytes — corruption, no silent repair)", cur)}
+				}
+				return "", nil, fmt.Errorf("persistence error: stat object path component %s: %w", cur, lerr)
+			}
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", nil, &objectPathCorruptionError{code: objectErrPathInvalid,
+				msg: fmt.Sprintf("WORM path component %s is a symlink — symlink traversal below the objects root is forbidden", cur)}
+		}
+		if !fi.IsDir() {
+			return "", nil, &objectPathCorruptionError{code: objectErrPathInvalid,
+				msg: fmt.Sprintf("WORM path component %s is not a directory — corruption", cur)}
+		}
+	}
+	// Final component: when it exists it must be a REGULAR file, never a
+	// symlink (a read must not follow one; a write replacing a leftover orphan
+	// via rename replaces the directory entry itself, never its target).
+	fi, ferr := os.Lstat(full)
+	if ferr == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return "", nil, &objectPathCorruptionError{code: objectErrPathInvalid,
+				msg: fmt.Sprintf("WORM bytes %s are a symlink — symlink traversal below the objects root is forbidden", full)}
+		}
+		if !fi.Mode().IsRegular() {
+			return "", nil, &objectPathCorruptionError{code: objectErrPathInvalid,
+				msg: fmt.Sprintf("WORM bytes %s are not a regular file — corruption", full)}
+		}
+	} else if !os.IsNotExist(ferr) {
+		return "", nil, fmt.Errorf("persistence error: stat object bytes %s: %w", full, ferr)
+	}
+	return full, created, nil
 }
 
 // readObjectBytes reads the stored bytes of one object by its rel_path; a
 // missing file fails closed (OBJECT_BYTES_MISSING — never recreated, never
-// repaired).
+// repaired) and a symlinked/escaped path fails closed (OBJECT_PATH_INVALID /
+// INVALID_OBJECT — never followed).
 func (s *SQLiteStore) readObjectBytes(relPath string) ([]byte, error) {
-	full, err := s.objectPath(relPath)
+	full, _, err := s.objectPathFor(relPath, false)
 	if err != nil {
 		return nil, err
 	}
@@ -337,9 +507,10 @@ func (s *SQLiteStore) readObjectBytes(relPath string) ([]byte, error) {
 }
 
 // assertObjectBytesPresent fails closed when a stored row's bytes are missing
-// (the duplicate-no-op path re-checks the WORM invariant cheaply).
+// or on an invalid/symlinked path (the duplicate-no-op path and doctor re-check
+// the WORM invariant cheaply).
 func (s *SQLiteStore) assertObjectBytesPresent(relPath string) error {
-	full, err := s.objectPath(relPath)
+	full, _, err := s.objectPathFor(relPath, false)
 	if err != nil {
 		return err
 	}
@@ -353,20 +524,21 @@ func (s *SQLiteStore) assertObjectBytesPresent(relPath string) error {
 	return nil
 }
 
-// writeObjectBytes performs the WORM write: MkdirAll (0700), temp file in the
-// SAME directory, write + fsync, atomic rename into place, then a best-effort
-// directory fsync. Rename atomically replaces a leftover orphan (identical
+// writeObjectBytes performs the durable WORM write (v0.7.x hardening): secure
+// directory creation (component-by-component, never following a symlink), temp
+// file in the SAME directory, write + fsync, atomic rename into place, then a
+// directory fsync of the target directory and any newly created ancestors
+// (deepest first). A REAL directory-sync failure — one outside the documented
+// unsupported set — is returned so the caller rolls back metadata/receipt,
+// leaving at most an orphan byte file (content-addressed, unreferenced, never
+// served). Rename atomically replaces a leftover orphan (identical
 // content-addressed bytes from a previously rolled-back transaction).
-func writeObjectBytes(root, relPath string, data []byte) error {
-	full := filepath.Clean(filepath.Join(root, relPath))
-	if full != root && !strings.HasPrefix(full, root+string(filepath.Separator)) {
-		return &objectBytesCorruptionError{code: objectErrInvalid,
-			msg: fmt.Sprintf("rel_path %q escapes the objects root — corruption", relPath)}
+func (s *SQLiteStore) writeObjectBytes(relPath string, data []byte) error {
+	full, createdDirs, err := s.objectPathFor(relPath, true)
+	if err != nil {
+		return err
 	}
 	dir := filepath.Dir(full)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("persistence error: create object dir: %w", err)
-	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("persistence error: create object temp file: %w", err)
@@ -392,13 +564,219 @@ func writeObjectBytes(root, relPath string, data []byte) error {
 		cleanup()
 		return fmt.Errorf("persistence error: atomic rename object bytes: %w", err)
 	}
-	// Best-effort directory durability; a failure is reported but the rename
-	// already happened (POSIX atomicity is guaranteed by the rename itself).
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	// Durability: the renamed entry must survive a crash. The target directory
+	// first, then the newly created ancestors deepest-first (their own
+	// creation must be durable for the file to be reachable after a crash).
+	if err := syncDirectory(dir); err != nil {
+		return err
+	}
+	for i := len(createdDirs) - 1; i >= 0; i-- {
+		if err := syncDirectory(createdDirs[i]); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// syncDirectory fsyncs a directory so a renamed/created entry survives a
+// crash. A REAL sync failure (one outside the documented unsupported set) is
+// returned so the caller rolls back metadata/receipts; unsupported-filesystem
+// errors — EINVAL / ENOTSUP / EOPNOTSUPP / ENOSYS / EBADF on platforms that
+// cannot fsync a directory, plus Windows' inability to open a directory at all
+// — are documented and tolerated: the rename itself is already atomic on
+// POSIX, so only crash-durability of the directory entry is at risk, never
+// byte integrity.
+func syncDirectory(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // the directory vanished concurrently — nothing to sync
+		}
+		if runtime.GOOS == "windows" {
+			return nil // Windows cannot open a directory for fsync — documented unsupported
+		}
+		return fmt.Errorf("persistence error: open objects directory %s for sync: %w", dir, err)
+	}
+	defer func() { _ = d.Close() }()
+	if err := d.Sync(); err != nil {
+		if isUnsupportedDirSyncError(err) {
+			return nil // documented unsupported-filesystem error — tolerated
+		}
+		return fmt.Errorf("persistence error: sync objects directory %s: %w", dir, err)
+	}
+	return nil
+}
+
+// isUnsupportedDirSyncError classifies the portable set of directory-fsync
+// errors that are tolerated (documented unsupported-filesystem behavior).
+// Everything else — EIO, EROFS, EACCES, … — is a REAL durability failure and
+// rolls the write transaction back.
+func isUnsupportedDirSyncError(err error) bool {
+	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) ||
+		errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.ENOSYS) ||
+		errors.Is(err, syscall.EBADF)
+}
+
+// ──────────────────────────────────────────────
+// Doctor object-layer scan (v0.7.x hardening)
+// ──────────────────────────────────────────────
+
+// ObjectDoctorFinding classifies ONE object-layer anomaly the doctor surface
+// reports. missing_bytes and invalid_path anomalies FAIL CLOSED instead
+// (Doctor returns an error — corruption is evidence, never a skip); the
+// reported kinds below are orphan_file and temp_file (plus invalid_path for
+// stray files outside the layout). The doctor NEVER deletes or repairs
+// anything: findings are read-only evidence.
+type ObjectDoctorFinding struct {
+	Kind     string `json:"kind"` // orphan_file | temp_file | invalid_path
+	ObjectID string `json:"objectId,omitempty"`
+	RelPath  string `json:"relPath,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// Object doctor finding kinds reported by the object-layer scan.
+const (
+	objectFindingInvalidPath = "invalid_path"
+	objectFindingOrphanFile  = "orphan_file"
+	objectFindingTempFile    = "temp_file"
+)
+
+// doctorObjectScan audits the WORM object layer for the doctor surface
+// (v0.7.x hardening):
+//   - every evidence_objects row must resolve to a VALID path whose bytes are
+//     PRESENT — a missing byte file or an invalid/symlinked path FAILS CLOSED
+//     (the report cannot be built: corruption is evidence, never a skip);
+//   - every byte file under the objects root is classified and REPORTED:
+//     orphan_file (valid content-addressed path with no row), temp_file
+//     (leftover .tmp-*), invalid_path (outside the content-addressed layout
+//     or a symlink).
+//
+// The scan is strictly READ-ONLY: nothing is deleted, moved or repaired.
+func (s *SQLiteStore) doctorObjectScan() ([]ObjectDoctorFinding, error) {
+	rows, err := s.db.Query(`SELECT id, rel_path FROM evidence_objects`)
+	if err != nil {
+		return nil, fmt.Errorf("corrupt store: read evidence_objects: %w", err)
+	}
+	rowByID := make(map[string]string) // object id → rel_path
+	for rows.Next() {
+		var id, relPath string
+		if err := rows.Scan(&id, &relPath); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("corrupt store: scan evidence_objects: %w", err)
+		}
+		rowByID[id] = relPath
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("corrupt store: read evidence_objects: %w", err)
+	}
+	_ = rows.Close()
+
+	// Rows: path validity + byte presence FAIL CLOSED (missing bytes and
+	// invalid paths are corruption, never a reported-and-skipped anomaly).
+	for id, relPath := range rowByID {
+		if err := s.assertObjectBytesPresent(relPath); err != nil {
+			return nil, fmt.Errorf("corrupt store: evidence object %s: %w", id, err)
+		}
+	}
+
+	root, err := s.effectiveObjectsRoot(false)
+	if err != nil {
+		return nil, err
+	}
+	if root == "" {
+		// No root exists: any row above already failed closed (its bytes cannot
+		// exist), so reaching here means there are no rows at all.
+		return nil, nil
+	}
+	var findings []ObjectDoctorFinding
+	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // a subtree vanished mid-walk — not an object anomaly
+			}
+			return err // an unreadable subtree — an incomplete report is not a report
+		}
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if d.Type()&fs.ModeSymlink != 0 {
+			// A symlink below the objects root is never followed: report it as an
+			// invalid path (a row referencing it would have failed closed above).
+			findings = append(findings, ObjectDoctorFinding{
+				Kind:    objectFindingInvalidPath,
+				RelPath: objectRelToRoot(root, path),
+				Detail:  "symlink below the objects root — never followed, never repaired",
+			})
+			return nil
+		}
+		if strings.HasPrefix(name, ".tmp-") {
+			findings = append(findings, ObjectDoctorFinding{
+				Kind:    objectFindingTempFile,
+				RelPath: objectRelToRoot(root, path),
+				Detail:  "leftover temp file from an interrupted or failed write — never served, report only",
+			})
+			return nil
+		}
+		if id, ok := objectIDFromBytePath(root, path); ok {
+			if _, known := rowByID[id]; !known {
+				findings = append(findings, ObjectDoctorFinding{
+					Kind:     objectFindingOrphanFile,
+					ObjectID: id,
+					RelPath:  objectRelToRoot(root, path),
+					Detail:   "content-addressed byte file with no evidence_objects row — unreferenced, never served, never deleted",
+				})
+			}
+			return nil
+		}
+		findings = append(findings, ObjectDoctorFinding{
+			Kind:    objectFindingInvalidPath,
+			RelPath: objectRelToRoot(root, path),
+			Detail:  "byte file outside the content-addressed layout — report only, never followed",
+		})
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("corrupt store: scan objects root %s: %w", root, walkErr)
+	}
+	sort.Slice(findings, func(i, j int) bool { return findings[i].RelPath < findings[j].RelPath })
+	return findings, nil
+}
+
+// objectIDFromBytePath reports whether path is a byte file at a VALID
+// content-addressed path under root: objects/<ab>/<cd>/<sha> with sha the
+// 64-lowercase-hex basename and <ab>/<cd> its first two byte-pairs.
+func objectIDFromBytePath(root, path string) (string, bool) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) != 4 || parts[0] != "objects" {
+		return "", false
+	}
+	id := parts[3]
+	if len(id) != 64 || parts[1] != id[0:2] || parts[2] != id[2:4] {
+		return "", false
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return "", false
+		}
+	}
+	return id, true
+}
+
+// objectRelToRoot returns the root-relative form of path for doctor findings
+// (the content-addressed layout form, portable across OS separators).
+func objectRelToRoot(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return path
+	}
+	return rel
 }
 
 // objectScopeMatches reports whether the caller's exact scope equals the

@@ -90,6 +90,7 @@ import {
 	computeObjectId,
 	cloneEvidenceObject,
 	objectRelPath,
+	objectScopeMatchesFlat,
 	validateObjectScope,
 } from "../core/evidence-object.js";
 
@@ -614,12 +615,8 @@ export class InMemoryMemoryStore implements MemoryStore {
 
 	/**
 	 * Captures ONE evidence object WORM-style (v0.7.0, mirror of
-	 * SQLiteStore.StoreObject): the identity is the SHA-256 hex of the bytes; a
-	 * content-addressed duplicate is a NO-OP (created=false — no new record, no
-	 * receipt); a genuinely new object stores its bytes and emits the
-	 * object_stored receipt atomically (v0.7.0 payload version, unchanged shape).
-	 * The surface can NEVER approve anything — storing is a provenance-recorded
-	 * capture.
+	 * SQLiteStore.StoreObject). The identity is the SHA-256 hex of the bytes.
+	 * Duplicate handling is scope-aware: see storeObject's conflict branch.
 	 */
 	storeObject(input: ObjectStoreInput): ObjectStoreResult {
 		const scopeErr = validateObjectScope(input.scope);
@@ -637,8 +634,12 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const objectId = computeObjectId(input.bytes);
 		const existing = this.objects.get(objectId);
 		if (existing !== undefined) {
-			// Content-addressed duplicate: identical bytes are the SAME object.
-			return { object: cloneEvidenceObject(existing.object), created: false };
+			if (objectScopeMatchesFlat(existing.object, s)) {
+				return { object: cloneEvidenceObject(existing.object), created: false };
+			}
+			throw new Error(
+				`OBJECT_SCOPE_CONFLICT: identical object bytes are already stored under a different exact scope`,
+			);
 		}
 		const now = new Date().toISOString();
 		const object: EvidenceObject = {

@@ -28,7 +28,8 @@ import (
 
 // verifyCLIEnv returns an env override that pins the built binary's keyring to
 // a fresh temp path (receipt emission) and STRIPS any ambient
-// DRENYRA_ENGRAM_SIGNING_KEY / DRENYRA_ENGRAM_SESSION overrides — os.Getenv
+// DRENYRA_ENGRAM_SIGNING_KEY / DRENYRA_ENGRAM_SESSION overrides (and any
+// ambient DRENYRA_ENGRAM_OBJECTS) — os.Getenv
 // returns the FIRST duplicate, so an ambient value would silently win over an
 // appended override. Extra env pairs (e.g. the session-file env for
 // authenticated commands) are appended last.
@@ -36,7 +37,7 @@ func verifyCLIEnv(t *testing.T, extra ...string) []string {
 	t.Helper()
 	env := []string{"DRENYRA_ENGRAM_SIGNING_KEY=" + filepath.Join(t.TempDir(), "signing-keys.json")}
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "DRENYRA_ENGRAM_SIGNING_KEY=") || strings.HasPrefix(kv, "DRENYRA_ENGRAM_SESSION=") {
+		if strings.HasPrefix(kv, "DRENYRA_ENGRAM_SIGNING_KEY=") || strings.HasPrefix(kv, "DRENYRA_ENGRAM_SESSION=") || strings.HasPrefix(kv, "DRENYRA_ENGRAM_OBJECTS=") {
 			continue
 		}
 		env = append(env, kv)

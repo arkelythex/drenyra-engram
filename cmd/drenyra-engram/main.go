@@ -134,7 +134,19 @@ func run(args []string) int {
 // object root (v0.7.0) follows the same explicit convention as the DB path:
 // $DRENYRA_ENGRAM_OBJECTS when set, otherwise <dir-of-db>/objects.
 func openStore(path string) (*store.SQLiteStore, error) {
-	st, err := store.OpenWithObjects(path, defaultObjectsRoot(path))
+	return openStoreWithRoot(path, "")
+}
+
+// openStoreWithRoot opens the store at path with an EXPLICIT WORM objects root
+// (the CLI's real --objects flag — v0.7.x hardening — honored by object
+// store/get, doctor and verify object); an empty root falls back to the
+// default convention (defaultObjectsRoot). Signer semantics are identical to
+// openStore.
+func openStoreWithRoot(dbPath, objectsRoot string) (*store.SQLiteStore, error) {
+	if objectsRoot == "" {
+		objectsRoot = defaultObjectsRoot(dbPath)
+	}
+	st, err := store.OpenWithObjects(dbPath, objectsRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -287,8 +299,9 @@ func cmdContext(args []string) int {
 func cmdDoctor(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram doctor [--db <path>]") }
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+	objects := fs.String("objects", "", "WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)")
+	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram doctor [--db <path>] [--objects <dir>]") }
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--objects": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -299,7 +312,7 @@ func cmdDoctor(args []string) int {
 		return 2
 	}
 
-	st, err := openStore(*dbPath)
+	st, err := openStoreWithRoot(*dbPath, *objects)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -1750,7 +1763,7 @@ func printVerifyUsage(w *os.File) {
 	fmt.Fprintln(w, "usage: drenyra-engram verify memory <id> [--db <path>]")
 	fmt.Fprintln(w, "       drenyra-engram verify judgment <id> [--db <path>]")
 	fmt.Fprintln(w, "       drenyra-engram verify receipt <hash|id> [--db <path>]")
-	fmt.Fprintln(w, "       drenyra-engram verify object <sha256> [--db <path>]   (v0.7.0 evidence object)")
+	fmt.Fprintln(w, "       drenyra-engram verify object <sha256> [--db <path>] [--objects <dir>]   (v0.7.0 evidence object)")
 }
 
 // cmdVerifyMemory verifies the FULL signed chain of one memory subject (design
@@ -1865,14 +1878,16 @@ func cmdVerifyReceipt(args []string) int {
 // (v0.7.0): the six receipt layers over the object_stored chain, principal
 // provenance (the immutable evidence_objects row) and the WORM byte-integrity
 // layer (the stored bytes re-hash to the content address — corruption fails
-// closed, no silent repair).
+// closed, no silent repair). The --objects root is honored explicitly so a
+// custom-root store verifies its own bytes.
 func cmdVerifyObject(args []string) int {
 	fs := flag.NewFlagSet("verify object", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	objects := fs.String("objects", "", "WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify object <sha256> [--db <path>]")
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram verify object <sha256> [--db <path>] [--objects <dir>]")
 	}
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true})); err != nil {
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--objects": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -1884,7 +1899,7 @@ func cmdVerifyObject(args []string) int {
 		return 2
 	}
 
-	st, err := openStore(*dbPath)
+	st, err := openStoreWithRoot(*dbPath, *objects)
 	if err != nil {
 		return failVerify("verify object: %v", err)
 	}
@@ -1960,10 +1975,11 @@ func cmdObjectStore(args []string) int {
 	actor := fs.String("actor", "cli", "actor id recorded as the capture provenance (default cli)")
 	sourceSystem := fs.String("source-system", "cli", "system that produced the artifact (default cli)")
 	reference := fs.String("reference", "", "optional external reference (e.g. F001-948)")
+	objects := fs.String("objects", "", "WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--content-type <mime>] [--actor <name>] [--source-system <system>] [--reference <ref>] [--db <path>]")
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--content-type <mime>] [--actor <name>] [--source-system <system>] [--reference <ref>] [--objects <dir>] [--db <path>]")
 	}
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true, "--content-type": true, "--actor": true, "--source-system": true, "--reference": true})); err != nil {
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true, "--content-type": true, "--actor": true, "--source-system": true, "--reference": true, "--objects": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -1983,7 +1999,7 @@ func cmdObjectStore(args []string) int {
 		return fail("read %s: %v", rest[0], err)
 	}
 
-	st, err := openStore(*dbPath)
+	st, err := openStoreWithRoot(*dbPath, *objects)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -2017,10 +2033,11 @@ func cmdObjectGet(args []string) int {
 	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits)")
 	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
 	organization := fs.String("organization", "", "organization id (default cli)")
+	objects := fs.String("objects", "", "WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--db <path>]")
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--objects <dir>] [--db <path>]")
 	}
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true})); err != nil {
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true, "--objects": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -2036,7 +2053,7 @@ func cmdObjectGet(args []string) int {
 		return fail("%v", err)
 	}
 
-	st, err := openStore(*dbPath)
+	st, err := openStoreWithRoot(*dbPath, *objects)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -2637,7 +2654,7 @@ Usage:
   drenyra-engram record <json-file> [--db <path>]
   drenyra-engram search <query> --company <ruc> [--period <YYYYMM>] [--any] [--db <path>]
   drenyra-engram context <ruc> [--period <YYYYMM>] [--db <path>]
-  drenyra-engram doctor [--db <path>]
+  drenyra-engram doctor [--db <path>] [--objects <dir>]
   drenyra-engram compare <idA> <idB> [--db <path>]
   drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram auth login --token <token> [--db <path>]
@@ -2659,8 +2676,8 @@ Usage:
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
-  drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
-  drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--db <path>]   (scope-first read)
+  drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--objects <dir>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
+  drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--objects <dir>] [--db <path>]   (scope-first read)
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]
   drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
@@ -2673,11 +2690,11 @@ Usage:
   drenyra-engram verify memory <id> [--db <path>]
   drenyra-engram verify judgment <id> [--db <path>]
   drenyra-engram verify receipt <hash|id> [--db <path>]
-  drenyra-engram verify object <sha256> [--db <path>]   (v0.7.0 evidence object)
+  drenyra-engram verify object <sha256> [--db <path>] [--objects <dir>]   (v0.7.0 evidence object)
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
-  --objects <dir>  WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
+  --objects <dir>  WORM evidence object root for object store/get, doctor and verify object (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
   --period <YYYYMM> fiscal period; omitted scopes only match period-less observations
   --any            match ANY query token (default: match ALL)

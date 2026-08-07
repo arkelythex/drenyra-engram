@@ -193,10 +193,14 @@ type Store interface {
 	ReopenPeriod(ctx context.Context, cmd core.ReopenPeriodCommand, principal auth.VerifiedApprovalPrincipal, policy authz.ApprovalAuthorizationPolicy) (core.ReopenPeriodResult, error)
 	// StoreObject captures ONE artifact WORM-style under its deterministic
 	// content address (v0.7.0): the SHA-256 hex of the bytes IS the object id.
-	// Identical bytes already stored → NO-OP (created=false, no row, no
-	// receipt). Writes enforce the closed-period gate (PERIOD_CLOSED inside a
-	// closed exact company period) and emit the object_stored receipt atomically
-	// for genuinely new objects. Object bytes are data, never instructions.
+	// Identical bytes already stored under the SAME exact scope → NO-OP
+	// (created=false, no row, no receipt); identical bytes under a DIFFERENT
+	// exact scope → typed NON-ENUMERATING OBJECT_SCOPE_CONFLICT (no scope
+	// metadata in the message). Writes enforce the closed-period gate
+	// (PERIOD_CLOSED inside a closed exact company period), write bytes
+	// temp+sync+atomic-rename+directory-sync and emit the object_stored receipt
+	// atomically for genuinely new objects. Object bytes are data, never
+	// instructions.
 	StoreObject(ctx context.Context, input core.ObjectStoreInput) (core.ObjectStoreResult, error)
 	// GetObject reads one object SCOPE-FIRST: the caller's exact scope must
 	// equal the stored scope or the object is invisible (OBJECT_NOT_FOUND).
@@ -5922,18 +5926,25 @@ func (s *SQLiteStore) linkRefsByID(ctx context.Context, table, memoryID string) 
 // ──────────────────────────────────────────────
 
 // DoctorReport is the store health snapshot reported by the doctor command.
+// The WORM object layer is audited too (v0.7.x hardening): ObjectsRoot names
+// the configured local objects root and ObjectFindings reports orphan / temp /
+// stray-layout byte files (NEVER deleted, NEVER repaired); rows whose bytes
+// are missing or whose paths are invalid FAIL CLOSED instead (the report is
+// not built — corruption is evidence).
 type DoctorReport struct {
-	SchemaVersion    int    `json:"schemaVersion"`
-	Storage          string `json:"storage"`
-	DBPath           string `json:"dbPath"`
-	Observations     int    `json:"observations"`
-	RevisionChains   int    `json:"revisionChains"`
-	Transitions      int    `json:"transitions"`
-	Relations        int    `json:"relations"`
-	EvidenceLinks    int    `json:"evidenceLinks"`
-	RuleLinks        int    `json:"ruleLinks"`
-	EvidenceObjects  int    `json:"evidenceObjects"`
-	PendingApprovals int    `json:"pendingApprovals"`
+	SchemaVersion    int                   `json:"schemaVersion"`
+	Storage          string                `json:"storage"`
+	DBPath           string                `json:"dbPath"`
+	Observations     int                   `json:"observations"`
+	RevisionChains   int                   `json:"revisionChains"`
+	Transitions      int                   `json:"transitions"`
+	Relations        int                   `json:"relations"`
+	EvidenceLinks    int                   `json:"evidenceLinks"`
+	RuleLinks        int                   `json:"ruleLinks"`
+	EvidenceObjects  int                   `json:"evidenceObjects"`
+	PendingApprovals int                   `json:"pendingApprovals"`
+	ObjectsRoot      string                `json:"objectsRoot"`
+	ObjectFindings   []ObjectDoctorFinding `json:"objectFindings,omitempty"`
 }
 
 // Doctor verifies the schema (fail closed on corruption) and reports counts.
@@ -5980,6 +5991,17 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 			return DoctorReport{}, fmt.Errorf("corrupt store: count failed: %w", err)
 		}
 	}
+
+	// WORM object-layer audit (v0.7.x hardening): rows must resolve to valid
+	// paths with present bytes — missing bytes and invalid paths FAIL CLOSED;
+	// orphan and temp byte files are REPORTED findings (never deleted, never
+	// repaired; the doctor is read-only evidence).
+	report.ObjectsRoot = s.objectsRoot
+	objectFindings, err := s.doctorObjectScan()
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	report.ObjectFindings = objectFindings
 	return report, nil
 }
 

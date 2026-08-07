@@ -74,14 +74,18 @@ func classify(err error) *apiError {
 	switch {
 	case closeCode(err) != "":
 		return &apiError{status: http.StatusConflict, code: closeCode(err), message: err.Error()}
+	case objectCode(err) == objectCodeScopeConflict:
+		// A same-content-address collision across exact scopes is a CONFLICT
+		// (409) with the stable non-enumerating wire code — never a leak.
+		return &apiError{status: http.StatusConflict, code: objectCodeScopeConflict, message: err.Error()}
 	case objectCode(err) == objectCodeNotFound:
 		return &apiError{status: http.StatusNotFound, code: objectCodeNotFound, message: err.Error()}
 	case objectCode(err) == objectCodeInvalid:
 		return &apiError{status: http.StatusBadRequest, code: objectCodeInvalid, message: err.Error()}
 	case objectCode(err) != "":
-		// OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH — WORM corruption is
-		// evidence and fails closed (5xx), never a client error and never a
-		// silent repair.
+		// OBJECT_BYTES_MISSING | OBJECT_HASH_MISMATCH | OBJECT_PATH_INVALID —
+		// WORM corruption is evidence and fails closed (5xx), never a client
+		// error and never a silent repair.
 		return &apiError{status: http.StatusInternalServerError, code: objectCode(err), message: err.Error()}
 	case IsNotFound(err):
 		return &apiError{status: http.StatusNotFound, code: "NOT_FOUND", message: err.Error()}
@@ -98,10 +102,12 @@ func classify(err error) *apiError {
 // (internal/store/object_store.go). classify maps them before the generic
 // prefixes so the wire codes stay stable on the HTTP routes.
 const (
-	objectCodeNotFound  = "OBJECT_NOT_FOUND"
-	objectCodeInvalid   = "INVALID_OBJECT"
-	objectCodeBytesMiss = "OBJECT_BYTES_MISSING"
-	objectCodeHashDiff  = "OBJECT_HASH_MISMATCH"
+	objectCodeNotFound     = "OBJECT_NOT_FOUND"
+	objectCodeInvalid      = "INVALID_OBJECT"
+	objectCodeBytesMiss    = "OBJECT_BYTES_MISSING"
+	objectCodeHashDiff     = "OBJECT_HASH_MISMATCH"
+	objectCodePathInvalid  = "OBJECT_PATH_INVALID"
+	objectCodeScopeConflict = "OBJECT_SCOPE_CONFLICT"
 )
 
 // objectCode returns the frozen object-surface error code carried by err, or "".
@@ -110,7 +116,7 @@ func objectCode(err error) string {
 		return ""
 	}
 	msg := err.Error()
-	for _, code := range []string{objectCodeNotFound, objectCodeInvalid, objectCodeBytesMiss, objectCodeHashDiff} {
+	for _, code := range []string{objectCodeNotFound, objectCodeInvalid, objectCodeBytesMiss, objectCodeHashDiff, objectCodePathInvalid, objectCodeScopeConflict} {
 		if strings.HasPrefix(msg, code) {
 			return code
 		}

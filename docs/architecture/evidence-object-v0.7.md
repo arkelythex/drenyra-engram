@@ -1,6 +1,7 @@
 # Evidence Objects (v0.7.0) — Local-First WORM Object Store
 
-> **Status:** DELIVERED (local-first slice, v0.7.0) · **Date:** 2026-08-07
+> **Status:** DELIVERED (local-first slice, v0.7.0) + **HARDENED (v0.7.x
+> app-level WORM hardening)** · **Date:** 2026-08-07
 > **Basis:** implemented behavior with Go + TypeScript tests (see
 > [docs/due-diligence/2026-08-product-architecture-audit.md](../due-diligence/2026-08-product-architecture-audit.md),
 > [docs/security/evidence-lifecycle-and-threat-model.md](../security/evidence-lifecycle-and-threat-model.md)).
@@ -34,6 +35,15 @@ NO-OP (`created=false`) and mints no receipt.
 | Object-level rehash availability verification | `verify object` runs the six receipt layers + principal provenance + WORM byte integrity (stored bytes re-hash to the content address; mismatch fails closed); `verify memory` reports object availability for refs that resolve to stored objects (legacy refs reported, never failed) | [internal/server/verify_service.go](../../internal/server/verify_service.go), [contracts/verification.md](../../contracts/verification.md) |
 | CLI / HTTP / MCP surfaces | CLI `object store|get` + `verify object` · HTTP `POST /accounting/objects`,`GET /accounting/objects/{objectId}` · MCP `accounting_object_store`,`accounting_object_get` | [cmd/drenyra-engram/main.go](../../cmd/drenyra-engram/main.go), [internal/server/object_http.go](../../internal/server/object_http.go), [internal/server/mcp.go](../../internal/server/mcp.go) |
 | Go/TS coverage | Go suite green (core/store/server/cmd, re-run `-count=1`); TypeScript suite green (307 tests / 21 files) incl. the mirror [core/evidence-object.ts](../../core/evidence-object.ts) and the v0.7 mirror in [store/memory-store.ts](../../store/memory-store.ts) | — |
+
+## Hardening (v0.7.x app-level WORM hardening)
+
+This slice hardens the delivered v0.7.0 object layer at the APPLICATION level —
+same local-first WORM model, no new production stages. All changes are
+covered by portable adversarial tests in
+[internal/store/object_hardening_test.go](../../internal/store/object_hardening_test.go)
+and the CLI parity test in
+[cmd/drenyra-engram/object_test.go](../../cmd/drenyra-engram/object_test.go).
 
 ## Deferred scope (NOT implemented — no claims)
 

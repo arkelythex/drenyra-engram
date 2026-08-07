@@ -174,14 +174,51 @@ describe("InMemoryMemoryStore", () => {
 	});
 
 	it("applies the approval gate — fiscalEffect != none lands pending_review", async () => {
-		const store = new InMemoryMemoryStore();
-		const gated = await store.save({
-			...input("adjust/aj-001", "ajuste de periodo"),
-			fiscalEffect: "adjustment",
-			effectiveAt: "2024-01-31T00:00:00.000Z",
-		});
-
-		expect(gated.memory.status).toBe("pending_review");
-		expect(store.listByStatus("pending_review")).toHaveLength(1);
+	const store = new InMemoryMemoryStore();
+	const gated = await store.save({
+	...input("adjust/aj-001", "ajuste de periodo"),
+	fiscalEffect: "adjustment",
+	effectiveAt: "2024-01-31T00:00:00.000Z",
 	});
-});
+
+	expect(gated.memory.status).toBe("pending_review");
+	expect(store.listByStatus("pending_review")).toHaveLength(1);
+	});
+
+	it("object store: same-scope duplicate is a NO-OP, cross-scope identical bytes conflict without leaking scope values (v0.7.x scope-aware duplicates)", () => {
+	const store = new InMemoryMemoryStore();
+	const bytes = new TextEncoder().encode("identical artifact bytes");
+	const inA = {
+	bytes,
+	contentType: "application/xml",
+	scope: scope(RUC_A),
+	source: testAgentSource,
+	};
+
+	const first = store.storeObject(inA);
+	expect(first.created).toBe(true);
+
+	// Same exact scope: content-addressed duplicate NO-OP.
+	const dup = store.storeObject(inA);
+	expect(dup.created).toBe(false);
+	expect(dup.object.objectId).toBe(first.object.objectId);
+
+	// Different RUC: typed non-enumerating conflict.
+	const inB = { ...inA, scope: scope(RUC_B) };
+	expect(() => store.storeObject(inB)).toThrow(/OBJECT_SCOPE_CONFLICT/);
+	try {
+	store.storeObject(inB);
+	throw new Error("must not reach here");
+	} catch (err) {
+	const msg = (err as Error).message;
+	for (const leak of [ORG, RUC_A, RUC_B, PERIOD, "acme"]) {
+	expect(msg).not.toContain(leak);
+	}
+	}
+
+	// Different period: conflict too.
+	const inC = { ...inA, scope: scope(RUC_A) as MemoryScope };
+	inC.scope = { kind: "company", organizationId: ORG, companyId: "acme", ruc: RUC_A, period: "202402" };
+	expect(() => store.storeObject(inC)).toThrow(/OBJECT_SCOPE_CONFLICT/);
+	});
+    });
