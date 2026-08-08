@@ -18,6 +18,11 @@
 //     tax_responsible — explicit match (ladder position never implies tax
 //     roles and vice versa), on a DISTINCT principal from the first approver.
 //   - withdraw/execute: a default approver or a dual second approver.
+//   - place_hold/lift_hold (batch 3 object-level legal holds): a default
+//     approver ONLY (records_compliance_officer | tenant_records_owner — the
+//     hold acts are preservation acts, never the accounting ladder, never a
+//     dual second approver). Emergency place/lift bypasses the closed-period
+//     gate at the store layer because holds only preserve evidence (design §7).
 //   - Deny-list precedes EVERY allow: operational_accountant, any role token
 //     containing "admin", agent and system actor kinds are NEVER authorized
 //     for any lifecycle act.
@@ -30,9 +35,11 @@
 //
 // Blocker checks (UNKNOWN_RETENTION_STATE, HOLD_ACTIVE, PERIOD_CLOSED, version
 // drift) run BEFORE authorization at the store layer — a blocked request never
-// reaches this policy, and no override field exists. This batch ships ONLY the
-// pure policy and role tokens; storage, transitions, receipts and surfaces are
-// deferred (design §4–§7, §9–§13).
+// reaches this policy, and no override field exists. The purge-transition
+// storage, receipts and surfaces remain deferred (design §4–§7, §9–§13); the
+// batch 3 object-level hold acts (place_hold/lift_hold) are consumed by the
+// store layer (internal/store/hold_store.go) with NO blocker (holds only
+// preserve evidence — no retention state, no closed-period gate).
 package authz
 
 import (
@@ -63,6 +70,14 @@ const (
 	LifecycleActionWithdrawApproval LifecycleAction = "withdraw"
 	// LifecycleActionExecutePurge is the execute transition (human executor).
 	LifecycleActionExecutePurge LifecycleAction = "execute"
+	// LifecycleActionPlaceHold is the object-level hold placement act (batch 3):
+	// a preservation act authorized to the default approver only. It bypasses the
+	// closed-period gate at the store layer (holds never reduce evidence
+	// availability).
+	LifecycleActionPlaceHold LifecycleAction = "place_hold"
+	// LifecycleActionLiftHold is the object-level hold lift act (batch 3): the
+	// one-way closure of a placed hold, same role matrix as place_hold.
+	LifecycleActionLiftHold LifecycleAction = "lift_hold"
 )
 
 // LifecycleDecision is the pure authorization outcome: allowed, the exact
@@ -202,6 +217,13 @@ func lifecycleRoleAllowed(action LifecycleAction, roles []auth.AccountingRole) b
 		return hasAnyRole(roles,
 			auth.RoleRecordsComplianceOfficer, auth.RoleTenantRecordsOwner,
 			auth.RoleController, auth.RoleTaxResponsible)
+	case LifecycleActionPlaceHold, LifecycleActionLiftHold:
+		// The v0.8 object-level hold acts (batch 3): a default approver ONLY —
+		// records_compliance_officer | tenant_records_owner, explicit match. The
+		// accounting ladder never places or lifts holds (holds are preservation
+		// acts, not accounting operations) and a dual second approver never does
+		// either (hold acts have no dual-approval configuration).
+		return hasAnyRole(roles, auth.RoleRecordsComplianceOfficer, auth.RoleTenantRecordsOwner)
 	default:
 		return false
 	}

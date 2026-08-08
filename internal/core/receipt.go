@@ -139,10 +139,21 @@ const (
 	ReceiptActionPurgeWithdrawn ReceiptAction = "purge_withdrawn"
 	// ReceiptActionPurgeExecuted covers the physical execution (terminal).
 	ReceiptActionPurgeExecuted ReceiptAction = "purge_executed"
+	// ── v0.8.0 object-level legal holds (batch 3, design §7) ──
+	// The v9→v10 migration extends the receipts action CHECK with these two
+	// acts. The store EMITS them atomically on the evidence_object subject
+	// chain (PlaceHold/LiftHold): hold_placed covers the placement (kind,
+	// reason, owner + the complete verified principal snapshot) and
+	// hold_lifted covers the one-way closure (lift reason + snapshot). Both
+	// chain on the object's existing chain (object_stored → …) so an audit
+	// can prove every gate input was receipt-covered at the time (design §5).
+	ReceiptActionHoldPlaced ReceiptAction = "hold_placed"
+	ReceiptActionHoldLifted ReceiptAction = "hold_lifted"
 )
 
-// IsValidReceiptAction reports whether a is one of the twenty closed actions
-// (thirteen v0.4–v0.7 acts plus the seven v0.8 evidence-lifecycle acts).
+// IsValidReceiptAction reports whether a is one of the twenty-two closed actions
+// (thirteen v0.4–v0.7 acts, the seven v0.8 evidence-lifecycle acts and the two
+// v0.8 object-level hold acts).
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
@@ -155,7 +166,8 @@ func IsValidReceiptAction(a ReceiptAction) bool {
 		ReceiptActionRetentionBound, ReceiptActionPurgeRequested,
 		ReceiptActionPurgeApproved, ReceiptActionPurgeRejected,
 		ReceiptActionPurgeCancelled, ReceiptActionPurgeWithdrawn,
-		ReceiptActionPurgeExecuted:
+		ReceiptActionPurgeExecuted,
+		ReceiptActionHoldPlaced, ReceiptActionHoldLifted:
 		return true
 	}
 	return false
@@ -182,6 +194,17 @@ const ReceiptPayloadVersionV05 = "receipt-payload/v0.5.0"
 // unchanged AND accept v0.7.0 payloads without a protocol break (design §5 —
 // the versioned protocol decision). Existing receipts never re-version.
 const ReceiptPayloadVersionV07 = "receipt-payload/v0.7.0"
+
+// ReceiptPayloadVersionV08 is the payload version stamped on the v0.8.0
+// object-level hold acts (hold_placed, hold_lifted — batch 3). Canonicalization
+// is version-agnostic (the payload SHAPE is unchanged: the object identity rides
+// the existing evidenceRef field, the reason rides the existing reason field and
+// the acting principal rides principalId + the snapshot fields), so verifiers
+// keep accepting v0.4.0–v0.7.0 payloads unchanged AND accept v0.8.0 payloads
+// without a protocol break (design §5 — the versioned protocol decision; the
+// lifecycle snapshot hashes H1/H2 of the deferred hash batch are NOT part of
+// this payload). Existing receipts never re-version.
+const ReceiptPayloadVersionV08 = "receipt-payload/v0.8.0"
 
 // ReceiptAlgorithm is the frozen signing algorithm.
 const ReceiptAlgorithm = "Ed25519"

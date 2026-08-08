@@ -92,8 +92,8 @@ func TestFreshStoreBootstrapsV6ClosureTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("schema_version = %d, want 9 (the chain continues v6→v7→v8→v9)", version)
+	if version != 10 {
+		t.Fatalf("schema_version = %d, want 10 (the chain continues v6→v7→v8→v9→v10)", version)
 	}
 
 	// The v3 + v4 + v5 layers survive the chain (additive migrations never drop).
@@ -182,8 +182,8 @@ func TestV5StoreMigratesToV6AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("schema_version after migration = %d, want 9 (the chain continues v6→v7→v8→v9)", version)
+	if version != 10 {
+		t.Fatalf("schema_version after migration = %d, want 10 (the chain continues v6→v7→v8→v9→v10)", version)
 	}
 
 	// Rows survive with EXACTLY the envelope bytes written at v5.

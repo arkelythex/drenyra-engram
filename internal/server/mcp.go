@@ -794,6 +794,44 @@ func ToolCatalog() []map[string]any {
 				"object_period": stringSchema("the object's fiscal period YYYYMM (required)"),
 			}, "scope", "jurisdiction", "legislation", "category", "object_period"),
 		},
+		// ── accounting_hold_* (v0.8 batch 3 object-level legal holds, design §3.2/
+		// §7/§9): place/lift are the AUTHENTICATED preservation mutations (both
+		// fail closed with AUTHENTICATION_REQUIRED on this session-less stdio
+		// server, exactly like accounting_retention_policy_put — tool arguments
+		// NEVER supply identity; the hold acts DELIBERATELY BYPASS the
+		// closed-period gate because holds only preserve evidence); list is a
+		// SCOPE-FIRST READ whose exact scope tuple is part of the arguments, so a
+		// caller whose scope differs sees OBJECT_NOT_FOUND — never the holds. NO
+		// purge, NO export, NO deletion, NO scheduling.
+		{
+			"name":        "accounting_hold_place",
+			"description": "Place ONE object-level legal hold (v0.8 batch 3): the authenticated preservation gate (extended evidence-lifecycle policy, place_hold action — deny-list first, then records_compliance_officer | tenant_records_owner, assurance ≥ standard, tenant/company match), (tenant, requestId) idempotency, the immutable evidence_holds row and the hold_placed receipt on the evidence_object chain. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED. Emergency bypass: holds only PRESERVE evidence, so the closed-period gate is NOT applied.",
+			"inputSchema": objectSchema(map[string]any{
+				"object_id":        stringSchema("content address (64 lowercase hex SHA-256 digits) of the evidence object to protect (required)"),
+				"kind":             stringSchema("closed hold-kind token: legal|audit|dispute|fiscalization|other (required)"),
+				"reason":           stringSchema("placement justification (required)"),
+				"owner_subject_id": stringSchema("subject responsible for the hold (required)"),
+				"request_id":       stringSchema("tenant-scoped idempotency key (required)"),
+			}, "object_id", "kind", "reason", "owner_subject_id", "request_id"),
+		},
+		{
+			"name":        "accounting_hold_lift",
+			"description": "Lift ONE placed hold one-way (v0.8 batch 3): the authenticated lift act (lift_hold — same role matrix), (tenant, requestId) idempotency, the guarded one-way closure (lifted_at/lifted_by/lift_reason set together; ALREADY_DECIDED on a fresh lift of an already-lifted hold) and the hold_lifted receipt on the evidence_object chain. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED. Emergency bypass: holds only PRESERVE evidence, so the closed-period gate is NOT applied.",
+			"inputSchema": objectSchema(map[string]any{
+				"hold_id":    stringSchema("store-minted hold id (required)"),
+				"reason":     stringSchema("lift justification (required)"),
+				"request_id": stringSchema("tenant-scoped idempotency key (required)"),
+			}, "hold_id", "reason", "request_id"),
+		},
+		{
+			"name":        "accounting_holds_list",
+			"description": "SCOPE-FIRST hold list (v0.8 batch 3, design §7): every hold record of the object (placed and lifted, placement order) plus the ACTIVE blocking subset. The caller's exact scope tuple is part of the arguments and must equal the object's stored scope (OBJECT_NOT_FOUND otherwise — cross-tenant invisibility). blocking_kinds (comma-separated subset of legal,audit,dispute,fiscalization,other) selects the deployment's blocking set; when absent NOTHING is treated as blocking. Pure read — never deletes, no statutory duration claim.",
+			"inputSchema": objectSchema(map[string]any{
+				"object_id":      stringSchema("content address of the evidence object (required)"),
+				"scope":          stringSchema(`JSON exact company scope of the object (required)`),
+				"blocking_kinds": stringSchema("comma-separated subset of legal,audit,dispute,fiscalization,other (optional)"),
+			}, "object_id", "scope"),
+		},
 		{
 			"name":        "accounting_doctor",
 			"description": "Store health snapshot: schema version, storage, counts. Fails closed on corruption.",
@@ -1324,6 +1362,99 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(result)), nil
+
+	// ── hold tools (v0.8 batch 3, design §3.2/§7/§9): place/lift are the
+	// AUTHENTICATED preservation mutations and fail closed with
+	// AUTHENTICATION_REQUIRED on this session-less stdio server (exactly like
+	// accounting_retention_policy_put — tool arguments NEVER supply identity);
+	// the list is a SCOPE-FIRST READ whose exact scope tuple is part of the
+	// arguments, so a caller whose scope differs sees OBJECT_NOT_FOUND — never
+	// the holds.
+	case "accounting_hold_place":
+		var args struct {
+			ObjectID       string `json:"object_id"`
+			Kind           string `json:"kind"`
+			Reason         string `json:"reason"`
+			OwnerSubjectID string `json:"owner_subject_id"`
+			RequestID      string `json:"request_id"`
+		}
+		// Strict shape (design §6): the tool accepts EXACTLY its five declared
+		// arguments — unknown fields (including any caller-supplied identity) are
+		// rejected, never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("object_id", args.ObjectID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("kind", args.Kind); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("owner_subject_id", args.OwnerSubjectID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may place only when the HTTP middleware supplies a bound principal
+		// to the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_hold_place requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_hold_lift":
+		var args struct {
+			HoldID    string `json:"hold_id"`
+			Reason    string `json:"reason"`
+			RequestID string `json:"request_id"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("hold_id", args.HoldID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_hold_lift requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_holds_list":
+		var args struct {
+			ObjectID      string `json:"object_id"`
+			Scope         string `json:"scope"`
+			BlockingKinds string `json:"blocking_kinds"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("object_id", args.ObjectID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		holds, err := m.api.HoldsForObject(context.Background(), args.ObjectID, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		active, err := m.api.ActiveBlockingHolds(context.Background(), args.ObjectID, scope, splitCSV(args.BlockingKinds))
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(holdListResponse{Holds: holds, ActiveBlockingHolds: active})), nil
 
 	case "accounting_search":
 		var args struct {

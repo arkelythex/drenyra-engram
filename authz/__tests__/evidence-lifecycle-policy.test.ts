@@ -383,6 +383,69 @@ describe("evidence-lifecycle-policy v0.8.0 mirror", () => {
 		);
 	});
 
+	it("authorizes ONLY the default approvers for the hold acts (place_hold/lift_hold)", () => {
+		// Batch 3 object-level legal holds: a default approver ONLY — the
+		// accounting ladder never places/lifts holds and a dual second approver
+		// never does either (hold acts have no dual-approval configuration).
+		expectAllowed(
+			authorizeLifecycleAction(
+				req("place_hold", principal({ roles: ["records_compliance_officer"] })),
+			),
+		);
+		expectAllowed(
+			authorizeLifecycleAction(
+				req("lift_hold", principal({ roles: ["tenant_records_owner"] })),
+			),
+		);
+		expectAllowed(
+			authorizeLifecycleAction(
+				req("place_hold", principal({ roles: ["tenant_records_owner"] })),
+			),
+		);
+		expectAllowed(
+			authorizeLifecycleAction(
+				req("lift_hold", principal({ roles: ["records_compliance_officer"] })),
+			),
+		);
+	});
+
+	it("denies non-owner roles and the deny-list the hold acts", () => {
+		// Ladder positions never place/lift holds (preservation acts, not
+		// accounting operations); a dual second approver never does either.
+		expectDenied(
+			authorizeLifecycleAction(
+				req("place_hold", principal({ roles: ["controller"] })),
+			),
+			"ROLE_NOT_AUTHORIZED",
+		);
+		expectDenied(
+			authorizeLifecycleAction(
+				req("lift_hold", principal({ roles: ["tax_responsible"] })),
+			),
+			"ROLE_NOT_AUTHORIZED",
+		);
+		expectDenied(
+			authorizeLifecycleAction(
+				req("place_hold", principal({ roles: ["accountant"] })),
+			),
+			"ROLE_NOT_AUTHORIZED",
+		);
+		// Deny-list precedes the allow for hold acts too: operational_accountant
+		// and any *admin token NEVER place or lift.
+		expectDenied(
+			authorizeLifecycleAction(
+				req("place_hold", principal({ roles: ["operational_accountant"] })),
+			),
+			"ROLE_DENIED",
+		);
+		expectDenied(
+			authorizeLifecycleAction(
+				req("lift_hold", malformedPrincipal({ roles: ["deployment_admin" as AccountingRole] })),
+			),
+			"ROLE_DENIED",
+		);
+	});
+
 	it("denies a cross-tenant principal (TENANT_SCOPE_MISMATCH)", () => {
 		expectDenied(
 			authorizeLifecycleAction(

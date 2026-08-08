@@ -371,6 +371,68 @@ func TestRejectWithdrawExecuteRoles(t *testing.T) {
 	}
 }
 
+// TestHoldActsRoleMatrix freezes the batch 3 object-level hold acts
+// (place_hold/lift_hold, design §8.1): a default approver ONLY
+// (records_compliance_officer | tenant_records_owner — explicit match). The
+// accounting ladder never places/lifts holds (preservation acts, not
+// accounting operations) and a dual second approver never does either (hold
+// acts have no dual-approval configuration).
+func TestHoldActsRoleMatrix(t *testing.T) {
+	policy := authz.NewEvidenceLifecyclePolicy()
+	tests := []struct {
+		name   string
+		action authz.LifecycleAction
+		roles  []auth.AccountingRole
+		want   string // wantCode; empty means allowed
+	}{
+		{name: "place by default approver", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleRecordsComplianceOfficer}},
+		{name: "place by tenant records owner", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleTenantRecordsOwner}},
+		{name: "lift by default approver", action: authz.LifecycleActionLiftHold, roles: []auth.AccountingRole{auth.RoleRecordsComplianceOfficer}},
+		{name: "lift by tenant records owner", action: authz.LifecycleActionLiftHold, roles: []auth.AccountingRole{auth.RoleTenantRecordsOwner}},
+		{name: "place by controller denied", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleController}, want: auth.CodeRoleNotAuthorized},
+		{name: "lift by controller denied", action: authz.LifecycleActionLiftHold, roles: []auth.AccountingRole{auth.RoleController}, want: auth.CodeRoleNotAuthorized},
+		{name: "place by tax_responsible denied", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleTaxResponsible}, want: auth.CodeRoleNotAuthorized},
+		{name: "place by accountant denied", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleAccountant}, want: auth.CodeRoleNotAuthorized},
+		{name: "place by senior accountant denied", action: authz.LifecycleActionPlaceHold, roles: []auth.AccountingRole{auth.RoleSeniorAccountant}, want: auth.CodeRoleNotAuthorized},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := policy.Authorize(lifecycleReq(tt.action, lifecyclePrincipalWithRoles(t, tt.roles...)))
+			if tt.want == "" {
+				lifecycleMustAllowed(t, d)
+			} else {
+				lifecycleMustDenied(t, d, tt.want)
+			}
+		})
+	}
+}
+
+// TestHoldActsDenyListFirst freezes the denial-precedes-allow contract for the
+// hold acts: operational_accountant and any *admin token are denied with
+// ROLE_DENIED even though they could never match the allow set anyway, and the
+// deny-list wins over assurance.
+func TestHoldActsDenyListFirst(t *testing.T) {
+	policy := authz.NewEvidenceLifecyclePolicy()
+	for _, action := range []authz.LifecycleAction{authz.LifecycleActionPlaceHold, authz.LifecycleActionLiftHold} {
+		t.Run(string(action), func(t *testing.T) {
+			for _, role := range []auth.AccountingRole{auth.RoleOperationalAccountant, auth.AccountingRole("deployment_admin")} {
+				r := lifecycleReq(action, lifecyclePrincipalWithRoles(t, role))
+				lifecycleMustDenied(t, policy.Authorize(r), auth.CodeRoleDenied)
+			}
+		})
+	}
+	// Deny-list precedes assurance: a deny-listed role with strong assurance is
+	// still ROLE_DENIED.
+	d := policy.Authorize(authz.LifecycleAuthorizationRequest{
+		Action:    authz.LifecycleActionPlaceHold,
+		Principal: lifecyclePrincipalWithAssurance(t, auth.AssuranceStrong, auth.RoleOperationalAccountant),
+		ActorKind: core.ActorKindHuman,
+		TenantID:  "tenant-1",
+		CompanyID: "acme",
+	})
+	lifecycleMustDenied(t, d, auth.CodeRoleDenied)
+}
+
 func TestLifecycleCrossTenantDenied(t *testing.T) {
 	policy := authz.NewEvidenceLifecyclePolicy()
 	for _, action := range []authz.LifecycleAction{

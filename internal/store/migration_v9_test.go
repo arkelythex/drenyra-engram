@@ -79,8 +79,8 @@ func TestFreshStoreBootstrapsV9RetentionPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("schema_version = %d, want 9 (the chain continues v2→v3→v4→v5→v6→v7→v8→v9)", version)
+	if version != 10 {
+		t.Fatalf("schema_version = %d, want 10 (the chain continues v2→v3→v4→v5→v6→v7→v8→v9→v10)", version)
 	}
 
 	// The whole v3…v8 surface survives the chain (additive migrations never
@@ -318,7 +318,7 @@ func TestV8StoreMigratesToV9AdditivelyPreservingRows(t *testing.T) {
 		t.Fatalf("read schema_version: %v", err)
 	}
 	if version != "9" {
-		t.Fatalf("schema_version = %q, want 9", version)
+		t.Fatalf("schema_version = %q, want 10", version)
 	}
 
 	// Every v8 receipt row survived the receipts_v9 rebuild byte-preserved

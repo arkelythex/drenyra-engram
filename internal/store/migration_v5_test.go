@@ -82,8 +82,8 @@ func TestFreshStoreBootstrapsV5ReceiptTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("schema_version = %d, want 9 (the chain continues v5→v6→v7→v8→v9)", version)
+	if version != 10 {
+		t.Fatalf("schema_version = %d, want 10 (the chain continues v5→v6→v7→v8→v9→v10)", version)
 	}
 
 	// The v3 + v4 layers survive the chain (additive migrations never drop).
@@ -107,13 +107,13 @@ func TestFreshStoreBootstrapsV5ReceiptTables(t *testing.T) {
 	}
 
 	// uq_receipts_singleton must be a PARTIAL unique index over every action
-	// except evidence_linked (evidence links legitimately grow).
+	// except append-only evidence links and object-hold lifecycle events.
 	var indexSQL string
 	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_receipts_singleton'`).Scan(&indexSQL); err != nil {
 		t.Fatalf("read uq_receipts_singleton definition: %v", err)
 	}
-	if !strings.Contains(indexSQL, "UNIQUE") || !strings.Contains(indexSQL, "action <> 'evidence_linked'") {
-		t.Fatalf("uq_receipts_singleton is not the evidence-excluding partial unique index: %s", indexSQL)
+	if !strings.Contains(indexSQL, "UNIQUE") || !strings.Contains(indexSQL, "'evidence_linked', 'hold_placed', 'hold_lifted'") {
+		t.Fatalf("uq_receipts_singleton is not the append-only-action partial unique index: %s", indexSQL)
 	}
 }
 
@@ -141,8 +141,8 @@ func TestV4StoreMigratesToV5AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("schema_version after migration = %d, want 9 (the chain continues v5→v6→v7→v8→v9)", version)
+	if version != 10 {
+		t.Fatalf("schema_version after migration = %d, want 10 (the chain continues v5→v6→v7→v8→v9→v10)", version)
 	}
 
 	// Rows survive with EXACTLY the envelope bytes written at v4.

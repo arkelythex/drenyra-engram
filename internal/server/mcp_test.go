@@ -180,13 +180,11 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 40 {
-		// 13 engram_* + 27 accounting_* (accounting_current_context added in the
-		// v0.5.0 session-context slice, design §5; accounting_object_store and
-		// accounting_object_get added in the v0.7.0 evidence-object slice, §7;
-		// accounting_retention_policy_{put,resolve,evaluate} added in the v0.8
-		// batch-2 retention-policy slice, design §3.1/§6).
-		t.Fatalf("tool count = %d, want 40 (13 engram_* + 27 accounting_*)", len(result.Tools))
+	if len(result.Tools) != 43 {
+		// 13 engram_* + 30 accounting_* (current context in v0.5, object storage
+		// in v0.7, retention policies in v0.8 batch 2, and object-level holds in
+		// v0.8 batch 3).
+		t.Fatalf("tool count = %d, want 43 (13 engram_* + 30 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)

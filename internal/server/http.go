@@ -285,6 +285,15 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /accounting/retention-policies", h.authenticate(h.handleRetentionPolicyPut))
 	mux.HandleFunc("GET /accounting/retention-policies/resolve", h.requireToken(h.handleRetentionPolicyResolve))
 	mux.HandleFunc("POST /accounting/retention-policies/evaluate", h.requireToken(h.handleRetentionPolicyEvaluate))
+	// v0.8 batch 3 object-level legal holds — narrow surface: place/lift are
+	// AUTHENTICATED principal mutations (strict bodies never declare identity;
+	// the Idempotency-Key header rides the (tenant, requestId) key) that
+	// DELIBERATELY BYPASS the closed-period gate (holds only preserve evidence);
+	// the list is a SCOPE-FIRST read (?ruc= + ?organizationId= + ?period=). NO
+	// purge, NO export, NO deletion, NO scheduling.
+	mux.HandleFunc("POST /accounting/objects/{objectId}/holds", h.authenticate(h.handleHoldPlace))
+	mux.HandleFunc("POST /accounting/holds/{holdId}/lift", h.authenticate(h.handleHoldLift))
+	mux.HandleFunc("GET /accounting/objects/{objectId}/holds", h.requireToken(h.handleHoldList))
 	// Period-over-period comparison (v0.5.0, design §4/§6): a PURE scope-first
 	// read over one company's two periods — same shared token guard as the
 	// other read surfaces; both scopes come from the query

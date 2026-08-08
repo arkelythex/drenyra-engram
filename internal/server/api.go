@@ -212,6 +212,42 @@ func (a *API) EvaluatePurgeEligibility(ctx context.Context, input core.EvaluateP
 	return a.Store.EvaluatePurgeEligibility(ctx, input)
 }
 
+// PlaceHold places ONE object-level legal hold (v0.8 batch 3, design §3.2/§7):
+// the API is a thin delegation over the store — the authenticated preservation
+// gate (extended evidence-lifecycle policy, place_hold action), (tenant,
+// requestId) idempotency, the immutable evidence_holds row and the
+// hold_placed receipt on the evidence_object chain all live in the store. The
+// principal is the PRE-VERIFIED caller from the transport middleware
+// (ADR-003 — the payload can never declare identity). Holds only PRESERVE
+// evidence: the closed-period gate is deliberately NOT applied.
+func (a *API) PlaceHold(ctx context.Context, cmd core.PlaceHoldCommand, principal auth.VerifiedApprovalPrincipal) (core.PlaceHoldResult, error) {
+	return a.Store.PlaceHold(ctx, cmd, principal)
+}
+
+// LiftHold closes ONE placed hold one-way (v0.8 batch 3, design §3.2/§7): the
+// authenticated lift act (lift_hold), (tenant, requestId) idempotency, the
+// guarded one-way closure and the hold_lifted receipt on the evidence_object
+// chain all live in the store. Holds only PRESERVE evidence: the closed-period
+// gate is deliberately NOT applied.
+func (a *API) LiftHold(ctx context.Context, cmd core.LiftHoldCommand, principal auth.VerifiedApprovalPrincipal) (core.LiftHoldResult, error) {
+	return a.Store.LiftHold(ctx, cmd, principal)
+}
+
+// ActiveBlockingHolds is the SCOPE-FIRST active-blocking-hold query (v0.8
+// batch 3, design §7): the caller's exact scope must equal the object's stored
+// scope (OBJECT_NOT_FOUND otherwise) and the result is the ACTIVE holds whose
+// kind is in the deployment's blocking set (empty set → nothing blocks).
+// Read-only; never requires a principal (scope-first, not authenticated).
+func (a *API) ActiveBlockingHolds(ctx context.Context, objectID string, scope core.Scope, blockingKinds []string) ([]core.EvidenceHold, error) {
+	return a.Store.ActiveBlockingHolds(ctx, objectID, scope, blockingKinds)
+}
+
+// HoldsForObject returns EVERY hold record of the object (placed and lifted),
+// placement order — SCOPE-FIRST exactly like ActiveBlockingHolds. Read-only.
+func (a *API) HoldsForObject(ctx context.Context, objectID string, scope core.Scope) ([]core.EvidenceHold, error) {
+	return a.Store.HoldsForObject(ctx, objectID, scope)
+}
+
 // ──────────────────────────────────────────────
 // compare — identity / scope / content deltas + relation verdict
 // ──────────────────────────────────────────────

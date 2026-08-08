@@ -96,6 +96,8 @@ func run(args []string) int {
 		return cmdLinkEvidence(args[1:])
 	case "object":
 		return cmdObject(args[1:])
+	case "hold":
+		return cmdHold(args[1:])
 	case "retention-policy":
 		return cmdRetentionPolicy(args[1:])
 	case "period-summary":
@@ -2624,6 +2626,252 @@ func cmdTimeline(args []string) int {
 }
 
 // ──────────────────────────────────────────────
+// hold — v0.8 batch 3 object-level legal-hold surface (place/lift/list)
+// ──────────────────────────────────────────────
+
+// cmdHold dispatches the v0.8 batch 3 object-level legal-hold subcommands
+// (docs/architecture/evidence-lifecycle-v0.8.md §3.2/§7/§9): place and lift
+// are the AUTHENTICATED preservation mutations (the principal is DERIVED from
+// the stored CLI session like approve, never from a caller flag — there is
+// deliberately NO --actor/--subject/--role flag) that DELIBERATELY BYPASS the
+// closed-period gate (holds only preserve evidence — emergency placement/lift
+// works inside a closed period); list is a SCOPE-FIRST READ (the caller's
+// exact scope tuple is built from the flags and must equal the object's stored
+// scope — cross-tenant invisibility). NO purge, NO export, NO deletion, NO
+// scheduling.
+func cmdHold(args []string) int {
+	if len(args) == 0 {
+		printHoldUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "place":
+		return cmdHoldPlace(args[1:])
+	case "lift":
+		return cmdHoldLift(args[1:])
+	case "list":
+		return cmdHoldList(args[1:])
+	case "help", "-h", "--help":
+		printHoldUsage(os.Stdout)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown hold subcommand %q\n", args[0])
+		printHoldUsage(os.Stderr)
+		return 2
+	}
+}
+
+func printHoldUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: drenyra-engram hold place <object-id> --kind <legal|audit|dispute|fiscalization|other> --reason <text> --owner <subject-id> [--request-id <id>] [--db <path>]   (authenticated session; identity never from flags; emergency bypass: no closed-period gate)")
+	fmt.Fprintln(w, "       drenyra-engram hold lift <hold-id> --reason <text> [--request-id <id>] [--db <path>]   (authenticated session; one-way closure)")
+	fmt.Fprintln(w, "       drenyra-engram hold list <object-id> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--blocking-kinds <list>] [--db <path>]   (scope-first read)")
+}
+
+// cmdHoldPlace places ONE object-level legal hold (v0.8 batch 3, design
+// §3.2/§7/§9): the principal is DERIVED from the stored CLI session (auth
+// login), never declared by the caller — caller-supplied authority is gone.
+// --request-id is optional; a fresh UUID is generated when absent. The
+// authenticated preservation gate ((tenant, requestId) idempotency, the
+// deny-list-first role check through the EXTENDED evidence-lifecycle policy
+// with the place_hold action) lives in the store; the hold_placed receipt is
+// emitted atomically on the evidence_object chain. EMERGENCY BYPASS: no
+// closed-period gate (holds only preserve evidence).
+func cmdHoldPlace(args []string) int {
+	fs := flag.NewFlagSet("hold place", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	kind := fs.String("kind", "", "REQUIRED closed hold-kind token (legal|audit|dispute|fiscalization|other)")
+	reason := fs.String("reason", "", "REQUIRED placement justification")
+	owners := fs.String("owner", "", "REQUIRED subject id responsible for the hold")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram hold place <object-id> --kind <legal|audit|dispute|fiscalization|other> --reason <text> --owner <subject-id> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--kind": true, "--reason": true, "--owner": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*kind) == "" || strings.TrimSpace(*reason) == "" || strings.TrimSpace(*owners) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key := *requestID
+	if strings.TrimSpace(key) == "" {
+		key, err = newRequestID()
+		if err != nil {
+			return fail("generate request id: %v", err)
+		}
+	}
+	result, err := server.New(st, "cli").PlaceHold(context.Background(), core.PlaceHoldCommand{
+		ObjectID:       rest[0],
+		Kind:           core.HoldKind(*kind),
+		Reason:         *reason,
+		OwnerSubjectID: *owners,
+		RequestID:      key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdHoldLift closes ONE placed hold ONE-WAY (v0.8 batch 3, design §3.2/§7):
+// the principal is DERIVED from the stored CLI session, never declared by the
+// caller. The authenticated lift gate (extended policy, lift_hold action),
+// (tenant, requestId) idempotency, the one-way closure guard (ALREADY_DECIDED
+// on a fresh lift of an already-lifted hold) and the hold_lifted receipt all
+// live in the store. EMERGENCY BYPASS: no closed-period gate.
+func cmdHoldLift(args []string) int {
+	fs := flag.NewFlagSet("hold lift", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	reason := fs.String("reason", "", "REQUIRED lift justification")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram hold lift <hold-id> --reason <text> [--request-id <id>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--reason": true, "--request-id": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key := *requestID
+	if strings.TrimSpace(key) == "" {
+		key, err = newRequestID()
+		if err != nil {
+			return fail("generate request id: %v", err)
+		}
+	}
+	result, err := server.New(st, "cli").LiftHold(context.Background(), core.LiftHoldCommand{
+		HoldID:    rest[0],
+		Reason:    *reason,
+		RequestID: key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdHoldList is the SCOPE-FIRST hold read (v0.8 batch 3, design §7): the
+// caller's exact scope tuple is built from the flags (organizationId defaults
+// to cli, companyId is derived from the RUC) and must equal the object's
+// stored scope (OBJECT_NOT_FOUND otherwise — cross-tenant invisibility).
+// --blocking-kinds (comma-separated subset of
+// legal,audit,dispute,fiscalization,other) selects the deployment's blocking
+// set; when absent NOTHING is treated as blocking. The output carries every
+// hold record plus the active blocking subset. Pure read — no principal.
+func cmdHoldList(args []string) int {
+	fs := flag.NewFlagSet("hold list", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	blockingKinds := fs.String("blocking-kinds", "", "comma-separated subset of legal,audit,dispute,fiscalization,other (optional; absent = nothing blocks)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram hold list <object-id> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--blocking-kinds <list>] [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--ruc": true, "--period": true, "--organization": true, "--blocking-kinds": true})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+	scope, err := objectCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	holds, err := st.HoldsForObject(context.Background(), rest[0], scope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	active, err := st.ActiveBlockingHolds(context.Background(), rest[0], scope, splitCLIList(*blockingKinds))
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(struct {
+		Holds               []core.EvidenceHold `json:"holds"`
+		ActiveBlockingHolds []core.EvidenceHold `json:"activeBlockingHolds"`
+	}{Holds: holds, ActiveBlockingHolds: active})
+}
+
+// splitCLIList splits a comma-separated token list (trimmed, empty tokens
+// dropped) — the CLI --blocking-kinds wire form.
+func splitCLIList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+// ──────────────────────────────────────────────
 // retention-policy — v0.8 batch 2 policy surface (put/resolve/evaluate)
 // ──────────────────────────────────────────────
 
@@ -2963,6 +3211,9 @@ Usage:
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
   drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--objects <dir>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
   drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--objects <dir>] [--db <path>]   (scope-first read)
+  drenyra-engram hold place <object-id> --kind <legal|audit|dispute|fiscalization|other> --reason <text> --owner <subject-id> [--request-id <id>] [--db <path>]   (v0.8 authenticated preservation act; emergency bypass: no closed-period gate)
+  drenyra-engram hold lift <hold-id> --reason <text> [--request-id <id>] [--db <path>]   (v0.8 authenticated one-way closure)
+  drenyra-engram hold list <object-id> --ruc <11 digits> [--period <YYYYMM>] [--blocking-kinds <list>] [--db <path>]   (scope-first read)
   drenyra-engram retention-policy put [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --authority <owner> --source <decision> --category <cat> --min-period <YYYYMM> [--db <path>]   (v0.8 authenticated administration mutation)
   drenyra-engram retention-policy resolve [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> [--db <path>]   (scope-first read)
   drenyra-engram retention-policy evaluate [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> --object-period <YYYYMM> [--db <path>]   (fail-closed read)
@@ -3015,6 +3266,9 @@ Flags:
   --blocking-hold-kinds <list> comma-separated subset of legal,audit,dispute,fiscalization,other (retention-policy put)
   --enabled         enable the policy for resolution (retention-policy put)
   --request-id <id>  idempotency key for retention-policy put (optional; a UUID is generated when absent)
+  --kind <kind>    closed hold-kind token legal|audit|dispute|fiscalization|other (hold place, REQUIRED)
+  --owner <subject-id> subject responsible for the hold (hold place, REQUIRED)
+  --blocking-kinds <list> comma-separated subset of legal,audit,dispute,fiscalization,other (hold list, optional; absent = nothing blocks)
   --addr <host:port> listen address for serve (default 127.0.0.1:8787)
   --token <token>  bearer token for serve (default $DRENYRA_ENGRAM_TOKEN) or auth login (REQUIRED)
   --roles <list>   comma-separated accounting roles for auth seed-local-dev

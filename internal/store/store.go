@@ -125,7 +125,17 @@ import (
 // operational_accountant — design §8.1) — SQLite cannot alter a CHECK, so both
 // tables are copied and swapped inside the migration transaction, byte-preserving
 // every existing row — docs/architecture/evidence-lifecycle-v0.8.md §4.
-const schemaVersion = 9
+//
+// v10 (v0.8.0 object-level legal holds, batch 3): adds the immutable
+// evidence_holds table (OBJECT-LEVEL ONLY — object_id NOT NULL FK to
+// evidence_objects, exact scope columns, object index, no-delete trigger,
+// placed-columns immutability trigger and the one-way lift closure trigger)
+// and the tenant-scoped evidence_hold_idempotency_keys ledger, and REBUILDS
+// the receipts table with the action CHECK extended by the two v0.8 hold acts
+// (hold_placed, hold_lifted) — SQLite cannot alter a CHECK, so the table is
+// copied and swapped inside the migration transaction, byte-preserving every
+// existing row — docs/architecture/evidence-lifecycle-v0.8.md §3.2/§4/§7.
+const schemaVersion = 10
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -257,6 +267,39 @@ type Store interface {
 	// NOT_PURGEABLE. Read-only: never deletes, never schedules, no statutory
 	// duration claim.
 	EvaluatePurgeEligibility(ctx context.Context, input core.EvaluatePurgeEligibilityInput) (core.RetentionEligibilityResult, error)
+	// PlaceHold places ONE object-level legal hold (v0.8 batch 3, design §3.2/
+	// §7): the authenticated preservation act authorized by the extended
+	// evidence-lifecycle policy (place_hold — records_compliance_officer |
+	// tenant_records_owner, deny-list first, assurance ≥ standard, tenant/company
+	// match), (tenant, requestId) idempotency, the immutable evidence_holds row
+	// insert and the hold_placed receipt on the evidence_object chain — all in
+	// ONE BEGIN IMMEDIATE transaction. Holds only PRESERVE evidence: the
+	// closed-period gate is deliberately NOT applied (emergency place/lift
+	// works inside a closed period). OBJECT_NOT_FOUND when the object id has no
+	// row.
+	PlaceHold(ctx context.Context, cmd core.PlaceHoldCommand, principal auth.VerifiedApprovalPrincipal) (core.PlaceHoldResult, error)
+	// LiftHold closes ONE placed hold one-way (v0.8 batch 3, design §3.2/§7):
+	// the authenticated lift act (lift_hold — same role matrix), (tenant,
+	// requestId) idempotency, the guarded one-way closure (lifted_at/lifted_by/
+	// lift_reason set together, never reopened — ALREADY_DECIDED on a second
+	// fresh lift) and the hold_lifted receipt on the evidence_object chain — all
+	// in ONE BEGIN IMMEDIATE transaction. HOLD_NOT_FOUND when the hold id has no
+	// row. Holds only PRESERVE evidence: the closed-period gate is deliberately
+	// NOT applied.
+	LiftHold(ctx context.Context, cmd core.LiftHoldCommand, principal auth.VerifiedApprovalPrincipal) (core.LiftHoldResult, error)
+	// ActiveBlockingHolds is the SCOPE-FIRST active-blocking-hold query (v0.8
+	// batch 3, design §7): the caller's exact scope must equal the object's
+	// stored scope (OBJECT_NOT_FOUND otherwise — cross-tenant invisibility), and
+	// the result is the ACTIVE (not lifted) holds of the object whose kind is in
+	// the deployment's blocking set. An EMPTY blocking set blocks NOTHING
+	// (returns an empty list — the caller without a blocking policy cannot claim
+	// a block). Read-only.
+	ActiveBlockingHolds(ctx context.Context, objectID string, scope core.Scope, blockingKinds []string) ([]core.EvidenceHold, error)
+	// HoldsForObject returns EVERY hold record of the object (placed and
+	// lifted), placement order — SCOPE-FIRST exactly like ActiveBlockingHolds
+	// (OBJECT_NOT_FOUND when the caller's exact scope differs from the stored
+	// scope). Read-only.
+	HoldsForObject(ctx context.Context, objectID string, scope core.Scope) ([]core.EvidenceHold, error)
 	Close() error
 }
 
@@ -317,10 +360,11 @@ func defaultObjectsRoot(dbPath string) string {
 // DEFAULT objects root (<dir-of-db>/objects) and applies the versioned
 // schema. Fresh stores bootstrap to the v2 layout exactly, then run the SAME
 // additive migration chain used for existing stores
-// (v2→v3→v4→v5→v6→v7→v8) — one tested migration path. A v1 store is migrated
-// additively (single transaction), then the v2→v3, v3→v4, v4→v5, v5→v6,
-// v6→v7 and v7→v8 migrations each run in their own single transaction. A
-// corrupt or unsupported store fails closed: it never fabricates data
+// (v2→v3→v4→v5→v6→v7→v8→v9) — one tested migration path. A v1 store is
+// migrated additively (single transaction), then the v2→v3, v3→v4, v4→v5,
+// v5→v6, v6→v7, v7→v8, v8→v9 and v9→v10 migrations each run in their own
+// single transaction. A corrupt or unsupported store fails closed: it never
+// fabricates data
 // (contracts/provenance.md frozen policy). An OPTIONAL receipt signer may be
 // attached at open (nil signer → no receipt emission); the store↔signer
 // construction cycle (the signer needs the opened store) is resolved by the
@@ -359,8 +403,8 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
 	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4,
-	// v4→v5, v5→v6, v6→v7 and v7→v8 migrations each run in their own single
-	// transaction before use.
+	// v4→v5, v5→v6, v6→v7, v7→v8 and v8→v9 migrations each run in their own
+	// single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -417,6 +461,13 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 	}
 	if version == 8 {
 		if err := migrateV8ToV9(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 9
+	}
+	if version == 9 {
+		if err := migrateV9ToV10(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -2058,10 +2109,12 @@ const receiptsDDL = `
         `
 
 // receipts_singleton guarantees at most one live receipt per (subject, action)
-// for every action except evidence_linked (evidence links legitimately grow; a
-// genuinely new link mints a new receipt, duplicates stay no-ops).
+// except append-only relationship/lifecycle actions: evidence links and object
+// holds legitimately grow; each genuinely new act mints a receipt while an
+// idempotent replay returns its prior outcome.
 const receiptsSingletonIndexDDL = `CREATE UNIQUE INDEX uq_receipts_singleton
-        ON receipts(subject_type, subject_id, action) WHERE action <> 'evidence_linked';`
+        ON receipts(subject_type, subject_id, action)
+        WHERE action NOT IN ('evidence_linked', 'hold_placed', 'hold_lifted');`
 
 const receiptsSubjectTimeIndexDDL = `CREATE INDEX idx_receipts_subject_time
         ON receipts(subject_type, subject_id, issued_at);`

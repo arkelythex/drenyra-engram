@@ -1588,6 +1588,10 @@ export const RECEIPT_ACTIONS = [
 	"reconciliation_confirmed",
 	"reconciliation_rejected",
 	"object_stored",
+	// v0.8.0 object-level legal holds (batch 3): the two hold acts are
+	// emitted atomically on the evidence_object subject chain.
+	"hold_placed",
+	"hold_lifted",
 ] as const;
 
 export type ReceiptAction = (typeof RECEIPT_ACTIONS)[number];
@@ -1613,7 +1617,16 @@ export const RECEIPT_PAYLOAD_VERSION_V05 = "receipt-payload/v0.5.0";
  * AND accept v0.7.0 payloads without a protocol break (the versioned
  * protocol decision). Mirrors core.ReceiptPayloadVersionV07.
  */
-export const RECEIPT_PAYLOAD_VERSION_V07 = "receipt-payload/v0.7.0";
+    export const RECEIPT_PAYLOAD_VERSION_V07 = "receipt-payload/v0.7.0";
+
+    /**
+     * Payload version stamped on the v0.8.0 object-level hold acts
+     * (hold_placed, hold_lifted — batch 3). Canonicalization is version-agnostic
+     * (the payload SHAPE is unchanged), so verifiers keep accepting v0.4.0–v0.7.0
+     * payloads unchanged AND accept v0.8.0 payloads without a protocol break.
+     * Mirrors core.ReceiptPayloadVersionV08.
+     */
+    export const RECEIPT_PAYLOAD_VERSION_V08 = "receipt-payload/v0.8.0";
 
 /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
 export const RECEIPT_ALGORITHM = "Ed25519";
@@ -1720,8 +1733,48 @@ export interface ObjectStoreResult {
 }
 
 // ──────────────────────────────────────────────
-// v0.5.0 — Close Intelligence (monthly close)
+// v0.8.0 — object-level legal holds (batch 3, design §3.2/§7)
 // ──────────────────────────────────────────────
+
+/**
+ * The closed hold-kind set (§3.2). The TOKENS are the frozen
+ * retention-policy hold-kind tokens (one closed set across the lifecycle,
+ * never duplicated). Mirrors core.HoldKind.
+ */
+export const HOLD_KINDS = [
+	"legal",
+	"audit",
+	"dispute",
+	"fiscalization",
+	"other",
+] as const;
+
+export type HoldKind = (typeof HOLD_KINDS)[number];
+
+/**
+ * ONE immutable object-level hold record (design §3.2). The scope tuple is
+ * flattened (tenantId/companyId/ruc/period) exactly like EvidenceObject so
+ * the wire shape mirrors the DB row byte-for-byte. The lift fields are the
+ * ONE-WAY closure: all empty while placed, all set together on lift, never
+ * cleared or rewritten (lifted holds remain visible forever). Mirrors
+ * core.EvidenceHold — field ORDER is part of the canonical byte contract.
+ */
+export interface EvidenceHold {
+	holdId: string;
+	objectId: string;
+	tenantId: string;
+	companyId: string;
+	ruc: string;
+	period: string;
+	kind: HoldKind;
+	reason: string;
+	ownerSubjectId: string;
+	placedAt: string;
+	placedBy: string;
+	liftedAt?: string;
+	liftedBy?: string;
+	liftReason?: string;
+}
 
 /** Canonical topic-key prefix of a monthly close: closing/CIERRE-<YYYYMM>. */
 export const CLOSE_TOPIC_PREFIX = "closing/CIERRE-";

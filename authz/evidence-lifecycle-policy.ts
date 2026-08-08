@@ -53,7 +53,14 @@ export type LifecycleAction =
 	| "second_approve"
 	| "reject"
 	| "withdraw"
-	| "execute";
+	| "execute"
+	// v0.8 object-level legal holds (batch 3): the preservation acts,
+	// authorized to the default approver only (records_compliance_officer |
+	// tenant_records_owner), never the accounting ladder, never a dual second
+	// approver; emergency place/lift bypasses the closed-period gate at the
+	// store layer because holds only preserve evidence (design §7).
+	| "place_hold"
+	| "lift_hold";
 
 /** Pure authorization outcome: allowed, the exact policy version, reason code. */
 export interface LifecycleAuthorizationDecision {
@@ -169,6 +176,12 @@ function roleAllowed(
 				"controller",
 				"tax_responsible",
 			);
+		// v0.8 object-level hold acts (batch 3): a default approver ONLY —
+		// explicit match, never the accounting ladder, never a dual second
+		// approver (hold acts have no dual-approval configuration).
+		case "place_hold":
+		case "lift_hold":
+			return hasAnyRole(roles, "records_compliance_officer", "tenant_records_owner");
 		default:
 			return false;
 	}
