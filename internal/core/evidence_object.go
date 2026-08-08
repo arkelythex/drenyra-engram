@@ -32,6 +32,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -99,6 +100,18 @@ const objectRelPathDepth = 2
 // objectIDPattern freezes the object id syntax: exactly 64 lowercase hex
 // digits (the SHA-256 digest shape).
 var objectIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// ErrObjectBytesPurgedExpected is the documented EXPECTED-ABSENCE sentinel of the
+// object verifier/doctor surfaces: an object whose WORM bytes are missing is NOT
+// corruption when a receipt-covered purge authorization (a valid
+// evidence_purge_executions intent row bound to the object identity, or a
+// completed execution) explains the absence. The store returns an error wrapping
+// this sentinel (errors.Is works through %w); core.VerifyObjectBytesIntegrity
+// maps it to a PASSED layer with the purged-specific message, and the doctor
+// surface skips it as documented expected absence instead of failing closed.
+// Missing bytes WITHOUT such an authorized intent remain the typed
+// OBJECT_BYTES_MISSING corruption incident.
+var ErrObjectBytesPurgedExpected = errors.New("OBJECT_PURGED_EXPECTED_ABSENCE: a receipt-covered purge authorization explains the missing bytes (expected absence, not corruption)")
 
 // ComputeObjectID returns the deterministic object identity: the lowercase
 // SHA-256 hex digest of the object bytes. This is BOTH the id and the content

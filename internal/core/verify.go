@@ -609,11 +609,18 @@ func VerifyObjectAvailability(refs []string, resolved map[string]EvidenceObject)
 // stored bytes of every object-backed ref re-hash to their content addresses,
 // failed when err carries a corruption code (OBJECT_BYTES_MISSING |
 // OBJECT_HASH_MISMATCH — the store fails closed, silent repair is forbidden).
-// err == nil passes. The error text identifies the failing object (the store
-// wraps the typed corruption error with the object id).
+// err == nil passes. A wrapped core.ErrObjectBytesPurgedExpected (missing bytes
+// explained by a receipt-covered purge authorization — a committed execution or
+// a valid purge intent) ALSO passes, with the purged-specific message: the
+// documented expected absence is NOT an integrity violation. The error text
+// identifies the failing object (the store wraps the typed corruption error with
+// the object id).
 func VerifyObjectBytesIntegrity(err error) VerificationLayer {
 	if err == nil {
 		return layerPassed(LayerObjectAvailability, "object WORM bytes re-hash to their stored content addresses")
+	}
+	if errors.Is(err, ErrObjectBytesPurgedExpected) {
+		return layerPassed(LayerObjectAvailability, "object WORM bytes are absent by documented purge authorization (expected absence — a committed execution or a valid receipt-covered intent removed them; not an integrity violation)")
 	}
 	return layerFailed(LayerObjectAvailability, "object-backed evidence ref fails WORM byte integrity: "+err.Error())
 }
