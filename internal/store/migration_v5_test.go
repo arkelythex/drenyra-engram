@@ -82,8 +82,8 @@ func TestFreshStoreBootstrapsV5ReceiptTables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema_version = %d, want 10 (the chain continues v5→v6→v7→v8→v9→v10)", version)
+	if version != 12 {
+		t.Fatalf("schema_version = %d, want 12 (the chain continues v5→v6→v7→v8→v9→v10→v11→v12)", version)
 	}
 
 	// The v3 + v4 layers survive the chain (additive migrations never drop).
@@ -107,12 +107,15 @@ func TestFreshStoreBootstrapsV5ReceiptTables(t *testing.T) {
 	}
 
 	// uq_receipts_singleton must be a PARTIAL unique index over every action
-	// except append-only evidence links and object-hold lifecycle events.
+	// except the append-only evidence-link/hold/lifecycle acts — the v11 rebuild
+	// excludes the seven v0.8 evidence-lifecycle acts on top of the legacy
+	// evidence-link and hold exclusions (dual approval emits TWO purge_approved
+	// receipts per object; retractions restart the pipeline).
 	var indexSQL string
 	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_receipts_singleton'`).Scan(&indexSQL); err != nil {
 		t.Fatalf("read uq_receipts_singleton definition: %v", err)
 	}
-	if !strings.Contains(indexSQL, "UNIQUE") || !strings.Contains(indexSQL, "'evidence_linked', 'hold_placed', 'hold_lifted'") {
+	if !strings.Contains(indexSQL, "UNIQUE") || !strings.Contains(indexSQL, "'evidence_linked','hold_placed','hold_lifted',") || !strings.Contains(indexSQL, "'purge_requested','purge_approved','purge_rejected'") {
 		t.Fatalf("uq_receipts_singleton is not the append-only-action partial unique index: %s", indexSQL)
 	}
 }
@@ -141,8 +144,8 @@ func TestV4StoreMigratesToV5AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema_version after migration = %d, want 10 (the chain continues v5→v6→v7→v8→v9→v10)", version)
+	if version != 12 {
+		t.Fatalf("schema_version after migration = %d, want 12 (the chain continues v5→v6→v7→v8→v9→v10→v11→v12)", version)
 	}
 
 	// Rows survive with EXACTLY the envelope bytes written at v4.

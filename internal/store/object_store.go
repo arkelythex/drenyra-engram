@@ -311,7 +311,11 @@ func (s *SQLiteStore) evidenceObjectByIDOn(ctx context.Context, q Queryer, objec
 // VerifyObjectBytes re-hashes the stored WORM bytes of one object: nil when
 // they match the content address, a typed corruption error otherwise. Read-only
 // — used by verification and the availability layer; silent repair is
-// forbidden.
+// forbidden. RECONCILED: missing bytes are the DOCUMENTED EXPECTED ABSENCE (a
+// wrapped core.ErrObjectBytesPurgedExpected — NOT corruption) when the
+// immutable executions ledger carries a receipt-covered purge authorization
+// bound to the object identity (a completed execution or a valid intent row);
+// without that authorization missing bytes stay OBJECT_BYTES_MISSING.
 func (s *SQLiteStore) VerifyObjectBytes(ctx context.Context, objectID string) error {
 	obj, ok := s.EvidenceObjectByID(ctx, objectID)
 	if !ok {
@@ -319,6 +323,16 @@ func (s *SQLiteStore) VerifyObjectBytes(ctx context.Context, objectID string) er
 	}
 	bytes, err := s.readObjectBytes(obj.RelPath)
 	if err != nil {
+		var corruption *objectBytesCorruptionError
+		if errors.As(err, &corruption) && corruption.code == objectErrBytesMissing {
+			authorized, aerr := authorizedPurgeAbsenceOn(ctx, s.db, objectID, obj.Size)
+			if aerr != nil {
+				return aerr
+			}
+			if authorized {
+				return fmt.Errorf("%s: %w", objectID, core.ErrObjectBytesPurgedExpected)
+			}
+		}
 		return err
 	}
 	if got := core.ComputeObjectID(bytes); got != obj.ObjectID {
@@ -524,6 +538,162 @@ func (s *SQLiteStore) assertObjectBytesPresent(relPath string) error {
 	return nil
 }
 
+// objectBytesExist reports whether the object's exact content-addressed bytes are
+// present (read-only stat through the SAME path-containment defenses as reads and
+// writes; an invalid/symlinked path is a typed failure, never a silent no).
+func (s *SQLiteStore) objectBytesExist(relPath string) (bool, error) {
+	full, _, err := s.objectPathFor(relPath, false)
+	if err != nil {
+		return false, err
+	}
+	if _, err := os.Stat(full); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("persistence error: stat object bytes: %w", err)
+	}
+	return true, nil
+}
+
+// authorizedPurgeAbsenceOn reports whether the object's missing bytes are the
+// DOCUMENTED EXPECTED ABSENCE of the physical purge lifecycle instead of
+// corruption: TRUE when the immutable executions ledger carries a receipt-covered
+// purge authorization bound to the EXACT object identity — a completed execution
+// (bytes were removed and the completion committed) or a valid 'intent' row whose
+// frozen pre-removal hash and size equal the object's immutable identity (a crash
+// between the durable intent and the completion — the recovery window). A stale
+// 'interrupted'-only history is NOT an authorization (no intent is live), so
+// missing bytes without a live intent or a completion remain the typed
+// OBJECT_BYTES_MISSING integrity incident. Runs on the caller's Queryer (read-only).
+func authorizedPurgeAbsenceOn(ctx context.Context, q Queryer, objectID string, size int64) (bool, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM evidence_purge_executions
+		WHERE object_id = ? AND pre_removal_hash = ? AND size = ? AND state IN ('intent','completed')`,
+		objectID, objectID, size,
+	).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("persistence error: read purge execution authorization: %w", err)
+	}
+	return n > 0, nil
+}
+
+// purgeAbsenceAuthorization is ONE executions-ledger row that authorizes the
+// DOCUMENTED EXPECTED ABSENCE of an object's bytes (design §3.7/§13.2): the
+// exact execution identity, its request, the guarded state and the completion
+// receipt hash (empty for a live 'intent' — the crash recovery window).
+type purgeAbsenceAuthorization struct {
+	ExecutionID         string
+	RequestID           string
+	State               string
+	CompletionReceiptID string
+}
+
+// purgeAbsenceAuthorizationsOn returns EVERY receipt-covered purge
+// authorization bound to the object's EXACT immutable identity (object_id =
+// pre_removal_hash = the content address AND the recorded size — never a
+// tenant- or request-scoped wildcard): a completed execution (the bytes were
+// removed and the completion committed — documented purge) or a live 'intent'
+// execution (a crash between the durable intent and the completion — the
+// recovery window). A stale 'interrupted'-only history is NOT an authorization
+// (no intent is live and no completion exists): missing bytes without any
+// returned row stay the typed OBJECT_BYTES_MISSING integrity incident. Runs on
+// the caller's Queryer (read-only). The doctor surfaces every returned row as
+// an auditable finding (§13.3); the verification path only needs the existence
+// check (authorizedPurgeAbsenceOn).
+func purgeAbsenceAuthorizationsOn(ctx context.Context, q Queryer, objectID string, size int64) ([]purgeAbsenceAuthorization, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT execution_id, request_id, state, COALESCE(completion_receipt_id, '')
+		FROM evidence_purge_executions
+		WHERE object_id = ? AND pre_removal_hash = ? AND size = ? AND state IN ('intent','completed')
+		ORDER BY intent_at, execution_id`,
+		objectID, objectID, size,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("persistence error: read purge execution authorizations: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []purgeAbsenceAuthorization
+	for rows.Next() {
+		var a purgeAbsenceAuthorization
+		if err := rows.Scan(&a.ExecutionID, &a.RequestID, &a.State, &a.CompletionReceiptID); err != nil {
+			return nil, fmt.Errorf("persistence error: scan purge execution authorization: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("persistence error: read purge execution authorizations: %w", err)
+	}
+	return out, nil
+}
+
+// documentedAbsenceObjectFinding builds the auditable object-layer finding for
+// a RECEIPT-COVERED documented byte absence (design §13.2 outcome 2 / §13.3):
+// the exact object whose bytes are gone plus the authorizing execution — a
+// completed execution is a documented purge; a live 'intent' execution is the
+// recovery window. REPORTED, never a corruption finding, never repaired.
+func documentedAbsenceObjectFinding(auth purgeAbsenceAuthorization, objectID, relPath string) ObjectDoctorFinding {
+	kind, detail := objectFindingDocumentedIntent,
+		fmt.Sprintf("documented expected absence: durable purge intent %s covers the missing bytes (crash between the authorized unlink and the completion — recovery window, never corruption)", auth.ExecutionID)
+	if auth.State == string(core.PurgeExecutionCompleted) {
+		kind = objectFindingDocumentedPurge
+		detail = fmt.Sprintf("documented expected absence: receipt-covered completion of execution %s removed the bytes", auth.ExecutionID)
+	}
+	if auth.CompletionReceiptID != "" {
+		detail += fmt.Sprintf(" (completion receipt %s)", auth.CompletionReceiptID)
+	}
+	return ObjectDoctorFinding{
+		Kind:     kind,
+		ObjectID: objectID,
+		RelPath:  relPath,
+		Detail:   detail,
+	}
+}
+
+// removeObjectBytes is the ONLY byte-removal primitive of the object layer
+// (v0.8 execution — design §11 step 2): it removes the exact WORM bytes of
+// ONE object by its stored rel_path. It (a) resolves the exact
+// content-addressed path through objectPathFor — the SAME path-containment /
+// symlink defenses as reads and writes, so a corrupt rel_path never resolves
+// and symlink traversal below the objects root is impossible; (b) reads the
+// bytes and RECOMPUTES the content address, requiring it to equal the
+// immutable object id AND the recorded size (a mismatch ABORTS — the engine
+// never deletes bytes that do not match the recorded identity, no silent
+// repair); and (c) unlinks ONLY that exact file and fsyncs its directory. No
+// wildcards, no directory or parent-directory removals, no repair. The caller
+// owns the two-phase intent/completion protocol (the executions row, the
+// purge_intent/purge_executed events and receipts); this primitive never
+// touches SQL and never runs inside a SQL transaction.
+func (s *SQLiteStore) removeObjectBytes(relPath, objectID string, expectedSize int64) error {
+	full, _, err := s.objectPathFor(relPath, false)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &objectBytesCorruptionError{code: objectErrBytesMissing,
+				msg: fmt.Sprintf("WORM bytes %s are missing (row without file — corruption, no silent repair, nothing unlinked)", full)}
+		}
+		return fmt.Errorf("persistence error: read object bytes before removal: %w", err)
+	}
+	if got := core.ComputeObjectID(data); got != objectID {
+		return &objectBytesCorruptionError{code: objectErrHashMismatch,
+			msg: fmt.Sprintf("stored bytes of %s re-hash to %s — the purge execution ABORTS and nothing is unlinked (corruption, no silent repair)", objectID, got)}
+	}
+	if int64(len(data)) != expectedSize {
+		return &objectBytesCorruptionError{code: objectErrHashMismatch,
+			msg: fmt.Sprintf("stored bytes of %s have size %d but the recorded size is %d — the purge execution ABORTS and nothing is unlinked (corruption, no silent repair)", objectID, len(data), expectedSize)}
+	}
+	if err := os.Remove(full); err != nil {
+		return fmt.Errorf("persistence error: unlink object bytes %s: %w", full, err)
+	}
+	if err := syncDirectory(filepath.Dir(full)); err != nil {
+		return err
+	}
+	return nil
+}
+
 // writeObjectBytes performs the durable WORM write (v0.7.x hardening): secure
 // directory creation (component-by-component, never following a symlink), temp
 // file in the SAME directory, write + fsync, atomic rename into place, then a
@@ -625,10 +795,14 @@ func isUnsupportedDirSyncError(err error) bool {
 // reports. missing_bytes and invalid_path anomalies FAIL CLOSED instead
 // (Doctor returns an error — corruption is evidence, never a skip); the
 // reported kinds below are orphan_file and temp_file (plus invalid_path for
-// stray files outside the layout). The doctor NEVER deletes or repairs
-// anything: findings are read-only evidence.
+// stray files outside the layout) and the DOCUMENTED EXPECTED ABSENCE of the
+// physical purge lifecycle (documented_purge / documented_intent — see
+// purgeAbsenceAuthorizationsOn): a receipt-covered completion or a live durable
+// intent explains the missing bytes, so they are REPORTED as auditable
+// findings, never a corruption finding, never repaired. The doctor NEVER
+// deletes or repairs anything: findings are read-only evidence.
 type ObjectDoctorFinding struct {
-	Kind     string `json:"kind"` // orphan_file | temp_file | invalid_path
+	Kind     string `json:"kind"` // orphan_file | temp_file | invalid_path | documented_purge | documented_intent
 	ObjectID string `json:"objectId,omitempty"`
 	RelPath  string `json:"relPath,omitempty"`
 	Detail   string `json:"detail,omitempty"`
@@ -639,6 +813,14 @@ const (
 	objectFindingInvalidPath = "invalid_path"
 	objectFindingOrphanFile  = "orphan_file"
 	objectFindingTempFile    = "temp_file"
+	// objectFindingDocumentedPurge: the object's bytes are absent AND a
+	// receipt-covered COMPLETED purge execution bound to the exact object
+	// identity removed them (design §13.2 outcome 2) — expected, auditable.
+	objectFindingDocumentedPurge = "documented_purge"
+	// objectFindingDocumentedIntent: the object's bytes are absent AND a LIVE
+	// durable 'intent' execution covers them (a crash between the authorized
+	// unlink and the completion — the recovery window) — expected, auditable.
+	objectFindingDocumentedIntent = "documented_intent"
 )
 
 // doctorObjectScan audits the WORM object layer for the doctor surface
@@ -646,6 +828,12 @@ const (
 //   - every evidence_objects row must resolve to a VALID path whose bytes are
 //     PRESENT — a missing byte file or an invalid/symlinked path FAILS CLOSED
 //     (the report cannot be built: corruption is evidence, never a skip);
+//     RECONCILED: missing bytes are the documented EXPECTED ABSENCE of the
+//     physical purge lifecycle (design §13.2/§13.3 — REPORTED as an auditable
+//     finding documented_purge / documented_intent, never a corruption finding)
+//     when the immutable executions ledger carries a receipt-covered purge
+//     authorization bound to the object identity (a completed execution or a
+//     valid intent row — see purgeAbsenceAuthorizationsOn);
 //   - every byte file under the objects root is classified and REPORTED:
 //     orphan_file (valid content-addressed path with no row), temp_file
 //     (leftover .tmp-*), invalid_path (outside the content-addressed layout
@@ -653,18 +841,21 @@ const (
 //
 // The scan is strictly READ-ONLY: nothing is deleted, moved or repaired.
 func (s *SQLiteStore) doctorObjectScan() ([]ObjectDoctorFinding, error) {
-	rows, err := s.db.Query(`SELECT id, rel_path FROM evidence_objects`)
+	rows, err := s.db.Query(`SELECT id, rel_path, size FROM evidence_objects`)
 	if err != nil {
 		return nil, fmt.Errorf("corrupt store: read evidence_objects: %w", err)
 	}
 	rowByID := make(map[string]string) // object id → rel_path
+	rowSizes := make(map[string]int64) // object id → recorded size
 	for rows.Next() {
 		var id, relPath string
-		if err := rows.Scan(&id, &relPath); err != nil {
+		var size int64
+		if err := rows.Scan(&id, &relPath, &size); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("corrupt store: scan evidence_objects: %w", err)
 		}
 		rowByID[id] = relPath
+		rowSizes[id] = size
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close()
@@ -672,10 +863,33 @@ func (s *SQLiteStore) doctorObjectScan() ([]ObjectDoctorFinding, error) {
 	}
 	_ = rows.Close()
 
-	// Rows: path validity + byte presence FAIL CLOSED (missing bytes and
-	// invalid paths are corruption, never a reported-and-skipped anomaly).
+	var findings []ObjectDoctorFinding
+
+	// Rows: path validity + byte presence. Missing bytes FAIL CLOSED as corruption
+	// UNLESS a receipt-covered purge authorization explains them (the documented
+	// expected absence — a purged object or a live purge intent); the documented
+	// absences are REPORTED as auditable findings (documented_purge /
+	// documented_intent), never silently skipped; invalid paths always fail
+	// closed.
 	for id, relPath := range rowByID {
 		if err := s.assertObjectBytesPresent(relPath); err != nil {
+			var corruption *objectBytesCorruptionError
+			if errors.As(err, &corruption) && corruption.code == objectErrBytesMissing {
+				authorizations, aerr := purgeAbsenceAuthorizationsOn(context.Background(), s.db, id, rowSizes[id])
+				if aerr != nil {
+					return nil, aerr
+				}
+				if len(authorizations) > 0 {
+					// Documented expected absence (design §13.2/§13.3): the bytes
+					// were removed by a receipt-covered completion or a live durable
+					// intent covers the crash window — an auditable finding, never a
+					// corruption finding, never repaired.
+					for _, auth := range authorizations {
+						findings = append(findings, documentedAbsenceObjectFinding(auth, id, relPath))
+					}
+					continue
+				}
+			}
 			return nil, fmt.Errorf("corrupt store: evidence object %s: %w", id, err)
 		}
 	}
@@ -685,11 +899,11 @@ func (s *SQLiteStore) doctorObjectScan() ([]ObjectDoctorFinding, error) {
 		return nil, err
 	}
 	if root == "" {
-		// No root exists: any row above already failed closed (its bytes cannot
-		// exist), so reaching here means there are no rows at all.
-		return nil, nil
+		// No root exists: any row above either failed closed (its bytes cannot
+		// exist without a root) or is a documented purge absence already reported
+		// above — keep those auditable findings.
+		return findings, nil
 	}
-	var findings []ObjectDoctorFinding
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			if os.IsNotExist(err) {

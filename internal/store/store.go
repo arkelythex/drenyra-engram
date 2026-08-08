@@ -135,7 +135,32 @@ import (
 // (hold_placed, hold_lifted) — SQLite cannot alter a CHECK, so the table is
 // copied and swapped inside the migration transaction, byte-preserving every
 // existing row — docs/architecture/evidence-lifecycle-v0.8.md §3.2/§4/§7.
-const schemaVersion = 10
+//
+// v11 (v0.8.0 evidence purge pipeline, batch 4): adds the purge lifecycle
+// tables (immutable evidence_purge_requests aggregate — ONE open pipeline per
+// object —, the immutable evidence_purge_approvals decision ledger, the
+// immutable evidence_lifecycle_events log, the guarded evidence_retention_state
+// projection and the tenant-scoped evidence_purge_idempotency_keys ledger),
+// and REBUILDS the receipts singleton index uq_receipts_singleton with the
+// seven v0.8 evidence-lifecycle acts excluded (purge_requested/purge_approved/…
+// legitimately GROW per object: dual approval emits two purge_approved receipts,
+// retractions restart the pipeline) — the exact-duplicate backstop remains the
+// UNIQUE(subject_type, subject_id, action, payload_hash) constraint —
+// docs/architecture/evidence-lifecycle-v0.8.md §2/§3/§4/§5/§9. The receipts
+// action CHECK already covers all seven acts since v9, so NO table rebuild is
+// needed; the payload version advances additively to receipt-payload/v0.9.0
+// (reviewedLifecycleHash/resultingLifecycleHash fields, §5).
+//
+// v12 (v0.8.0 physical purge execution, batch 4): adds the immutable
+// evidence_purge_executions attempt ledger (design §3.7 — the exact rel_path,
+// the recorded size, the pre-removal hash and the guarded intent →
+// completed/interrupted machine), and REBUILDS the receipts table with the
+// action CHECK extended by the v0.8 execution-intent act (purge_intent — the
+// intent transaction is receipt-covered so an interrupted execution is
+// auditable) and the receipts singleton index with purge_intent excluded
+// (retries legitimately emit ONE purge_intent receipt per attempt) —
+// docs/architecture/evidence-lifecycle-v0.8.md §2/§3.7/§4/§11.
+const schemaVersion = 12
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -300,6 +325,85 @@ type Store interface {
 	// (OBJECT_NOT_FOUND when the caller's exact scope differs from the stored
 	// scope). Read-only.
 	HoldsForObject(ctx context.Context, objectID string, scope core.Scope) ([]core.EvidenceHold, error)
+	// RequestPurge opens ONE purge pipeline per object (v0.8 batch 4, design
+	// §2/§3.3/§9/§10): the authenticated request act (accounting ladder —
+	// accountant/senior_accountant/controller, deny-list first) under the FULL
+	// blocker set — scope exactness, closed-period gate, exact active retention
+	// resolution (UNKNOWN_RETENTION_STATE / RETENTION_POLICY_AMBIGUOUS /
+	// RETENTION_NOT_DUE), active blocking hold scan (HOLD_ACTIVE) and the
+	// expected lifecycle hash (LIFECYCLE_VERSION_MISMATCH) — all BEFORE authz;
+	// then (tenant, requestId) idempotency, the immutable request row (one per
+	// object), the guarded projection, the retention binding (retention_bound
+	// receipt ONLY for a newly bound policy) and the purge_requested event +
+	// receipt — all in ONE BEGIN IMMEDIATE transaction. Blockers precede authz
+	// and no override exists. Never deletes bytes.
+	RequestPurge(ctx context.Context, cmd core.RequestPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.RequestPurgeResult, error)
+	// ApprovePurge records ONE human approval (v0.8 batch 4, design §2/§3.4/§8/
+	// §9): the default approver (records_compliance_officer |
+	// tenant_records_owner) for order 1 and, for a policy-designated
+	// fiscal/material category, a DISTINCT controller or tax_responsible for
+	// order 2. The FULL blocker set is re-checked BEFORE authz (approval can
+	// never override a blocker — §1); SoD and the distinct-principal rule are
+	// enforced store-side against the stored requester/first approver. The
+	// request flips to 'approved' and the projection to 'purge_approved' only
+	// when the category's approval requirements are COMPLETE. The immutable
+	// approval row + event + receipt commit in ONE BEGIN IMMEDIATE transaction.
+	ApprovePurge(ctx context.Context, cmd core.ApprovePurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.ApprovePurgeResult, error)
+	// RejectPurge records the TERMINAL rejection (design §2): an authenticated
+	// default approver closes the request with a reason; the projection moves
+	// to purge_rejected and never re-opens. The immutable decision row + event
+	// + receipt commit atomically.
+	RejectPurge(ctx context.Context, cmd core.RejectPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.RejectPurgeResult, error)
+	// CancelPurge is the ORIGINAL requester's idempotent retraction (design
+	// §2): the pipeline returns to stored and a fresh request is a fresh act on
+	// the same one-per-object row. The event + receipt commit atomically.
+	CancelPurge(ctx context.Context, cmd core.CancelPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.CancelPurgeResult, error)
+	// WithdrawPurge is the approval retraction (design §2/§7): a default
+	// approver or dual second approver withdraws an approved pipeline with a
+	// reason — the documented cleanup. The pipeline returns to stored; the
+	// immutable decision row + event + receipt commit atomically.
+	WithdrawPurge(ctx context.Context, cmd core.WithdrawPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.WithdrawPurgeResult, error)
+	// ExecutePurge physically executes an APPROVED purge pipeline (v0.8 batch 4,
+	// design §2/§3.7/§9/§11) through the TWO-PHASE, RECEIPT-COVERED protocol:
+	// a durable intent transaction (request re-read under scope, (tenant,
+	// executionId) idempotency, the FULL blocker re-check — closed-period gate,
+	// retention re-resolution, eligibility, active blocking holds INCLUDING any
+	// placed after approval, lifecycle snapshot/version — then authz, the
+	// evidence_purge_executions row in state 'intent' and the purge_intent
+	// event + receipt, COMMIT without touching bytes), the byte removal OUTSIDE
+	// SQL (re-hash before unlink — a mismatch ABORTS, nothing is deleted), and a
+	// durable completion transaction (request re-read under scope again, the
+	// executions row flipping to 'completed' with the completion receipt id, the
+	// purge_executed event + receipt, the projection flipping to 'purged' and
+	// the request to 'executed'). Retry/idempotency is safe by EXECUTION ID: a
+	// replay returns the stored outcome; an interrupted intent is REPORTED as
+	// PURGE_EXECUTION_INTERRUPTED, never pretended completed. Only object bytes
+	// are removed; the immutable metadata/hash/link/event/approval/receipt rows
+	// never change.
+	ExecutePurge(ctx context.Context, cmd core.ExecutePurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.ExecutePurgeResult, error)
+	// ExportEvidenceLifecycle returns the deterministic, tenant/RUC-scoped
+	// evidence-lifecycle audit bundle (v0.8 batch 4, design §12 — WU-3) for an
+	// explicit RUC-scoped request (tenant/company/RUC, optional YYYYMM period —
+	// an empty period selects ALL periods of the RUC). READ-ONLY by contract:
+	// the whole read runs inside ONE read-only transaction that is only ever
+	// rolled back, and NO receipt, NO idempotency key and NO row write is ever
+	// emitted — the export is a QUERY, not a material export act. The bundle is
+	// DETERMINISTIC (canonical ordering + fixed property order + the
+	// self-hashing manifest: bundleHash over the canonical manifest core and the
+	// content-addressed exportId "evidence-export/v0.8.0:<bundleHash>"), so
+	// identical data yields the identical bundle and identity and
+	// replay/idempotency is structural. Scope is enforced structurally by every
+	// query AND double-checked by the fail-closed core validators
+	// (EXPORT_SCOPE_VIOLATION on any row that would cross the
+	// tenant/company/RUC/period boundary — never a silent drop). The bundle
+	// carries object metadata, the lifecycle-state projection, the BOUND
+	// retention policies (resolution evidence), holds, purge
+	// requests/approvals/executions, lifecycle events, the complete per-subject
+	// receipt chains (chain order) and the referenced PUBLIC signing keys. A
+	// purged object exports immutable metadata/hash/lifecycle/receipt evidence
+	// ONLY (bytes: "purged" + the purge_executed completion receipt hash);
+	// object bytes are never read or carried.
+	ExportEvidenceLifecycle(ctx context.Context, criteria core.EvidenceExportCriteria) (core.EvidenceExportBundle, error)
 	Close() error
 }
 
@@ -360,10 +464,9 @@ func defaultObjectsRoot(dbPath string) string {
 // DEFAULT objects root (<dir-of-db>/objects) and applies the versioned
 // schema. Fresh stores bootstrap to the v2 layout exactly, then run the SAME
 // additive migration chain used for existing stores
-// (v2→v3→v4→v5→v6→v7→v8→v9) — one tested migration path. A v1 store is
-// migrated additively (single transaction), then the v2→v3, v3→v4, v4→v5,
-// v5→v6, v6→v7, v7→v8, v8→v9 and v9→v10 migrations each run in their own
-// single transaction. A corrupt or unsupported store fails closed: it never
+// (v2→v3→v4→v5→v6→v7→v8→v9→v10→v11) — one tested migration path. A v1 store is
+// migrated additively (single transaction), then each migration runs in its
+// own single transaction. A corrupt or unsupported store fails closed: it never
 // fabricates data
 // (contracts/provenance.md frozen policy). An OPTIONAL receipt signer may be
 // attached at open (nil signer → no receipt emission); the store↔signer
@@ -403,8 +506,8 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
 	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4,
-	// v4→v5, v5→v6, v6→v7, v7→v8 and v8→v9 migrations each run in their own
-	// single transaction before use.
+	// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 and v11→v12
+	// migrations each run in their own single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -468,6 +571,20 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 	}
 	if version == 9 {
 		if err := migrateV9ToV10(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 10
+	}
+	if version == 10 {
+		if err := migrateV10ToV11(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 11
+	}
+	if version == 11 {
+		if err := migrateV11ToV12(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -3077,8 +3194,11 @@ type IdentitySeed struct {
 
 // SeedIdentity inserts the company, membership and role rows for an identity
 // fixture in ONE transaction (FK order: companies → memberships →
-// membership_roles). Duplicate rows fail loudly — seeding is explicit, never a
-// silent overwrite.
+// membership_roles). The companies row is created ONCE per (tenant, company):
+// the multi-principal same-company fixtures seed several identities in the SAME
+// company (SoD needs separate principals in one tenant/company), so a duplicate
+// companies insert is SKIPPED, never a silent overwrite — memberships and roles
+// stay explicit and still fail loudly on duplicates.
 func (s *SQLiteStore) SeedIdentity(seed IdentitySeed) error {
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -3092,8 +3212,13 @@ func (s *SQLiteStore) SeedIdentity(seed IdentitySeed) error {
 		}
 	}()
 	now := nowISO()
+	// The companies row is seeded ONCE per (tenant, company): the multi-principal
+	// same-company fixtures seed several identities in the SAME company and the
+	// table is UNIQUE(tenant_id,id)/UNIQUE(tenant_id,ruc) — a duplicate insert is
+	// skipped (INSERT OR IGNORE), never an overwrite; memberships/roles below stay
+	// explicit and still fail loudly on duplicates.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO companies (id, tenant_id, ruc, name, active, created_at) VALUES (?, ?, ?, ?, 1, ?)`,
+		`INSERT OR IGNORE INTO companies (id, tenant_id, ruc, name, active, created_at) VALUES (?, ?, ?, ?, 1, ?)`,
 		seed.CompanyID, seed.TenantID, seed.CompanyRUC, seed.CompanyName, now,
 	); err != nil {
 		return fmt.Errorf("seed identity: company: %w", err)
@@ -6056,7 +6181,14 @@ func (s *SQLiteStore) linkRefsByID(ctx context.Context, table, memoryID string) 
 // the configured local objects root and ObjectFindings reports orphan / temp /
 // stray-layout byte files (NEVER deleted, NEVER repaired); rows whose bytes
 // are missing or whose paths are invalid FAIL CLOSED instead (the report is
-// not built — corruption is evidence).
+// not built — corruption is evidence) UNLESS the absence is the DOCUMENTED
+// EXPECTED ABSENCE of the physical purge lifecycle — missing bytes covered by a
+// receipt-covered completion or a live durable intent are REPORTED as auditable
+// findings (objectFindings kinds documented_purge / documented_intent), never
+// corruption, never repaired. The purge lifecycle tables are counted and every
+// 'intent' / 'interrupted' execution row is REPORTED as an auditable finding
+// (purgeFindings — §13.3): the durable intent committed but the completion did
+// not, the crash-recovery window surfaced for operator visibility.
 type DoctorReport struct {
 	SchemaVersion    int                   `json:"schemaVersion"`
 	Storage          string                `json:"storage"`
@@ -6071,12 +6203,38 @@ type DoctorReport struct {
 	PendingApprovals int                   `json:"pendingApprovals"`
 	ObjectsRoot      string                `json:"objectsRoot"`
 	ObjectFindings   []ObjectDoctorFinding `json:"objectFindings,omitempty"`
+
+	// Purge lifecycle table counts (design §13.3): every v10–v12 lifecycle
+	// table — the hold ledger, the purge aggregate/decision/event/projection
+	// tables and the immutable execution-attempt ledger.
+	PurgeRequests        int `json:"purgeRequests"`
+	PurgeApprovals       int `json:"purgeApprovals"`
+	LifecycleEvents      int `json:"lifecycleEvents"`
+	RetentionState       int `json:"retentionState"`
+	PurgeIdempotencyKeys int `json:"purgeIdempotencyKeys"`
+	PurgeExecutions      int `json:"purgeExecutions"`
+	Holds                int `json:"holds"`
+	HoldIdempotencyKeys  int `json:"holdIdempotencyKeys"`
+
+	// PurgeFindings reports every 'intent' / 'interrupted' execution row
+	// (design §13.3 — PURGE_EXECUTION_INTERRUPTED operator visibility): the
+	// durable intent committed but the completion did not — the crash recovery
+	// window. REPORTED findings, never failed, never repaired; the doctor is
+	// read-only evidence.
+	PurgeFindings []PurgeDoctorFinding `json:"purgeFindings,omitempty"`
 }
 
 // Doctor verifies the schema (fail closed on corruption) and reports counts.
 func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 	// Fail closed: every expected table and the immutability guard must exist.
-	for _, table := range []string{"schema_meta", "observations", "relations", "transition_log", "evidence_links", "rule_links", "evidence_objects"} {
+	// The v10–v12 purge lifecycle tables are part of the current schema: a
+	// store missing them cannot produce a faithful lifecycle snapshot.
+	for _, table := range []string{
+		"schema_meta", "observations", "relations", "transition_log", "evidence_links", "rule_links", "evidence_objects",
+		"evidence_holds", "evidence_hold_idempotency_keys",
+		"evidence_purge_requests", "evidence_purge_approvals", "evidence_lifecycle_events",
+		"evidence_retention_state", "evidence_purge_idempotency_keys", "evidence_purge_executions",
+	} {
 		var name string
 		if err := s.db.QueryRow(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&name); err != nil {
 			return DoctorReport{}, fmt.Errorf("corrupt store: expected table %q is missing: %w", table, err)
@@ -6111,6 +6269,14 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 		{`SELECT COUNT(*) FROM rule_links`, &report.RuleLinks},
 		{`SELECT COUNT(*) FROM evidence_objects`, &report.EvidenceObjects},
 		{`SELECT COUNT(*) FROM observations WHERE status = 'pending_review'`, &report.PendingApprovals},
+		{`SELECT COUNT(*) FROM evidence_purge_requests`, &report.PurgeRequests},
+		{`SELECT COUNT(*) FROM evidence_purge_approvals`, &report.PurgeApprovals},
+		{`SELECT COUNT(*) FROM evidence_lifecycle_events`, &report.LifecycleEvents},
+		{`SELECT COUNT(*) FROM evidence_retention_state`, &report.RetentionState},
+		{`SELECT COUNT(*) FROM evidence_purge_idempotency_keys`, &report.PurgeIdempotencyKeys},
+		{`SELECT COUNT(*) FROM evidence_purge_executions`, &report.PurgeExecutions},
+		{`SELECT COUNT(*) FROM evidence_holds`, &report.Holds},
+		{`SELECT COUNT(*) FROM evidence_hold_idempotency_keys`, &report.HoldIdempotencyKeys},
 	}
 	for _, c := range counts {
 		if err := s.db.QueryRow(c.query).Scan(c.dst); err != nil {
@@ -6128,6 +6294,18 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 		return DoctorReport{}, err
 	}
 	report.ObjectFindings = objectFindings
+
+	// Purge execution-ledger audit (§13.3): every 'intent' / 'interrupted'
+	// execution row is REPORTED as an auditable finding with its exact
+	// identity, intent metadata, completion-receipt presence and a read-only
+	// bytes-state probe. Runs AFTER the object scan so the fail-closed
+	// corruption gate stays authoritative: undocumented missing bytes abort
+	// before any finding is reported.
+	purgeFindings, err := s.doctorPurgeExecutionsScan()
+	if err != nil {
+		return DoctorReport{}, err
+	}
+	report.PurgeFindings = purgeFindings
 	return report, nil
 }
 

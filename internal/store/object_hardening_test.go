@@ -621,3 +621,261 @@ func TestSyncDirectoryToleranceAndHappyPath(t *testing.T) {
 		t.Fatalf("sync of a vanished directory must be a no-op: %v", err)
 	}
 }
+
+// ──────────────────────────────────────────────
+// Doctor — purge lifecycle diagnostics (design §13.3, WU-1)
+// ──────────────────────────────────────────────
+
+// TestDoctorReportsLifecycleTableCounts proves the doctor's §13.3 lifecycle
+// table counts: a store without lifecycle state reports zeros on every
+// lifecycle table and an approved (pre-execution) pipeline is counted exactly
+// (one request, one approval, the request-bound projection, the command-ledger
+// keys and the events).
+func TestDoctorReportsLifecycleTableCounts(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+
+	report, err := s.Doctor()
+	if err != nil {
+		t.Fatalf("doctor on empty store: %v", err)
+	}
+	for name, got := range map[string]int{
+		"purgeRequests": report.PurgeRequests, "purgeApprovals": report.PurgeApprovals,
+		"lifecycleEvents": report.LifecycleEvents, "retentionState": report.RetentionState,
+		"purgeIdempotencyKeys": report.PurgeIdempotencyKeys, "purgeExecutions": report.PurgeExecutions,
+		"holds": report.Holds, "holdIdempotencyKeys": report.HoldIdempotencyKeys,
+	} {
+		if got != 0 {
+			t.Fatalf("empty store %s = %d, want 0", name, got)
+		}
+	}
+
+	approvedPurgePipeline(t, s) // one stored object, one bound policy, one request, one approval
+	report, err = s.Doctor()
+	if err != nil {
+		t.Fatalf("doctor after the pipeline: %v", err)
+	}
+	if report.PurgeRequests != 1 || report.PurgeApprovals != 1 {
+		t.Fatalf("requests/approvals = %d/%d, want 1/1", report.PurgeRequests, report.PurgeApprovals)
+	}
+	if report.RetentionState != 1 {
+		t.Fatalf("retentionState = %d, want 1 (the request-bound projection)", report.RetentionState)
+	}
+	if report.PurgeExecutions != 0 {
+		t.Fatalf("purgeExecutions = %d, want 0 before any execution", report.PurgeExecutions)
+	}
+	if report.LifecycleEvents < 3 {
+		t.Fatalf("lifecycleEvents = %d, want >= 3 (retention bound + request + approval)", report.LifecycleEvents)
+	}
+	if report.PurgeIdempotencyKeys < 2 {
+		t.Fatalf("purgeIdempotencyKeys = %d, want >= 2 (request + approval keys)", report.PurgeIdempotencyKeys)
+	}
+}
+
+// TestDoctorReportsIntentExecutionFindingBytesAbsent freezes the §13.3 doctor
+// finding of the CRASH WINDOW: the durable intent committed (executions row
+// 'intent'), the completion never did and the bytes are already gone (a crash
+// between the authorized unlink and the completion). The doctor must NOT fail
+// closed: it REPORTS the intent as an auditable finding with the exact
+// execution/request/object identity, the intent metadata, NO completion receipt
+// and bytesState absent, and reconciles the object-layer absence as
+// documented_intent (never generic corruption). The scan makes ZERO writes.
+func TestDoctorReportsIntentExecutionFindingBytesAbsent(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+	execID := "00000000-0000-4000-8000-00000000a001"
+	fx := crashWindowFixture(t, s, execID)
+
+	report, err := s.Doctor()
+	if err != nil {
+		t.Fatalf("doctor must NOT fail closed on a documented intent absence: %v", err)
+	}
+	if len(report.PurgeFindings) != 1 {
+		t.Fatalf("purgeFindings = %+v, want exactly the intent row", report.PurgeFindings)
+	}
+	f := report.PurgeFindings[0]
+	if f.Kind != purgeFindingIntent || f.State != string(core.PurgeExecutionIntent) {
+		t.Fatalf("finding = %+v, want PURGE_EXECUTION_INTENT / intent", f)
+	}
+	if f.ExecutionID != execID || f.RequestID != fx.request.RequestID || f.ObjectID != fx.objectID {
+		t.Fatalf("finding identity = %+v, want the crash-window execution/request/object", f)
+	}
+	if f.BytesState != purgeBytesStateAbsent {
+		t.Fatalf("bytesState = %q, want absent (crash after the authorized unlink)", f.BytesState)
+	}
+	if f.CompletionReceiptID != "" {
+		t.Fatalf("an intent finding must carry NO completion receipt: %q", f.CompletionReceiptID)
+	}
+	if f.IntentAt == "" || f.IntentBy == "" || f.PreRemovalHash != fx.objectID || f.IntentReviewedHash == "" {
+		t.Fatalf("intent metadata incomplete: %+v", f)
+	}
+	// The exact stored scope tuple is reported from the request row (the scope
+	// authority — never a caller-declared or derived scope).
+	if f.TenantID != testOrgID || f.CompanyID != "acme" || f.RUC != testRucA || f.Period != testPeriod {
+		t.Fatalf("scope tuple = %+v, want the stored request scope", f)
+	}
+
+	var documented bool
+	for _, of := range report.ObjectFindings {
+		if of.Kind == objectFindingDocumentedIntent && of.ObjectID == fx.objectID {
+			documented = true
+		}
+	}
+	if !documented {
+		t.Fatalf("objectFindings = %+v, want a documented_intent finding for %s", report.ObjectFindings, fx.objectID)
+	}
+
+	// Zero writes: the intent row and the missing-bytes state survive the scan.
+	if got := executionState(t, s, execID); got != string(core.PurgeExecutionIntent) {
+		t.Fatalf("execution state after doctor = %q, want intent (zero writes)", got)
+	}
+}
+
+// TestDoctorReportsIntentExecutionFindingBytesPresent freezes the §13.3 doctor
+// finding of a PRESENT-bytes intent: a corrupt-byte abort leaves the attempt in
+// 'intent' with the bytes still on disk. The doctor reports the intent finding
+// with bytesState present, produces NO documented-absence object finding and
+// never repairs the corrupt bytes.
+func TestDoctorReportsIntentExecutionFindingBytesPresent(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+	fx := approvedPurgePipeline(t, s)
+	path := objectBytesPath(t, s, fx.object)
+	if err := os.WriteFile(path, []byte("CORRUPTED-BYTES-NOT-THE-ORIGINAL"), 0o600); err != nil {
+		t.Fatalf("corrupt object bytes: %v", err)
+	}
+	_, err := s.ExecutePurge(context.Background(), core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           "00000000-0000-4000-8000-00000000a002",
+	}, recordsPrincipal(t))
+	if err == nil || !strings.Contains(err.Error(), objectErrHashMismatch) {
+		t.Fatalf("corrupt-byte execution = %v, want OBJECT_HASH_MISMATCH", err)
+	}
+
+	report, err := s.Doctor()
+	if err != nil {
+		t.Fatalf("doctor on a present-bytes intent: %v", err)
+	}
+	if len(report.PurgeFindings) != 1 {
+		t.Fatalf("purgeFindings = %+v, want exactly the intent row", report.PurgeFindings)
+	}
+	f := report.PurgeFindings[0]
+	if f.Kind != purgeFindingIntent || f.BytesState != purgeBytesStatePresent {
+		t.Fatalf("finding = %+v, want PURGE_EXECUTION_INTENT with bytesState present", f)
+	}
+	for _, of := range report.ObjectFindings {
+		if (of.Kind == objectFindingDocumentedPurge || of.Kind == objectFindingDocumentedIntent) && of.ObjectID == fx.objectID {
+			t.Fatalf("present bytes must not be a documented absence: %+v", of)
+		}
+	}
+	// The doctor never repairs: the corrupt bytes survive.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("corrupt bytes must survive the doctor: %v", err)
+	}
+}
+
+// TestDoctorReportsInterruptedExecutionAndDocumentedPurge freezes the §13.3
+// findings of the FULL RETRY history: a corrupt-byte abort (attempt 1 stays
+// 'intent'), a restored-bytes fresh-id retry (attempt 1 becomes TERMINAL
+// 'interrupted', attempt 2 completes and removes the bytes). The doctor reports
+// the interrupted attempt (PURGE_EXECUTION_INTERRUPTED, bytesState absent, NO
+// completion receipt) and reconciles the object-layer absence as
+// documented_purge — the receipt-covered completion — never corruption, never
+// repaired, zero writes.
+func TestDoctorReportsInterruptedExecutionAndDocumentedPurge(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+	fx := approvedPurgePipeline(t, s)
+	path := objectBytesPath(t, s, fx.object)
+	original := []byte("purge-target-bytes-0123456789")
+
+	if err := os.WriteFile(path, []byte("CORRUPTED-BYTES-NOT-THE-ORIGINAL"), 0o600); err != nil {
+		t.Fatalf("corrupt object bytes: %v", err)
+	}
+	if _, err := s.ExecutePurge(context.Background(), core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           "00000000-0000-4000-8000-00000000a011",
+	}, recordsPrincipal(t)); err == nil || !strings.Contains(err.Error(), objectErrHashMismatch) {
+		t.Fatalf("attempt 1 = %v, want OBJECT_HASH_MISMATCH", err)
+	}
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("restore object bytes: %v", err)
+	}
+	result, err := s.ExecutePurge(context.Background(), core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           "00000000-0000-4000-8000-00000000a012",
+	}, recordsPrincipal(t))
+	if err != nil || result.Execution.State != core.PurgeExecutionCompleted {
+		t.Fatalf("fresh-id retry = %+v err=%v, want a completed attempt", result, err)
+	}
+	if got := executionState(t, s, "00000000-0000-4000-8000-00000000a011"); got != string(core.PurgeExecutionInterrupted) {
+		t.Fatalf("stale attempt state = %q, want interrupted", got)
+	}
+
+	report, err := s.Doctor()
+	if err != nil {
+		t.Fatalf("doctor after the retry history: %v", err)
+	}
+	if len(report.PurgeFindings) != 1 {
+		t.Fatalf("purgeFindings = %+v, want exactly the interrupted row", report.PurgeFindings)
+	}
+	f := report.PurgeFindings[0]
+	if f.Kind != purgeFindingInterrupted || f.State != string(core.PurgeExecutionInterrupted) {
+		t.Fatalf("finding = %+v, want PURGE_EXECUTION_INTERRUPTED / interrupted", f)
+	}
+	if f.ExecutionID != "00000000-0000-4000-8000-00000000a011" || f.BytesState != purgeBytesStateAbsent {
+		t.Fatalf("finding = %+v, want the interrupted attempt with bytesState absent", f)
+	}
+	if f.CompletionReceiptID != "" {
+		t.Fatalf("an interrupted finding must carry NO completion receipt: %q", f.CompletionReceiptID)
+	}
+
+	var documentedPurge bool
+	for _, of := range report.ObjectFindings {
+		if of.Kind == objectFindingDocumentedPurge && of.ObjectID == fx.objectID {
+			documentedPurge = true
+		}
+		if of.Kind == objectFindingDocumentedIntent && of.ObjectID == fx.objectID {
+			t.Fatalf("a completed execution must classify as documented_purge, not documented_intent: %+v", of)
+		}
+	}
+	if !documentedPurge {
+		t.Fatalf("objectFindings = %+v, want a documented_purge finding for %s", report.ObjectFindings, fx.objectID)
+	}
+	// Zero writes: the guarded interrupted row is untouched by the scan.
+	if got := executionState(t, s, "00000000-0000-4000-8000-00000000a011"); got != string(core.PurgeExecutionInterrupted) {
+		t.Fatalf("execution state after doctor = %q, want interrupted (zero writes)", got)
+	}
+}
+
+// TestDoctorInterruptedOnlyHistoryNotAnAuthorization freezes the §13.2/§13.3
+// boundary: a stale 'interrupted'-ONLY executions history (no live intent, no
+// completed execution) is NOT a purge authorization — missing bytes stay the
+// hard OBJECT_BYTES_MISSING integrity incident and the doctor FAILS CLOSED.
+// The guarded state machine cannot produce this shape through the API (a
+// fresh-id retry always inserts a new intent in the same transaction), so the
+// test plants the interrupted row directly at the schema level (INSERTs are
+// not guarded — only UPDATE/DELETE are).
+func TestDoctorInterruptedOnlyHistoryNotAnAuthorization(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+	fx := approvedPurgePipeline(t, s)
+	if _, err := s.db.Exec(`INSERT INTO evidence_purge_executions
+		(execution_id, request_id, object_id, rel_path, size, pre_removal_hash,
+		 intent_reviewed_hash, state, intent_at, intent_by, completed_at, completed_by, completion_receipt_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'interrupted', ?, ?, NULL, NULL, NULL)`,
+		"00000000-0000-4000-8000-00000000a021", fx.request.RequestID, fx.objectID,
+		fx.object.RelPath, fx.object.Size, fx.objectID, strings.Repeat("c", 64),
+		"2026-08-05T12:00:00Z", "exec-planted"); err != nil {
+		t.Fatalf("plant interrupted-only execution: %v", err)
+	}
+	if err := os.Remove(objectBytesPath(t, s, fx.object)); err != nil {
+		t.Fatalf("remove object bytes: %v", err)
+	}
+	if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), objectErrBytesMissing) {
+		t.Fatalf("doctor with interrupted-only missing bytes = %v, want OBJECT_BYTES_MISSING (fail closed)", err)
+	}
+}

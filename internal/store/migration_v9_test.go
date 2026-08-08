@@ -79,8 +79,8 @@ func TestFreshStoreBootstrapsV9RetentionPolicies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema_version = %d, want 10 (the chain continues v2→v3→v4→v5→v6→v7→v8→v9→v10)", version)
+	if version != 12 {
+		t.Fatalf("schema_version = %d, want 12 (the chain continues v2→v3→v4→v5→v6→v7→v8→v9→v10→v11→v12)", version)
 	}
 
 	// The whole v3…v8 surface survives the chain (additive migrations never

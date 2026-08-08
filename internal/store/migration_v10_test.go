@@ -2,7 +2,7 @@
 // no float is ever used for money; version/sequence numbers are JSON integers,
 // never floats. This module verifies the v9→v10 additive migration (v0.8 batch 3
 // object-level legal holds — docs/architecture/evidence-lifecycle-v0.8.md §3.2/
-// §4/§7): fresh stores bootstrap to schema_version=10 with the immutable
+// §4/§7): fresh stores bootstrap to schema_version=11 with the immutable
 // evidence_holds table (OBJECT-LEVEL ONLY — object_id NOT NULL FK, exact scope
 // columns, object index, no-delete trigger, placed-columns immutability trigger
 // and the one-way lift closure trigger) and the tenant-scoped
@@ -56,8 +56,8 @@ func TestFreshStoreBootstrapsV10Holds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema_version = %d, want 10 (the chain continues v2→v3→…→v9→v10)", version)
+	if version != 12 {
+		t.Fatalf("schema_version = %d, want 12 (the chain continues v2→v3→…→v9→v10→v11→v12)", version)
 	}
 
 	// The whole v3…v9 surface survives the chain (additive migrations never
