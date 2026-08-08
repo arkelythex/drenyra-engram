@@ -1,9 +1,14 @@
-# Evidence Lifecycle v0.8 — Policy-Backed Retention and Purge (Design)
+# Evidence Lifecycle v0.8 — Policy-Backed Retention and Purge (Delivered)
 
-> **Status:** PARTIALLY DELIVERED — batch 1 (pure authorization policy +
-> lifecycle role tokens) is IMPLEMENTED (see §8 and the delivery-status note
-> below); lifecycle storage (schema, store transitions, holds, retention
-> writes, receipts, exports, purge byte deletion) remains DEFERRED.
+> **Status:** DELIVERED (batches 1–4, schema v12 — the full local-first v0.8
+> slice below is implemented and tested; the Go store is primary, with
+> TypeScript mirrors for the receipt payload vocabulary, the object-level hold
+> model and the lifecycle policy — see the four delivery-status notes).
+> Remaining scope is documented per section: the §13.1 named lifecycle
+> verification layers, the deployment-configured scheduler executor surface
+> (§11), and **bundle import/restore — the lifecycle export is a read-only
+> query and importing a bundle into another store is explicitly OUT OF SCOPE**
+> (§12).
 > **Date:** 2026-08-07 · **Basis:** delivered v0.7.0 EvidenceObject slice
 > ([evidence-object-v0.7.md](evidence-object-v0.7.md)), the frozen contracts
 > ([contracts/lifecycle.md](../../contracts/lifecycle.md),
@@ -11,7 +16,7 @@
 > [contracts/receipts.md](../../contracts/receipts.md),
 > [contracts/verification.md](../../contracts/verification.md),
 > [contracts/scope.md](../../contracts/scope.md),
-> [contracts/closing.md](../../contracts/closing.md)), the deferred stages of the
+> [contracts/closing.md](../../contracts/closing.md)), the delivered stages of the
 > [threat model](../security/evidence-lifecycle-and-threat-model.md) (§2–§3, §6),
 > ADR-003, and the **approved governance decision** (§1, normative).
 >
@@ -34,14 +39,16 @@ auto-deletes, auto-approves, or claims statutory authority.
 2. Read the **state machine** (§2) and **physical purge semantics** (§11) — the
    two behaviors that differ most from the delivered v0.7 slice.
 3. Read the **authz/SoD matrix** (§8) — the deny-list and dual-approval rules are
-   the highest-risk surface; **this is the part already delivered (batch 1)**.
+   the highest-risk surface; the pure policy shipped with batch 1 and the
+   storage batches 2–4 follow below.
 4. Verify with the **checklist** (§18) that no section claims cloud/OIDC/SUNAT/
    ERP/OCR or legal compliance.
 
 ## Delivery status (batch 1 of the v0.8 plan — DELIVERED)
 
-This narrow batch implements ONLY the pure policy model and authorization
-roles. Everything that touches bytes or storage remains deferred.
+This narrow batch implemented ONLY the pure policy model and authorization
+roles. Everything that touched bytes or storage remained deferred at the
+time — delivered by batches 2–4 below.
 
 - **DELIVERED (this batch):**
   - The four lifecycle role tokens `records_compliance_officer`,
@@ -65,18 +72,19 @@ roles. Everything that touches bytes or storage remains deferred.
     covering the role matrices, deny-list precedence, SoD, dual approval,
     cross-tenant/company, and principal authentication failures (inactive
     membership, low assurance).
-- **DEFERRED (remaining lifecycle storage):** schema v8→v9 and all tables
+- **DEFERRED (at the time of this batch):** schema v8→v9 and all tables
   (§3–§4), store transitions and blockers (§2, §9–§11), retention policy and
   holds storage (§6–§7), receipts (§5), HTTP/MCP/CLI surfaces (§9, §14),
   deterministic export (§12), and the verification/doctor layers (§13).
-  Sections below remain the design target for those deferred batches.
+  Those sections were the design target and were delivered by batches 2–4
+  (below).
 
 ## Delivery status (batch 2 of the v0.8 plan — retention policy storage + policy put/resolve/evaluate)
 
-This narrow batch delivers the retention-policy storage layer and its narrow
+This narrow batch delivered the retention-policy storage layer and its narrow
 policy surfaces (§3.1/§4/§6/§9): NO holds, NO purge, NO export, NO deletion,
-NO scheduling — the purge-transition acts stay frozen for the deferred
-holds/request/approval/execution batches.
+NO scheduling — the purge-transition acts stayed frozen until the later
+holds/request/approval/execution batches (below) delivered them.
 
 - **DELIVERED (this batch):**
   - schema v8→v9, one fail-closed transaction (§4): the immutable
@@ -84,7 +92,7 @@ holds/request/approval/execution batches.
 no-update/no-delete triggers), the tenant-scoped
 `retention_policy_idempotency_keys` ledger, and the receipts action CHECK
 extended by the seven v0.8 evidence-lifecycle acts (layout verbatim;
-emission stays deferred — §4 step 3);
+emission lands with object binding — batch 4);
   - `PutRetentionPolicy` / `ResolveRetentionPolicy` /
 `EvaluatePurgeEligibility` (store + API + HTTP + CLI + MCP): the
 authenticated administration put (deny-list first, then
@@ -101,10 +109,109 @@ and the `retention-policy put|resolve|evaluate` CLI commands (the put
 derives the principal from the stored CLI session; reads are exact
 scope-first). A policy put emits NO receipt (a policy put is not an
 object-chain act; the retention_bound receipt lands with object binding).
-- **DEFERRED (remaining lifecycle storage):** holds storage and transitions
+- **DEFERRED (at the time of this batch):** holds storage and transitions
   (§7), purge request/approval/execution (§2, §9–§11, §13), deterministic
-  export (§12) and the verification/doctor layers (§13). Sections below
-  remain the design target for those deferred batches.
+  export (§12) and the verification/doctor layers (§13). Those sections
+  were the design target and were delivered by batches 3–4 (below).
+
+## Delivery status (batch 3 of the v0.8 plan — holds storage + surfaces)
+
+This batch delivered the first-class object-level hold records (§3.2/§7,
+schema v10):
+
+- **DELIVERED (this batch):**
+  - schema v9→v10, one fail-closed transaction: the immutable `evidence_holds`
+    table (object-level only — scope-level holds were cut from the delivered
+    slice, closed kind enum, one-way
+    `lifted_at/lifted_by/lift_reason` NULL→value closure, exact scope tuple), the
+    tenant-scoped `evidence_hold_idempotency_keys` ledger, and the receipts
+    action CHECK extended by `hold_placed`/`hold_lifted`;
+  - `PlaceHold` / `LiftHold` / `ListHolds` (store + API + HTTP + CLI + MCP):
+    the authenticated preservation mutations (principal pre-verified, deny-list
+    first, `place_hold`/`lift_hold` actions of the extended evidence-lifecycle
+    policy) that DELIBERATELY bypass the closed-period gate (holds only
+    preserve evidence), `(tenant, requestId)` idempotency, `hold_placed` /
+    `hold_lifted` events + receipts emitted atomically on the `evidence_object`
+    chain;
+  - surfaces: `POST /accounting/objects/{objectId}/holds`,
+    `POST /accounting/holds/{holdId}/lift`, `GET /accounting/objects/{objectId}/holds`
+    (HTTP); the `accounting_hold_place|lift|holds_list` MCP tools (mutations
+    fail closed with AUTHENTICATION_REQUIRED on the session-less stdio server);
+    the `hold place|lift|list` CLI commands (principal from the stored CLI
+    session).
+  - Receipt payload version advances to `receipt-payload/v0.8.0` for the hold
+    acts (additive, shape unchanged — the envelope-hash fields are reused).
+- **DEFERRED (at the time of this batch):** purge request/approval/execution
+  (§2, §9–§11), deterministic export (§12), verification/doctor layers (§13)
+  — delivered by batch 4 (below).
+
+## Delivery status (batch 4 of the v0.8 plan — purge pipeline + physical execution + export + verification/doctor + surfaces)
+
+This batch completes the v0.8 slice: the full purge machine, the physical
+purge protocol, the deterministic export bundle, the documented-purge
+verification/doctor behavior and the HTTP/CLI/MCP surfaces (schemas v11 and v12).
+
+- **DELIVERED (this batch):**
+  - schema v10→v11 (one fail-closed transaction): the immutable
+    `evidence_purge_requests` aggregate (ONE open pipeline per object —
+    `UNIQUE(object_id)`, guarded status machine, immutable evidence columns with
+    the documented retraction-cycle exception), the immutable
+    `evidence_purge_approvals` decision ledger (decision token, 1-based
+    `approval_order` 1|2, reviewed H1 / resulting H2 hashes, full principal
+    snapshot, frozen policy version), the immutable `evidence_lifecycle_events`
+    log, the guarded `evidence_retention_state` projection and the tenant-scoped
+    `evidence_purge_idempotency_keys` ledger; the receipts singleton index is
+    rebuilt excluding the seven purge acts (purge acts legitimately grow per
+    object — the exact-duplicate backstop stays the table UNIQUE constraint);
+  - schema v11→v12 (one fail-closed transaction): the immutable
+    `evidence_purge_executions` attempt ledger (`intent → completed |
+    interrupted`, exact rel_path/size, pre-removal hash, bound
+    `intent_reviewed_hash`) and the receipts table copied+swapped to extend the
+    action CHECK with `purge_intent` (the singleton index excludes it — one
+    intent receipt per attempt);
+  - the full purge machine (`RequestPurge` / `ApprovePurge` (order 1 + dual
+    second approval are the SAME operation — the store derives the order from
+    the decision ledger) / `RejectPurge` / `CancelPurge` / `WithdrawPurge` /
+    `ExecutePurge`): full blocker set re-checked BEFORE authz on every gate
+    (closed-period gate, exact retention resolution + eligibility, active
+    blocking hold scan including post-approval holds, lifecycle snapshot/version
+    drift — approval can never override a blocker), requester ≠ approver and
+    distinct-principal SoD enforced store-side against the STORED requester/first
+    approver, `(tenant, requestId)` idempotency, receipts carrying the canonical
+    reviewed/resulting lifecycle snapshot hashes H1/H2 in the additive
+    `receipt-payload/v0.9.0` payload (with `executionAttemptId` on `purge_intent`
+    — the per-attempt discriminator);
+  - physical execution (§11): the two-phase, receipt-covered protocol with the
+    pre-removal hash check (a mismatch ABORTS, nothing is unlinked), the bound
+    intent snapshot and crash convergence (see §11); retry safe by `executionId`;
+  - the READ-ONLY deterministic export (`ExportEvidenceLifecycle`, §12):
+    tenant/RUC-scoped audit bundle, self-hashing manifest with the separate
+    CONTENT (`contentManifestHash`) and ENVELOPE (`bundleHash`) digests,
+    per-subject receipt chain ordinals, content-addressed `exportId`,
+    deterministic data-derived `generatedAt`, NO receipt emitted, fail-closed
+    scope coverage;
+  - verification/doctor (§13): `verify object` distinguishes the documented
+    purge absence; `doctor` reports lifecycle table counts, `intent`/`interrupted`
+    executions (`PURGE_EXECUTION_INTERRUPTED`) and the documented
+    `documented_purge`/`documented_intent` object findings; the pure OFFLINE
+    export verifier (`VerifyEvidenceExportBundle`) re-validates the bundle
+    (structural validity, byte-state consistency, six receipt layers) with no
+    store, keyring, network or clock;
+  - surfaces: HTTP `POST /accounting/objects/{objectId}/purge`,
+    `POST /accounting/purge-requests/{requestId}/approve|reject|cancel|withdraw|execute`,
+    `GET /accounting/lifecycle/export`; MCP
+    `accounting_purge_request|approve|reject|cancel|withdraw|finalize` and
+    `accounting_lifecycle_export` (mutations fail closed with
+    AUTHENTICATION_REQUIRED on the session-less stdio server); CLI
+    `purge request|approve|reject|cancel|withdraw|execute` and
+    `export lifecycle` (identity never from flags — always the stored CLI
+    session).
+- **DEFERRED (remaining, documented):** the §13.1 named lifecycle verification
+  layers (retention-policy / lifecycle-chain / purge-approval-chain /
+  hold-consistency), the deployment-configured scheduler executor surface (§11
+  — the guarded store operation is executor-agnostic and the scheduler is never
+  an approver), and **bundle import/restore** (the export is a read-only query;
+  no import/restore surface exists — §12).
 
 ## 1. Governance decision (approved — normative)
 
@@ -151,7 +258,7 @@ safest reading of this decision wins and is marked as a decision.
 | Bytes | Two-phase execution protocol (intent + completion) with hash-before-unlink; no cross-layer atomicity is claimed (§11). |
 | Export | Deterministic tenant-scoped bundle including lifecycle records; purged objects export metadata + purge receipts, never bytes (§12). |
 | Verification | Additive layers: retention policy · lifecycle chain · purge approval chain · hold consistency; WORM layer distinguishes documented purge from corruption (§13). |
-| Schema | v8→v9, one fail-closed transaction, no backfill (§4). |
+| Schema | v8→v12, one fail-closed transaction per step (v9/v10/v11/v12), no backfill (§4 + batch notes). |
 
 ## 2. Lifecycle state machine
 
@@ -235,7 +342,8 @@ canonical JSON with fixed property order for hashing.
 
 ### 3.2 `evidence_holds` (first-class hold records)
 
-Scope-level or object-level. One-way closure exactly like
+Object-level only — `object_id` is a NOT NULL FK (the delivered slice cut
+scope-level holds). One-way closure exactly like
 `signing_keys.revoked_at` ([contracts/receipts.md](../../contracts/receipts.md)):
 `lifted_at`/`lifted_by`/`lift_reason` are NULL→timestamp/subject/reason updates
 only, performed by the guarded store API; every other column is immutable.
@@ -243,15 +351,13 @@ only, performed by the guarded store API; every other column is immutable.
 ```sql
 CREATE TABLE evidence_holds (
   id TEXT PRIMARY KEY,
-  object_id TEXT REFERENCES evidence_objects(id),  -- NULL = scope-level hold
+  object_id TEXT NOT NULL REFERENCES evidence_objects(id),
   tenant_id TEXT NOT NULL, company_id TEXT NOT NULL, ruc TEXT NOT NULL, period TEXT NOT NULL DEFAULT '',
   kind TEXT NOT NULL CHECK(kind IN ('legal','audit','dispute','fiscalization','other')),
   reason TEXT NOT NULL,
   owner_subject_id TEXT NOT NULL,
   placed_at TEXT NOT NULL, placed_by TEXT NOT NULL,
-  lifted_at TEXT, lifted_by TEXT, lift_reason TEXT,
-  CHECK( (object_id IS NULL AND period = '')
-      OR (object_id IS NOT NULL) )                  -- exact, never both-ways ambiguous
+  lifted_at TEXT, lifted_by TEXT, lift_reason TEXT
 );
 ```
 
@@ -411,11 +517,13 @@ enforces the logical reference, matching the `rule_links.version` precedent.
   together or not at all. `subjectType` stays `evidence_object`;
   `subjectId` is the object id; `previousReceiptHash` chains on the object's
   existing chain (`object_stored` → lifecycle acts).
-- **Receipt payload version advances to v0.8** (additive, mirroring the v0.5
-  precedent in [contracts/closing.md](../../contracts/closing.md)); verifiers
-  keep accepting v0.4+ payloads. New acts carry the lifecycle snapshot hashes
-  (reviewed + resulting) instead of envelope hashes, plus reason and the
-  complete principal snapshot for verified acts.
+- **Receipt payload versions advance additively** (mirroring the v0.5
+  precedent in [contracts/closing.md](../../contracts/closing.md)): the hold
+  acts stamp `receipt-payload/v0.8.0` (shape unchanged — the envelope-hash
+  fields are reused) and the purge acts stamp `receipt-payload/v0.9.0`;
+  verifiers keep accepting v0.4+ payloads. v0.9.0 acts carry the lifecycle
+  snapshot hashes (reviewed + resulting, H1/H2), plus reason and the complete
+  principal snapshot for verified acts.
 - **Hold and retention acts are receipts too**: `hold_placed`/`hold_lifted`
   and `retention_bound` close the chain so an audit can prove every gate input
   (policy binding, hold placement/lift) was receipt-covered at the time.
@@ -449,8 +557,9 @@ enforces the logical reference, matching the `rule_links.version` precedent.
 
 ## 7. Holds
 
-- A hold is a first-class record (`evidence_holds`), scope-level or
-  object-level, placed by an authenticated human principal with a reason and
+- A hold is a first-class, object-level record (`evidence_holds`, with a
+  required `object_id` FK — the delivered slice has no scope-level holds),
+  placed by an authenticated human principal with a reason and
   owner; placement emits `hold_placed` event + receipt.
 - **Blocking kinds default to `legal`, `audit`, `dispute`, `fiscalization`**
   (frozen default in policy `blocking_hold_kinds`); `other` holds do not block
@@ -492,7 +601,8 @@ roles.
 > `internal/authz/evidence_lifecycle_policy.go` +
 > `authz/evidence-lifecycle-policy.ts` with the table-driven Go + TS tests
 > (see the delivery-status note above). The blocker codes at the bottom of
-> §8.3 belong to the deferred store layer.
+> §8.3 belong to the store layer, delivered with the purge pipeline
+> (batches 3–4).
 
 ### 8.2 Check order (frozen; first reason code wins)
 
@@ -528,8 +638,8 @@ content (mirrors the `ENVELOPE_MISMATCH` rule).
 > (`ROLE_DENIED`, `APPROVER_IS_REQUESTER`, `DUAL_APPROVAL_REQUIRED`,
 > `SAME_PRINCIPAL_SECOND_APPROVAL`) plus the shared scope/membership/role/
 > assurance codes; the blocker/state codes below
-> (`BLOCKER_PRECEDES_APPROVAL` … `POLICY_EVIDENCE_REQUIRED`) are frozen for
-> the deferred store batch.
+> (`BLOCKER_PRECEDES_APPROVAL` … `POLICY_EVIDENCE_REQUIRED`) were frozen for
+> the store batches and shipped with the purge pipeline (batches 3–4).
 
 ## 9. Expected-version, idempotency and transaction ordering
 
@@ -615,8 +725,8 @@ principal snapshot of the executor.
 ## 12. Deterministic export bundle
 
 `export lifecycle <scope>` produces a tenant-scoped, deterministic bundle
-(proposed surface; the delivered v0.7 slice has no export — this closes the
-deferred "export" stage of the threat model):
+(delivered, batch 4 — this closes the deferred "export" stage of the threat
+model; the delivered v0.7 slice had no export):
 
 - `manifest.json` — canonical, sorted, self-hashing root: bundle version
   `evidence-export/v0.8.0`, scope tuple, generatedAt, counts, and the bundle
@@ -624,15 +734,25 @@ deferred "export" stage of the threat model):
 - Object metadata rows (immutable `evidence_objects`), lifecycle events,
   holds, purge requests/approvals/executions, retention policy rows, and the
   full per-subject receipt chains (`evidence_object` + referenced memories).
-- The offline verification report including the new v0.8 layers (§13).
+- No embedded verification report: the bundle is re-validated offline by the
+  separate pure verifier `VerifyEvidenceExportBundle` (batch 4, §13), never
+  by a report inside the bundle; the §13.1 named layers are remaining scope.
 - Deterministic ordering everywhere: subjectType → subjectId → event sequence;
   canonical JSON, fixed property order (Go↔TS byte-identical).
 - **Purged objects export metadata + lifecycle + purge receipts ONLY** — never
   bytes. The manifest marks them `bytes: "purged"` with the `purge_executed`
-  receipt hash. Export never resurrects removed bytes, and the bundle is
-  itself receipt-covered and hash-pinned so a recipient can verify it offline.
+  receipt hash. Export never resurrects removed bytes; the export itself emits
+  NO receipt, and the bundle carries the per-subject receipt chains and is
+  hash-pinned so a recipient can verify it offline.
+- **Import/restore is OUT OF SCOPE**: `ExportEvidenceLifecycle` is a read-only
+  query — no surface imports a bundle into another store.
 
 ## 13. Verification and doctor behavior
+
+> **Delivered surface (batch 4):** the §13.2 documented-purge distinction in
+> `verify object`, the §13.3 doctor counts/findings, and the pure offline
+> export verifier. The four named §13.1 layers below are **remaining scope** —
+> the documented design target, not implemented.
 
 ### 13.1 New verification layers (appended after the v0.7 object layers, stable order)
 
@@ -648,12 +768,17 @@ deferred "export" stage of the threat model):
 `verify object` must now distinguish three outcomes for the stored bytes:
 
 1. Bytes present and re-hash to the content address → **passed** (unchanged).
-2. Bytes absent AND a committed `purge_executed` receipt exists for the object
-   → **skipped with detail `documented purge (receipt-covered absence)`** —
+2. Bytes absent AND the executions ledger carries a receipt-covered purge
+   authorization for the object (a completed execution whose `purge_executed`
+   receipt committed, OR a live `intent` row) → the byte-integrity layer
+   **passes with detail `documented purge (receipt-covered absence)`** —
    expected, NOT corruption.
-3. Bytes absent WITHOUT a completed purge receipt (or `intent` without
-   completion) → **failed** — corruption/unexpected loss, fails closed, no
-   silent repair (unchanged rule).
+3. Bytes absent WITHOUT such an authorization (including an
+   `interrupted`-only history with no live intent) → **failed** —
+   corruption/unexpected loss, fails closed, no silent repair (unchanged
+   rule). A live `intent` without completion is the crash-recovery window:
+   it is an authorized absence (reported as `documented_intent` by doctor,
+   never failed), because the intent transaction committed receipt-covered.
 
 ### 13.3 Doctor
 
@@ -664,21 +789,27 @@ repaired — doctor stays read-only evidence, per the v0.7.x hardening pattern).
 
 ## 14. Compatibility
 
-- **Stores**: a v8 store migrates additively to v9 (§4) and remains fully
-  readable; the binary fails closed on any other version. Rollback before v0.8
-  writes uses the normal backup; after v0.8 rows exist, downgrade is
-  unsupported (older binaries cannot preserve lifecycle records) — same policy
-  as v0.6.
+- **Stores**: a v8 store migrates additively through v9→v12 (§4 + the batch
+  notes) and remains fully readable; the binary fails closed on any other
+  version. Rollback before v0.8 writes uses the normal backup; after v0.8
+  rows exist, downgrade is unsupported (older binaries cannot preserve
+  lifecycle records) — same policy as v0.6.
 - **Legacy objects**: v8 objects without lifecycle rows are `unmanaged` —
   REPORTED at verification and by doctor, never failed, never silently
   converted. `unmanaged` is not purgeable.
-- **Receipts**: verifiers accept v0.4/v0.5 payloads and v0.8 payloads; the v9
-  `receipts` table is byte-identical in layout for existing rows (staging
-  copy+swap). No historical receipt is re-signed or backfilled.
+- **Receipts**: verifiers accept v0.4–v0.7 payloads unchanged plus the
+  additive v0.8.0 (hold acts) and v0.9.0 (purge acts) payloads; each
+  `receipts` rebuild (v9/v10/v12) is byte-identical in layout for existing
+  rows (staging copy+swap). No historical receipt is re-signed or backfilled.
 - **Parity**: new fields on verification/doctor/export outputs are additive and
-  `omitempty`; existing parity goldens remain byte-for-byte identical; the
-  TypeScript mirror (`core/evidence-object.ts`, `store/memory-store.ts`) gains
-  the lifecycle model and identical canonical hashes.
+  `omitempty`; existing parity goldens remain byte-for-byte identical. The
+  TypeScript mirror covers the contract-shared lifecycle surface: the
+  extended receipt action vocabulary and the v0.8.0/v0.9.0 payload versions
+  (`core/types.ts`, `core/receipt.ts`), the pure object-level hold model with
+  byte-identical canonical hold JSON (`core/evidence-hold.ts`), and the
+  lifecycle policy mirror (`authz/evidence-lifecycle-policy.ts`). The purge
+  pipeline, the deterministic export bundle and the canonical lifecycle
+  snapshot hash are Go-only; there is no TS store mirror for them.
 - **Non-authorization boundary unchanged**: storing, binding, holding,
   approving and purging certify Engram's own state transitions — none of them
   authorizes an external business action.
@@ -738,14 +869,15 @@ This document does **not** claim, and v0.8 does **not** implement:
 
 ## 17. Rollout
 
-Release reads first against migrated v9 stores; legacy objects stay
+Release reads first against migrated v12 stores; legacy objects stay
 `unmanaged` and visible. New writes opt in per object via `retention_bound`
-(policy evidence required). No automatic backfill: binding a retention state to
-legacy objects is a documented policy decision, not an engine guess. When
-implementing, follow the file-level integration map pattern of
+(policy evidence required — the binding receipt is emitted with the first
+purge request, batch 4). No automatic backfill: binding a retention state to
+legacy objects is a documented policy decision, not an engine guess. The
+implementation followed the file-level integration map pattern of
 [fiscal-policy-memory-v0.6.md](fiscal-policy-memory-v0.6.md) (§7): pure policy
-module + store transitions + verification layers + surfaces + TS mirror, with
-each batch closing with the docs/golden-freeze check. Gate: v1 criterion G-5
+module + store transitions + verification layers + surfaces + TS mirror, each
+batch closing with the docs/golden-freeze check. Gate: v1 criterion G-5
 (delivered: hash + availability; this design closes retention/legal-hold/
 export/purge).
 
@@ -771,8 +903,8 @@ export/purge).
 
 ## Next step
 
-Review this design against the governance decision and the threat model's
-deferred stages. On sign-off, plan the implementation batches (pure policy +
-store transitions → verification layers → surfaces/export → TS mirror), each
-landing with focused tests and the docs/golden-freeze check, and re-run the
-threat table (T-7) against the purge protocol before any production claim.
+The v0.8 slice is delivered (batches 1–4, schema v12). Remaining scope,
+documented per section, is: the §13.1 named lifecycle verification layers,
+the deployment-configured scheduler executor surface (§11), and bundle
+import/restore (§12 — the export is a read-only query). Re-run the threat
+table (T-7) against the purge protocol before any production claim.
