@@ -114,9 +114,35 @@ const (
 	// SHA-256 hex — the object's identity); a content-addressed duplicate
 	// (identical bytes already stored) is a NO-OP and emits NOTHING.
 	ReceiptActionObjectStored ReceiptAction = "object_stored"
+	// ── v0.8.0 evidence-lifecycle acts (design §4 step 3 / §5) ──
+	// The v8→v9 migration extends the receipts action CHECK with these seven
+	// acts. Emission is receipt-covered ONLY for a newly bound policy
+	// (retention_bound, on the OBJECT's chain at binding time — design §5/§6,
+	// deferred to the binding batch); the purge-transition acts are frozen for
+	// the request/approval/execution batches. No batch-2 operation emits any of
+	// these: policy put/resolve/evaluate are not object-chain acts.
+	//
+	// ReceiptActionRetentionBound covers the retention_bound act: the
+	// resolution snapshot (policy id, version, eligibility, resolution time)
+	// bound to an object so a later policy change is auditable against what
+	// was bound at request time (design §6).
+	ReceiptActionRetentionBound ReceiptAction = "retention_bound"
+	// ReceiptActionPurgeRequested covers a purge request transition.
+	ReceiptActionPurgeRequested ReceiptAction = "purge_requested"
+	// ReceiptActionPurgeApproved covers an approval transition.
+	ReceiptActionPurgeApproved ReceiptAction = "purge_approved"
+	// ReceiptActionPurgeRejected covers a rejection transition (terminal).
+	ReceiptActionPurgeRejected ReceiptAction = "purge_rejected"
+	// ReceiptActionPurgeCancelled covers a requester retraction.
+	ReceiptActionPurgeCancelled ReceiptAction = "purge_cancelled"
+	// ReceiptActionPurgeWithdrawn covers an approval retraction.
+	ReceiptActionPurgeWithdrawn ReceiptAction = "purge_withdrawn"
+	// ReceiptActionPurgeExecuted covers the physical execution (terminal).
+	ReceiptActionPurgeExecuted ReceiptAction = "purge_executed"
 )
 
-// IsValidReceiptAction reports whether a is one of the thirteen closed actions.
+// IsValidReceiptAction reports whether a is one of the twenty closed actions
+// (thirteen v0.4–v0.7 acts plus the seven v0.8 evidence-lifecycle acts).
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
@@ -125,7 +151,11 @@ func IsValidReceiptAction(a ReceiptAction) bool {
 		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded,
 		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened,
 		ReceiptActionReconciliationConfirmed, ReceiptActionReconciliationRejected,
-		ReceiptActionObjectStored:
+		ReceiptActionObjectStored,
+		ReceiptActionRetentionBound, ReceiptActionPurgeRequested,
+		ReceiptActionPurgeApproved, ReceiptActionPurgeRejected,
+		ReceiptActionPurgeCancelled, ReceiptActionPurgeWithdrawn,
+		ReceiptActionPurgeExecuted:
 		return true
 	}
 	return false

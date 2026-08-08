@@ -184,6 +184,34 @@ func (a *API) GetObject(ctx context.Context, objectID string, scope core.Scope) 
 	return a.Store.GetObject(ctx, objectID, scope)
 }
 
+// PutRetentionPolicy writes ONE immutable retention-policy version (v0.8
+// batch 2): the API is a thin delegation over the store — the authenticated
+// administration gate, (tenant, requestId) idempotency, the expected-version
+// supersession guard and the immutable insert all live in the store. The
+// principal is the PRE-VERIFIED caller from the transport middleware
+// (ADR-003 — the payload can never declare identity). NO receipt is emitted
+// (a policy put is not an object-chain act; the retention_bound receipt for a
+// newly bound policy lands with object binding).
+func (a *API) PutRetentionPolicy(ctx context.Context, cmd core.PutRetentionPolicyCommand, principal auth.VerifiedApprovalPrincipal) (core.PutRetentionPolicyResult, error) {
+	return a.Store.PutRetentionPolicy(ctx, cmd, principal)
+}
+
+// ResolveRetentionPolicy is the SCOPE-FIRST exact resolution read (v0.8
+// batch 2, design §6): ok=false when no exact active policy resolves;
+// ambiguity fails closed with RETENTION_POLICY_AMBIGUOUS. Reads never
+// require a principal (scope-first, not authenticated).
+func (a *API) ResolveRetentionPolicy(ctx context.Context, scope core.Scope, jurisdiction, legislation, category string) (core.RetentionPolicy, bool, error) {
+	return a.Store.ResolveRetentionPolicy(ctx, scope, jurisdiction, legislation, category)
+}
+
+// EvaluatePurgeEligibility is the fail-closed eligibility read (v0.8 batch 2,
+// design §6): UNKNOWN_RETENTION_STATE without an exact active policy,
+// otherwise the pure eligible/not_due dimension. Never deletes, never
+// schedules, no statutory duration claim.
+func (a *API) EvaluatePurgeEligibility(ctx context.Context, input core.EvaluatePurgeEligibilityInput) (core.RetentionEligibilityResult, error) {
+	return a.Store.EvaluatePurgeEligibility(ctx, input)
+}
+
 // ──────────────────────────────────────────────
 // compare — identity / scope / content deltas + relation verdict
 // ──────────────────────────────────────────────

@@ -36,6 +36,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -95,6 +96,8 @@ func run(args []string) int {
 		return cmdLinkEvidence(args[1:])
 	case "object":
 		return cmdObject(args[1:])
+	case "retention-policy":
+		return cmdRetentionPolicy(args[1:])
 	case "period-summary":
 		return cmdPeriodSummary(args[1:])
 	case "compare-periods":
@@ -2620,6 +2623,288 @@ func cmdTimeline(args []string) int {
 	return emit(chain)
 }
 
+// ──────────────────────────────────────────────
+// retention-policy — v0.8 batch 2 policy surface (put/resolve/evaluate)
+// ──────────────────────────────────────────────
+
+// cmdRetentionPolicy dispatches the v0.8 batch 2 retention-policy
+// subcommands (docs/architecture/evidence-lifecycle-v0.8.md §3.1/§6/§9): put
+// (the AUTHENTICATED administration mutation — the principal is DERIVED from
+// the stored CLI session like approve, never from a caller flag; there is
+// deliberately NO --actor/--subject/--role flag) plus resolve/evaluate
+// (SCOPE-FIRST READS: the caller's exact scope tuple is built from the flags
+// and matches the policy's scope exactly — cross-tenant invisibility). NO
+// holds, NO purge, NO export, NO deletion, NO scheduling.
+func cmdRetentionPolicy(args []string) int {
+	if len(args) == 0 {
+		printRetentionPolicyUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "put":
+		return cmdRetentionPolicyPut(args[1:])
+	case "resolve":
+		return cmdRetentionPolicyResolve(args[1:])
+	case "evaluate":
+		return cmdRetentionPolicyEvaluate(args[1:])
+	case "help", "-h", "--help":
+		printRetentionPolicyUsage(os.Stdout)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown retention-policy subcommand %q\n", args[0])
+		printRetentionPolicyUsage(os.Stderr)
+		return 2
+	}
+}
+
+func printRetentionPolicyUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: drenyra-engram retention-policy put [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] --jurisdiction <token> --legislation <id> --authority <owner> --source <decision> --category <cat> --min-period <YYYYMM> [--expected-version <n>] [--dual-approval-required] [--dual-approver-roles <list>] [--blocking-hold-kinds <list>] [--enabled] [--request-id <id>] [--db <path>]   (authenticated session; identity never from flags)")
+	fmt.Fprintln(w, "       drenyra-engram retention-policy resolve [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] --jurisdiction <token> --legislation <id> --category <cat> [--db <path>]   (scope-first read)")
+	fmt.Fprintln(w, "       drenyra-engram retention-policy evaluate [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] --jurisdiction <token> --legislation <id> --category <cat> --object-period <YYYYMM> [--db <path>]   (fail-closed read)")
+}
+
+// retentionPolicyCLIScope builds the exact retention-policy scope: the tenant
+// (organizationId, default cli) with an OPTIONAL company tuple (--ruc and
+// --period, both or neither — a period without a RUC is a usage error). The
+// scope is EXACT: a policy written for a scope is only resolved by the same
+// scope. AssertValidRetentionScope runs at the adapter so a malformed scope
+// is a usage error (exit 2), never a runtime failure.
+func retentionPolicyCLIScope(organization, ruc, period string) (core.Scope, error) {
+	if strings.TrimSpace(ruc) == "" {
+		if strings.TrimSpace(period) != "" {
+			return core.Scope{}, errors.New("invalid scope: --period requires --ruc (a tenant-level policy has no company tuple)")
+		}
+		if organization == "" {
+			organization = cliOrganizationID
+		}
+		scope := core.Scope{Kind: core.ScopeKindCompany, OrganizationID: organization}
+		if err := core.AssertValidRetentionScope(scope); err != nil {
+			return core.Scope{}, err
+		}
+		return scope, nil
+	}
+	return objectCLIScope(organization, ruc, period)
+}
+
+// retentionPolicyResolveOutput mirrors the HTTP resolve response shape
+// (internal/server retentionPolicyResolveResponse) so CLI/HTTP/MCP verdicts
+// stay byte-identical.
+type retentionPolicyResolveOutput struct {
+	Policy  core.RetentionPolicy `json:"policy"`
+	Matched bool                 `json:"matched"`
+}
+
+// cmdRetentionPolicyPut writes ONE immutable retention-policy version (v0.8
+// batch 2, design §3.1/§6/§9): the principal is DERIVED from the stored CLI
+// session (auth login), never declared by the caller — caller-supplied
+// authority is gone. --request-id is optional; a fresh UUID is generated when
+// absent. The administration gate ((tenant, requestId) idempotency, the
+// expected-version supersession guard, the deny-list-first role check) lives
+// in the store; NO receipt is emitted (a policy put is not an object-chain
+// act).
+func cmdRetentionPolicyPut(args []string) int {
+	fs := flag.NewFlagSet("retention-policy put", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits; empty = tenant-level policy)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	jurisdiction := fs.String("jurisdiction", "", "REQUIRED jurisdiction token (^[A-Z][A-Z0-9-]{1,15}$)")
+	legislation := fs.String("legislation", "", "REQUIRED regime/family identifier")
+	authority := fs.String("authority", "", "REQUIRED policy owner/issuer")
+	source := fs.String("source", "", "REQUIRED who decided, when, on what basis")
+	category := fs.String("category", "", "REQUIRED retention category")
+	minPeriod := fs.String("min-period", "", "REQUIRED deployment-declared YYYYMM retention floor (NO statutory duration claim)")
+	expectedVersion := fs.Int64("expected-version", 0, "version of the current chain head the caller reviewed (0 = none)")
+	dualApprovalRequired := fs.Bool("dual-approval-required", false, "require a second dual-approval role")
+	dualApproverRoles := fs.String("dual-approver-roles", "", "comma-separated subset of controller,tax_responsible (default both)")
+	blockingHoldKinds := fs.String("blocking-hold-kinds", "", "comma-separated subset of legal,audit,dispute,fiscalization,other (default the four blocking kinds)")
+	enabled := fs.Bool("enabled", false, "enable the policy for resolution")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printRetentionPolicyUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--organization": true, "--ruc": true, "--period": true,
+		"--jurisdiction": true, "--legislation": true, "--authority": true, "--source": true,
+		"--category": true, "--min-period": true, "--expected-version": true,
+		"--dual-approver-roles": true, "--blocking-hold-kinds": true, "--request-id": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*jurisdiction) == "" || strings.TrimSpace(*legislation) == "" ||
+		strings.TrimSpace(*authority) == "" || strings.TrimSpace(*source) == "" ||
+		strings.TrimSpace(*category) == "" || strings.TrimSpace(*minPeriod) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := retentionPolicyCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	token, err := loadSessionToken()
+	if err != nil {
+		return fail("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("retention-policy put: %v", err)
+	}
+
+	api := server.New(st, "cli")
+	result, err := api.PutRetentionPolicy(context.Background(), core.PutRetentionPolicyCommand{
+		Scope:                scope,
+		Jurisdiction:         *jurisdiction,
+		Legislation:          *legislation,
+		Authority:            *authority,
+		Source:               *source,
+		Category:             *category,
+		MinPeriod:            *minPeriod,
+		ExpectedVersion:      *expectedVersion,
+		DualApprovalRequired: *dualApprovalRequired,
+		DualApproverRoles:    splitCSV(*dualApproverRoles),
+		BlockingHoldKinds:    splitCSV(*blockingHoldKinds),
+		Enabled:              *enabled,
+		RequestID:            key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdRetentionPolicyResolve is the SCOPE-FIRST exact resolution read (design
+// §6): the exact scope tuple + (jurisdiction, legislation, category) against
+// the HIGHEST version of an ENABLED policy. A caller whose exact scope differs
+// from the policy's scope sees matched=false (cross-tenant invisibility),
+// never the policy. Pure read — no session, no mutation.
+func cmdRetentionPolicyResolve(args []string) int {
+	fs := flag.NewFlagSet("retention-policy resolve", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits; empty = tenant-level scope)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	jurisdiction := fs.String("jurisdiction", "", "REQUIRED jurisdiction token")
+	legislation := fs.String("legislation", "", "REQUIRED regime/family identifier")
+	category := fs.String("category", "", "REQUIRED retention category")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram retention-policy resolve [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] --jurisdiction <token> --legislation <id> --category <cat> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--organization": true, "--ruc": true, "--period": true,
+		"--jurisdiction": true, "--legislation": true, "--category": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*jurisdiction) == "" || strings.TrimSpace(*legislation) == "" || strings.TrimSpace(*category) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := retentionPolicyCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	policy, matched, err := api.ResolveRetentionPolicy(context.Background(), scope, *jurisdiction, *legislation, *category)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(retentionPolicyResolveOutput{Policy: policy, Matched: matched})
+}
+
+// cmdRetentionPolicyEvaluate is the fail-closed eligibility read (design §6):
+// UNKNOWN_RETENTION_STATE unless an exact active policy resolves; otherwise the
+// pure eligible|not_due dimension of the object's period vs the
+// deployment-declared min_period floor. Read-only — never deletes, never
+// schedules, no statutory duration claim.
+func cmdRetentionPolicyEvaluate(args []string) int {
+	fs := flag.NewFlagSet("retention-policy evaluate", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits; empty = tenant-level scope)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	jurisdiction := fs.String("jurisdiction", "", "REQUIRED jurisdiction token")
+	legislation := fs.String("legislation", "", "REQUIRED regime/family identifier")
+	category := fs.String("category", "", "REQUIRED retention category")
+	objectPeriod := fs.String("object-period", "", "REQUIRED the object's fiscal period YYYYMM")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram retention-policy evaluate [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] --jurisdiction <token> --legislation <id> --category <cat> --object-period <YYYYMM> [--db <path>]")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--organization": true, "--ruc": true, "--period": true,
+		"--jurisdiction": true, "--legislation": true, "--category": true, "--object-period": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*jurisdiction) == "" || strings.TrimSpace(*legislation) == "" ||
+		strings.TrimSpace(*category) == "" || strings.TrimSpace(*objectPeriod) == "" {
+		fs.Usage()
+		return 2
+	}
+	if !core.IsValidPeriod(*objectPeriod) {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: invalid --object-period %q: expected YYYYMM with month 01-12\n", *objectPeriod)
+		return 2
+	}
+	scope, err := retentionPolicyCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	api := server.New(st, "cli")
+	result, err := api.EvaluatePurgeEligibility(context.Background(), core.EvaluatePurgeEligibilityInput{
+		Scope:        scope,
+		Jurisdiction: *jurisdiction,
+		Legislation:  *legislation,
+		Category:     *category,
+		ObjectPeriod: *objectPeriod,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
 // multiFlag collects repeated string flags (e.g. --ref a --ref b).
 type multiFlag []string
 
@@ -2678,6 +2963,9 @@ Usage:
   drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
   drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--objects <dir>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
   drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--objects <dir>] [--db <path>]   (scope-first read)
+  drenyra-engram retention-policy put [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --authority <owner> --source <decision> --category <cat> --min-period <YYYYMM> [--db <path>]   (v0.8 authenticated administration mutation)
+  drenyra-engram retention-policy resolve [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> [--db <path>]   (scope-first read)
+  drenyra-engram retention-policy evaluate [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> --object-period <YYYYMM> [--db <path>]   (fail-closed read)
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]
   drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
@@ -2714,6 +3002,19 @@ Flags:
   --expected-close <id> close memory id that closed the period (close reopen, REQUIRED)
   --actor <name>   actor recorded in the audit trail (default cli)
   --target <id>    replacing observation for supersede (REQUIRED)
+  --jurisdiction <token> retention jurisdiction token (retention-policy, REQUIRED; ^[A-Z][A-Z0-9-]{1,15}$)
+  --legislation <id>  retention regime/family identifier (retention-policy, REQUIRED)
+  --authority <owner> retention policy owner/issuer (retention-policy put, REQUIRED)
+  --source <decision> retention policy source — who decided, when, on what basis (retention-policy put, REQUIRED)
+  --category <cat>   retention category (retention-policy, REQUIRED)
+  --min-period <YYYYMM> deployment-declared retention floor (retention-policy put, REQUIRED; NO statutory duration claim)
+  --object-period <YYYYMM> the object's fiscal period for eligibility (retention-policy evaluate, REQUIRED)
+  --expected-version <n>  current chain-head version the caller reviewed (retention-policy put, default 0)
+  --dual-approval-required require a second dual-approval role (retention-policy put)
+  --dual-approver-roles <list> comma-separated subset of controller,tax_responsible (retention-policy put)
+  --blocking-hold-kinds <list> comma-separated subset of legal,audit,dispute,fiscalization,other (retention-policy put)
+  --enabled         enable the policy for resolution (retention-policy put)
+  --request-id <id>  idempotency key for retention-policy put (optional; a UUID is generated when absent)
   --addr <host:port> listen address for serve (default 127.0.0.1:8787)
   --token <token>  bearer token for serve (default $DRENYRA_ENGRAM_TOKEN) or auth login (REQUIRED)
   --roles <list>   comma-separated accounting roles for auth seed-local-dev

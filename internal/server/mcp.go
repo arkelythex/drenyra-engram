@@ -746,6 +746,54 @@ func ToolCatalog() []map[string]any {
 				"scope":    stringSchema(`JSON exact company scope of the object`),
 			}, "objectId", "scope"),
 		},
+		// ── accounting_retention_policy_* (v0.8 batch 2, design §3.1/§6/§9): the
+		// narrow retention-policy surface — put is the AUTHENTICATED administration
+		// mutation (fails closed with AUTHENTICATION_REQUIRED on this session-less
+		// stdio server, exactly like accounting_approve — tool arguments NEVER supply
+		// identity); resolve/evaluate are SCOPE-FIRST READS whose exact scope tuple is
+		// part of the arguments, so a caller whose scope differs sees matched=false /
+		// UNKNOWN_RETENTION_STATE — never the policy. NO holds, NO purge, NO export,
+		// NO deletion, NO scheduling.
+		{
+			"name":        "accounting_retention_policy_put",
+			"description": "Put ONE immutable retention-policy version (v0.8 batch 2): the authenticated administration gate (deny-list first, then records_compliance_officer | tenant_records_owner, assurance ≥ standard, tenant match), (tenant, requestId) idempotency and the expected-version supersession guard. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED. NO receipt is emitted (a policy put is not an object-chain act).",
+			"inputSchema": objectSchema(map[string]any{
+				"scope":                  stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"...","period":"YYYYMM"} (companyId/ruc/period empty = tenant-level policy)`),
+				"jurisdiction":           stringSchema("uppercase jurisdiction token ^[A-Z][A-Z0-9-]{1,15}$ (required)"),
+				"legislation":            stringSchema("regime/family identifier (required)"),
+				"authority":              stringSchema("policy owner/issuer (required)"),
+				"source":                 stringSchema("who decided, when, on what basis (required)"),
+				"category":               stringSchema("retention category (required)"),
+				"min_period":             stringSchema("deployment-declared YYYYMM retention floor (required; NO statutory duration claim)"),
+				"expected_version":       intSchema("version of the current chain head the caller reviewed; 0 = none (default 0)"),
+				"dual_approval_required": boolSchema("require a second dual-approval role (default false)"),
+				"dual_approver_roles":    map[string]any{"type": "array", "items": stringSchema("controller|tax_responsible"), "description": "canonical sorted subset of the closed enum (default controller,tax_responsible)"},
+				"blocking_hold_kinds":    map[string]any{"type": "array", "items": stringSchema("legal|audit|dispute|fiscalization|other"), "description": "canonical sorted subset of the closed enum (default legal,audit,dispute,fiscalization)"},
+				"enabled":                boolSchema("enable the policy for resolution (default false)"),
+				"request_id":             stringSchema("tenant-scoped idempotency key (required)"),
+			}, "scope", "jurisdiction", "legislation", "authority", "source", "category", "min_period", "request_id"),
+		},
+		{
+			"name":        "accounting_retention_policy_resolve",
+			"description": "SCOPE-FIRST exact retention resolution (v0.8 batch 2): the exact scope tuple + (jurisdiction, legislation, category) against the HIGHEST version of an ENABLED policy. matched=false when no exact active policy resolves (a caller whose exact scope differs sees matched=false — cross-tenant invisibility); ambiguity fails closed with RETENTION_POLICY_AMBIGUOUS. Pure read — never deletes, no statutory duration claim.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope":        stringSchema(`JSON exact company scope (required)`),
+				"jurisdiction": stringSchema("uppercase jurisdiction token (required)"),
+				"legislation":  stringSchema("regime/family identifier (required)"),
+				"category":     stringSchema("retention category (required)"),
+			}, "scope", "jurisdiction", "legislation", "category"),
+		},
+		{
+			"name":        "accounting_retention_policy_evaluate",
+			"description": "Fail-closed purge-eligibility read (v0.8 batch 2): UNKNOWN_RETENTION_STATE unless an exact active policy resolves; otherwise the pure eligible|not_due dimension of the object's YYYYMM period vs the deployment-declared min_period floor. Read-only — never deletes, never schedules, no statutory duration claim.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope":         stringSchema(`JSON exact company scope (required)`),
+				"jurisdiction":  stringSchema("uppercase jurisdiction token (required)"),
+				"legislation":   stringSchema("regime/family identifier (required)"),
+				"category":      stringSchema("retention category (required)"),
+				"object_period": stringSchema("the object's fiscal period YYYYMM (required)"),
+			}, "scope", "jurisdiction", "legislation", "category", "object_period"),
+		},
 		{
 			"name":        "accounting_doctor",
 			"description": "Store health snapshot: schema version, storage, counts. Fails closed on corruption.",
@@ -1136,6 +1184,146 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			"object":   obj,
 			"bytesB64": base64.StdEncoding.EncodeToString(bytes),
 		})), nil
+
+	// ── retention-policy tools (v0.8 batch 2, design §3.1/§6/§9): put is the
+	// AUTHENTICATED administration mutation and fails closed with
+	// AUTHENTICATION_REQUIRED on this session-less stdio server (exactly like
+	// accounting_approve — tool arguments NEVER supply identity); resolve and
+	// evaluate are SCOPE-FIRST READS whose exact scope is part of the arguments,
+	// so a caller whose scope differs sees matched=false /
+	// UNKNOWN_RETENTION_STATE — never the policy.
+	case "accounting_retention_policy_put":
+		var args struct {
+			Scope                string   `json:"scope"`
+			Jurisdiction         string   `json:"jurisdiction"`
+			Legislation          string   `json:"legislation"`
+			Authority            string   `json:"authority"`
+			Source               string   `json:"source"`
+			Category             string   `json:"category"`
+			MinPeriod            string   `json:"min_period"`
+			ExpectedVersion      int64    `json:"expected_version"`
+			DualApprovalRequired bool     `json:"dual_approval_required"`
+			DualApproverRoles    []string `json:"dual_approver_roles"`
+			BlockingHoldKinds    []string `json:"blocking_hold_kinds"`
+			Enabled              bool     `json:"enabled"`
+			RequestID            string   `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority (actorId/actorKind/subjectId/roles) — is a malformed
+		// argument shape (JSON-RPC -32602), never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		if err := requireParams("jurisdiction", args.Jurisdiction); err != nil {
+			return nil, err
+		}
+		if err := requireParams("legislation", args.Legislation); err != nil {
+			return nil, err
+		}
+		if err := requireParams("authority", args.Authority); err != nil {
+			return nil, err
+		}
+		if err := requireParams("source", args.Source); err != nil {
+			return nil, err
+		}
+		if err := requireParams("category", args.Category); err != nil {
+			return nil, err
+		}
+		if err := requireParams("min_period", args.MinPeriod); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		// The stdio MCP server has NO authenticated session binding (design §3):
+		// tool arguments NEVER supply identity, so the tool fails closed. HTTP
+		// MCP may put only when the HTTP middleware supplies a bound principal to
+		// the server.
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_retention_policy_put requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_retention_policy_resolve":
+		var args struct {
+			Scope        string `json:"scope"`
+			Jurisdiction string `json:"jurisdiction"`
+			Legislation  string `json:"legislation"`
+			Category     string `json:"category"`
+		}
+		// Strict shape (design §6): the tool accepts EXACTLY its four declared
+		// arguments — unknown fields (including any caller-supplied identity) are
+		// rejected, never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		if err := requireParams("jurisdiction", args.Jurisdiction); err != nil {
+			return nil, err
+		}
+		if err := requireParams("legislation", args.Legislation); err != nil {
+			return nil, err
+		}
+		if err := requireParams("category", args.Category); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		policy, matched, err := m.api.ResolveRetentionPolicy(context.Background(), scope, args.Jurisdiction, args.Legislation, args.Category)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(retentionPolicyResolveResponse{Policy: policy, Matched: matched})), nil
+
+	case "accounting_retention_policy_evaluate":
+		var args struct {
+			Scope        string `json:"scope"`
+			Jurisdiction string `json:"jurisdiction"`
+			Legislation  string `json:"legislation"`
+			Category     string `json:"category"`
+			ObjectPeriod string `json:"object_period"`
+		}
+		// Strict shape (design §6): the tool accepts EXACTLY its five declared
+		// arguments — unknown fields (including any caller-supplied identity) are
+		// rejected, never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		if err := requireParams("jurisdiction", args.Jurisdiction); err != nil {
+			return nil, err
+		}
+		if err := requireParams("legislation", args.Legislation); err != nil {
+			return nil, err
+		}
+		if err := requireParams("category", args.Category); err != nil {
+			return nil, err
+		}
+		if err := requireParams("object_period", args.ObjectPeriod); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		result, err := m.api.EvaluatePurgeEligibility(context.Background(), core.EvaluatePurgeEligibilityInput{
+			Scope:        scope,
+			Jurisdiction: args.Jurisdiction,
+			Legislation:  args.Legislation,
+			Category:     args.Category,
+			ObjectPeriod: args.ObjectPeriod,
+		})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
 
 	case "accounting_search":
 		var args struct {

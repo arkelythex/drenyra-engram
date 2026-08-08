@@ -71,6 +71,41 @@ roles. Everything that touches bytes or storage remains deferred.
   deterministic export (§12), and the verification/doctor layers (§13).
   Sections below remain the design target for those deferred batches.
 
+## Delivery status (batch 2 of the v0.8 plan — retention policy storage + policy put/resolve/evaluate)
+
+This narrow batch delivers the retention-policy storage layer and its narrow
+policy surfaces (§3.1/§4/§6/§9): NO holds, NO purge, NO export, NO deletion,
+NO scheduling — the purge-transition acts stay frozen for the deferred
+holds/request/approval/execution batches.
+
+- **DELIVERED (this batch):**
+  - schema v8→v9, one fail-closed transaction (§4): the immutable
+`retention_policies` table (exact scope columns + scope index +
+no-update/no-delete triggers), the tenant-scoped
+`retention_policy_idempotency_keys` ledger, and the receipts action CHECK
+extended by the seven v0.8 evidence-lifecycle acts (layout verbatim;
+emission stays deferred — §4 step 3);
+  - `PutRetentionPolicy` / `ResolveRetentionPolicy` /
+`EvaluatePurgeEligibility` (store + API + HTTP + CLI + MCP): the
+authenticated administration put (deny-list first, then
+records_compliance_officer | tenant_records_owner, assurance ≥ standard,
+tenant match), (tenant, requestId) idempotency, the expected-version
+supersession guard, the scope-first exact resolution read and the
+fail-closed eligibility dimension (§6/§9);
+  - surfaces: `POST /accounting/retention-policies` (authenticated) plus
+`GET …/resolve` and `POST …/evaluate` (HTTP); the
+`accounting_retention_policy_put|resolve|evaluate` MCP tools (the put is
+the authenticated mutation and fails closed with AUTHENTICATION_REQUIRED
+on the session-less stdio server — tool arguments never supply identity);
+and the `retention-policy put|resolve|evaluate` CLI commands (the put
+derives the principal from the stored CLI session; reads are exact
+scope-first). A policy put emits NO receipt (a policy put is not an
+object-chain act; the retention_bound receipt lands with object binding).
+- **DEFERRED (remaining lifecycle storage):** holds storage and transitions
+  (§7), purge request/approval/execution (§2, §9–§11, §13), deterministic
+  export (§12) and the verification/doctor layers (§13). Sections below
+  remain the design target for those deferred batches.
+
 ## 1. Governance decision (approved — normative)
 
 The following decision is the approved source of truth for v0.8. Design choices

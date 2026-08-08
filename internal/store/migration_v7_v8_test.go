@@ -103,8 +103,8 @@ func TestFreshStoreBootstrapsV8EvidenceObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("schema_version = %d, want 8 (the chain continues v3→v4→v5→v6→v7→v8)", version)
+	if version != 9 {
+		t.Fatalf("schema_version = %d, want 9 (the chain continues v3→v4→v5→v6→v7→v8→v9)", version)
 	}
 
 	// The v3 + v4 + v5 + v6 + v7 layers survive the chain (additive migrations
@@ -192,8 +192,8 @@ func TestV7StoreMigratesToV8AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("schema_version after migration = %d, want 8", version)
+	if version != 9 {
+		t.Fatalf("schema_version after migration = %d, want 9", version)
 	}
 
 	// Rows survive with EXACTLY the envelope bytes written at v7.

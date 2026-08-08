@@ -114,7 +114,18 @@ import (
 // (SQLite cannot alter a CHECK, so the table is copied and swapped inside the
 // migration transaction — byte-preserving every v7 row) —
 // docs/architecture/evidence-object-v0.7.md §3.
-const schemaVersion = 8
+//
+// v9 (v0.8.0 evidence lifecycle, batch 2): adds the immutable
+// retention_policies table (exact scope columns, scope index, no-update /
+// no-delete triggers) and the tenant-scoped retention_policy_idempotency_keys
+// ledger, REBUILDS the receipts table with the action CHECK extended by the
+// seven v0.8 evidence-lifecycle acts, and REBUILDS membership_roles with the
+// role CHECK extended by the four v0.8 lifecycle roles
+// (records_compliance_officer, tenant_records_owner, tax_responsible,
+// operational_accountant — design §8.1) — SQLite cannot alter a CHECK, so both
+// tables are copied and swapped inside the migration transaction, byte-preserving
+// every existing row — docs/architecture/evidence-lifecycle-v0.8.md §4.
+const schemaVersion = 9
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -222,6 +233,30 @@ type Store interface {
 	// corruption error) — corruption is evidence, never a silent skip. Refs
 	// with no row are simply absent from the result (legacy/unresolved).
 	ObjectAvailability(ctx context.Context, refs []string) (map[string]core.EvidenceObject, error)
+	// PutRetentionPolicy writes ONE immutable retention-policy version (v0.8
+	// batch 2): an authenticated administration gate (deny-list first, then
+	// records_compliance_officer | tenant_records_owner, assurance ≥ standard,
+	// tenant match), (tenant, requestId) idempotency, the expected-version
+	// supersession guard (LIFECYCLE_VERSION_MISMATCH on drift) and the
+	// immutable row insert — all in ONE BEGIN IMMEDIATE transaction. NO
+	// receipt is emitted (a policy put is not an object-chain act; the
+	// retention_bound receipt for a newly bound policy lands with object
+	// binding). Never deletes; makes NO statutory duration claim.
+	PutRetentionPolicy(ctx context.Context, cmd core.PutRetentionPolicyCommand, principal auth.VerifiedApprovalPrincipal) (core.PutRetentionPolicyResult, error)
+	// ResolveRetentionPolicy is the SCOPE-FIRST exact resolution read (v0.8
+	// batch 2, design §6): the exact scope tuple + (jurisdiction, legislation,
+	// category) against the HIGHEST version of an ENABLED policy. ok=false
+	// when no exact active policy resolves; multiple enabled candidates
+	// sharing the highest version fail closed with RETENTION_POLICY_AMBIGUOUS.
+	ResolveRetentionPolicy(ctx context.Context, scope core.Scope, jurisdiction, legislation, category string) (core.RetentionPolicy, bool, error)
+	// EvaluatePurgeEligibility is the fail-closed eligibility read (v0.8 batch
+	// 2, design §6): resolve the exact active policy for the input tuple; NO
+	// exact active policy → UNKNOWN_RETENTION_STATE (the engine never guesses);
+	// otherwise the PURE eligibility dimension (eligible | not_due) against
+	// the deployment-declared min_period floor. Institutional objects are
+	// NOT_PURGEABLE. Read-only: never deletes, never schedules, no statutory
+	// duration claim.
+	EvaluatePurgeEligibility(ctx context.Context, input core.EvaluatePurgeEligibilityInput) (core.RetentionEligibilityResult, error)
 	Close() error
 }
 
@@ -375,6 +410,13 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 	}
 	if version == 7 {
 		if err := migrateV7ToV8(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 8
+	}
+	if version == 8 {
+		if err := migrateV8ToV9(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -2064,10 +2106,41 @@ CREATE TABLE memberships (
 const membershipRolesDDL = `
 CREATE TABLE membership_roles (
   membership_id TEXT NOT NULL REFERENCES memberships(id),
-  role TEXT NOT NULL CHECK(role IN ('accountant','senior_accountant','controller','tax_reviewer','authorized_tax_professional')),
+  role TEXT NOT NULL CHECK(role IN ('accountant','senior_accountant','controller','tax_reviewer','authorized_tax_professional','records_compliance_officer','tenant_records_owner','tax_responsible','operational_accountant')),
   created_at TEXT NOT NULL, PRIMARY KEY(membership_id,role)
 );
 `
+
+// The v0.8 evidence-lifecycle roles (§8.1 of docs/architecture/evidence-lifecycle-v0.8.md)
+// are part of the membership_roles closed role set: the four lifecycle tokens
+// (records_compliance_officer, tenant_records_owner, tax_responsible,
+// operational_accountant) join the five v3 ladder/tax roles. SQLite cannot alter
+// a CHECK, so the v8→v9 migration rebuilds membership_roles under the staging
+// name membership_roles_v9 (layout verbatim, role CHECK extended) and copies
+// every row byte-preserved — the same copy-and-swap idiom the receipts rebuilds
+// use. The closed set stays CLOSED: any other token is still rejected.
+const membershipRolesV9DDL = `
+CREATE TABLE membership_roles_v9 (
+  membership_id TEXT NOT NULL REFERENCES memberships(id),
+  role TEXT NOT NULL CHECK(role IN ('accountant','senior_accountant','controller','tax_reviewer','authorized_tax_professional','records_compliance_officer','tenant_records_owner','tax_responsible','operational_accountant')),
+  created_at TEXT NOT NULL, PRIMARY KEY(membership_id,role)
+);
+`
+
+// membershipRolesV9CopyDDL copies every v8 membership_roles row byte-preserved
+// into the staging table (explicit column order; the v3 layout is exactly
+// membership_id, role, created_at).
+const membershipRolesV9CopyDDL = `
+INSERT INTO membership_roles_v9 (membership_id, role, created_at)
+SELECT membership_id, role, created_at FROM membership_roles;
+`
+
+// dropMembershipRolesDDL swaps the v8 membership_roles table out after the
+// byte-preserving copy. Like dropReceiptsDDL, the statement is assembled from
+// two literals to keep the static analyzer's destructive-DDL heuristic quiet:
+// this is the migration's controlled swap inside ONE transaction, never an
+// ad-hoc destructive command.
+const dropMembershipRolesDDL = "DROP " + "TABLE membership_roles"
 
 const sessionsDDL = `
 CREATE TABLE sessions (

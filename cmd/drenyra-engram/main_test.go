@@ -233,8 +233,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 8 || report.Observations != 2 || report.RevisionChains != 2 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 8, 2 observations, 2 chains", report)
+	if report.SchemaVersion != 9 || report.Observations != 2 || report.RevisionChains != 2 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 9, 2 observations, 2 chains", report)
 	}
 }
 
@@ -1266,4 +1266,384 @@ func TestCLIComparePeriodsUsageErrors(t *testing.T) {
 			t.Fatalf("stderr must carry INVALID_PERIOD: %q", stderr)
 		}
 	})
+}
+
+// ──────────────────────────────────────────────
+// retention-policy CLI tests (v0.8 batch 2, design §3.1/§6/§9)
+// ──────────────────────────────────────────────
+
+// cliRetentionSessionStore is a minimal auth.SessionStore fixture used ONLY by
+// the read fixtures (seedCLIRetentionPolicy): the REAL DB resolver path — the
+// v0.8 roles persisted in membership_roles through the store, loaded by
+// LoadMembership — is covered end-to-end by
+// TestCLIRetentionPolicyPutAsRecordsComplianceOfficer against the built binary.
+// This fake keeps the scope-first read fixtures free of session-file setup.
+type cliRetentionSessionStore struct {
+	session    auth.StoredSession
+	membership auth.MembershipRecord
+}
+
+func (f *cliRetentionSessionStore) LookupByTokenHash(context.Context, string) (auth.StoredSession, error) {
+	return f.session, nil
+}
+
+func (f *cliRetentionSessionStore) LoadMembership(context.Context, string) (auth.MembershipRecord, error) {
+	return f.membership, nil
+}
+
+// seedCLIRetentionPolicy seeds ONE enabled company-scope policy directly on db
+// (tenant cli, company cliRucA) through the REAL store path with a
+// records_compliance_officer principal (design section 8: fixtures seed state
+// directly; they never depend on environment state) and returns the created
+// policy — the fixture the scope-first read tests resolve.
+func seedCLIRetentionPolicy(t *testing.T, db string) core.RetentionPolicy {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	resolver := &auth.Resolver{Sessions: &cliRetentionSessionStore{
+		session: auth.StoredSession{
+			ID:                   "session-cli-retention",
+			MembershipID:         "membership-cli-retention",
+			AuthenticationMethod: auth.AuthMethodSession,
+			AssuranceLevel:       auth.AssuranceStandard,
+			AuthenticatedAt:      "2026-08-07T12:00:00Z",
+			ExpiresAt:            time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		},
+		membership: auth.MembershipRecord{
+			ID:            "membership-cli-retention",
+			SubjectID:     "lucia.ramirez",
+			TenantID:      cliOrganizationID,
+			CompanyID:     cliRucA,
+			Status:        "active",
+			Roles:         []auth.AccountingRole{auth.RoleRecordsComplianceOfficer},
+			CompanyActive: true,
+		},
+	}, Mode: auth.RuntimeProduction}
+	principal, err := resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: "fixture-token",
+	})
+	if err != nil {
+		t.Fatalf("fixture principal: %v", err)
+	}
+	scope, err := retentionPolicyCLIScope("", cliRucA, "")
+	if err != nil {
+		t.Fatalf("scope: %v", err)
+	}
+	result, err := st.PutRetentionPolicy(context.Background(), core.PutRetentionPolicyCommand{
+		Scope:           scope,
+		Jurisdiction:    "PE",
+		Legislation:     "NATIONAL-TAX",
+		Authority:       "tenant-records",
+		Source:          "deployment decision 2026-08-07",
+		Category:        "invoice",
+		MinPeriod:       "202401",
+		ExpectedVersion: 0,
+		Enabled:         true,
+		RequestID:       "req-cli-fixture",
+	}, principal)
+	if err != nil {
+		t.Fatalf("seed retention policy: %v", err)
+	}
+	return result.Policy
+}
+
+// TestCLIRetentionPolicyPutWithoutSession: the authenticated administration
+// mutation fails closed with AUTHENTICATION_REQUIRED and points at auth login —
+// the principal can only come from the stored CLI session, never from a flag.
+func TestCLIRetentionPolicyPutWithoutSession(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	stdout, stderr, code := runCLIEnv(t, sessionFileEnv(t.TempDir()),
+		"retention-policy", "put", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX",
+		"--authority", "tenant-records", "--source", "deployment decision 2026-08-07",
+		"--category", "invoice", "--min-period", "202401", "--enabled", "--db", db)
+	if code != 1 {
+		t.Fatalf("put without session exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("put without session must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "AUTHENTICATION_REQUIRED") || !strings.Contains(stderr, "auth login") {
+		t.Fatalf("stderr must carry AUTHENTICATION_REQUIRED and point at auth login: %q", stderr)
+	}
+}
+
+// TestCLIRetentionPolicyPutUsesAuthenticatedSession: with a valid stored CLI
+// session (a controller — NOT a retention-policy owner), the put resolves the
+// principal from that session and the store's administration gate rejects the
+// role with the frozen ROLE_NOT_AUTHORIZED. This proves the CLI uses the
+// authenticated session path and never accepts caller-declared identity.
+func TestCLIRetentionPolicyPutUsesAuthenticatedSession(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	token := seedCLIIdentity(t, db) // controller — §8.1 says it is NOT a policy owner
+	env := writeSessionFile(t, t.TempDir(), token)
+
+	stdout, stderr, code := runCLIEnv(t, env,
+		"retention-policy", "put", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX",
+		"--authority", "tenant-records", "--source", "deployment decision 2026-08-07",
+		"--category", "invoice", "--min-period", "202401", "--enabled", "--db", db)
+	if code != 1 {
+		t.Fatalf("put with non-owner session exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("rejected put must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "ROLE_NOT_AUTHORIZED") {
+		t.Fatalf("stderr must carry ROLE_NOT_AUTHORIZED (the authenticated gate was reached): %q", stderr)
+	}
+
+	// Caller-supplied authority is gone: --actor is an unknown flag (usage 2).
+	stdout, stderr, code = runCLI(t, "retention-policy", "put", "--ruc", cliRucA, "--actor", "lucia.ramirez", "--db", db)
+	if code != 2 {
+		t.Fatalf("put --actor exit = %d, want 2 (flag rejected); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("flag rejection must not write stdout: %q", stdout)
+	}
+}
+
+// seedCLIRetentionIdentity seeds a records_compliance_officer identity and an
+// expiring session through the REAL store DB path: SeedIdentity writes the role
+// into membership_roles (the v0.8 identity-persistence contract — this is the
+// exact insert the pre-v9 ladder-only role CHECK rejected) and returns the raw
+// token (ONLY its SHA-256 hash is stored). The tenant is the CLI's fixed
+// organization id so the principal can administer policies through the CLI
+// surface.
+func seedCLIRetentionIdentity(t *testing.T, db string) string {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	membershipID := "membership-cli-retention-owner"
+	if err := st.SeedIdentity(store.IdentitySeed{
+		TenantID:     cliOrganizationID,
+		CompanyID:    cliRucA,
+		CompanyRUC:   cliRucA,
+		CompanyName:  "CLI Demo SAC",
+		MembershipID: membershipID,
+		SubjectID:    "lucia.ramirez",
+		Roles:        []auth.AccountingRole{auth.RoleRecordsComplianceOfficer},
+	}); err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+	token := "cli-retention-owner-token"
+	if err := st.SeedSession(store.SessionSeed{
+		ID:                   "session-cli-retention-owner",
+		TokenHash:            sha256HexCLI(token),
+		MembershipID:         membershipID,
+		AuthenticationMethod: auth.AuthMethodSession,
+		AssuranceLevel:       auth.AssuranceStandard,
+		AuthenticatedAt:      time.Now().UTC().Format(time.RFC3339),
+		ExpiresAt:            time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+	return token
+}
+
+// TestCLIRetentionPolicyPutAsRecordsComplianceOfficer is the END-TO-END
+// identity-persistence proof of the v0.8 role contract through the built binary:
+// the records_compliance_officer principal is PERSISTED in membership_roles via
+// the DB (the widened role CHECK accepts it), the CLI derives the principal from
+// the stored session through the REAL resolver (roles loaded from
+// membership_roles by LoadMembership), and the authenticated administration gate
+// lets it put an immutable policy — then the scope-first read resolves it.
+// Before the v9 membership_roles CHECK extension, the SeedIdentity insert failed
+// at the DB and this test could not exist.
+func TestCLIRetentionPolicyPutAsRecordsComplianceOfficer(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	token := seedCLIRetentionIdentity(t, db)
+	env := writeSessionFile(t, t.TempDir(), token)
+
+	stdout, stderr, code := runCLIEnv(t, env,
+		"retention-policy", "put", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX",
+		"--authority", "tenant-records", "--source", "deployment decision 2026-08-07",
+		"--category", "invoice", "--min-period", "202401", "--enabled",
+		"--request-id", "req-cli-e2e-records", "--db", db)
+	if code != 0 {
+		t.Fatalf("put as records_compliance_officer exit = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	var result core.PutRetentionPolicyResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("put output not JSON: %v\n%s", err, stdout)
+	}
+	if !result.Created || result.IdempotentReplay {
+		t.Fatalf("result = %+v, want a created (non-replay) put", result)
+	}
+	p := result.Policy
+	if p.Version != 1 || p.TenantID != cliOrganizationID || p.Jurisdiction != "PE" || p.Category != "invoice" {
+		t.Fatalf("policy = %+v, want version 1 in the CLI tenant with the exact evidence", p)
+	}
+	if p.CreatedBy != "lucia.ramirez" {
+		t.Fatalf("policy createdBy = %q, want the DB-persisted records_compliance_officer subject lucia.ramirez", p.CreatedBy)
+	}
+
+	// The immutable row is readable through the real binary (scope-first resolve).
+	stdout, stderr, code = runCLI(t, "retention-policy", "resolve", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice", "--db", db)
+	if code != 0 {
+		t.Fatalf("resolve after put failed (exit %d): %s", code, stderr)
+	}
+	var resolved struct {
+		Policy  core.RetentionPolicy `json:"policy"`
+		Matched bool                 `json:"matched"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resolved); err != nil {
+		t.Fatalf("resolve output not JSON: %v\n%s", err, stdout)
+	}
+	if !resolved.Matched || resolved.Policy.PolicyID != p.PolicyID {
+		t.Fatalf("resolve = %+v, want matched=true for the policy the owner just put", resolved)
+	}
+}
+
+// TestCLIRetentionPolicyResolveAndEvaluate covers the SCOPE-FIRST reads through
+// the real binary: the exact scope + evidence tuple resolves the seeded policy;
+// a different company RUC or jurisdiction never resolves (cross-tenant
+// invisibility); eligibility is the pure eligible/not_due dimension and fails
+// closed with UNKNOWN_RETENTION_STATE when no exact active policy exists.
+func TestCLIRetentionPolicyResolveAndEvaluate(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	seeded := seedCLIRetentionPolicy(t, db)
+	if seeded.Version != 1 || seeded.Jurisdiction != "PE" || seeded.TenantID != cliOrganizationID {
+		t.Fatalf("seeded policy mismatch: %+v", seeded)
+	}
+
+	// Exact-scope resolve matches.
+	stdout, stderr, code := runCLI(t, "retention-policy", "resolve", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice", "--db", db)
+	if code != 0 {
+		t.Fatalf("resolve failed (exit %d): %s", code, stderr)
+	}
+	var resolved struct {
+		Policy  core.RetentionPolicy `json:"policy"`
+		Matched bool                 `json:"matched"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &resolved); err != nil {
+		t.Fatalf("resolve output not JSON: %v\n%s", err, stdout)
+	}
+	if !resolved.Matched || resolved.Policy.PolicyID != seeded.PolicyID {
+		t.Fatalf("resolve = %+v, want matched=true for the exact scope + tuple", resolved)
+	}
+
+	// A different company RUC never resolves (cross-tenant invisibility).
+	stdout, stderr, code = runCLI(t, "retention-policy", "resolve", "--ruc", cliRucB,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice", "--db", db)
+	if code != 0 {
+		t.Fatalf("cross-tenant resolve failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &resolved); err != nil {
+		t.Fatalf("resolve output not JSON: %v\n%s", err, stdout)
+	}
+	if resolved.Matched {
+		t.Fatal("LEAK via CLI: a different exact scope must never resolve another tenant's policy")
+	}
+	if resolved.Policy.PolicyID != "" {
+		t.Fatalf("cross-tenant resolve must return a ZERO policy, got %+v", resolved.Policy)
+	}
+
+	// A different jurisdiction tuple never resolves either.
+	stdout, stderr, code = runCLI(t, "retention-policy", "resolve", "--ruc", cliRucA,
+		"--jurisdiction", "BR", "--legislation", "NATIONAL-TAX", "--category", "invoice", "--db", db)
+	if code != 0 {
+		t.Fatalf("other-jurisdiction resolve failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &resolved); err != nil {
+		t.Fatalf("resolve output not JSON: %v\n%s", err, stdout)
+	}
+	if resolved.Matched {
+		t.Fatal("a different jurisdiction tuple must never resolve")
+	}
+
+	// Evaluate: the object's period reached the min_period floor → eligible.
+	stdout, stderr, code = runCLI(t, "retention-policy", "evaluate", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice",
+		"--object-period", "202401", "--db", db)
+	if code != 0 {
+		t.Fatalf("evaluate failed (exit %d): %s", code, stderr)
+	}
+	var result core.RetentionEligibilityResult
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("evaluate output not JSON: %v\n%s", err, stdout)
+	}
+	if result.Eligibility != core.RetentionEligibilityEligible {
+		t.Fatalf("eligibility = %q, want eligible", result.Eligibility)
+	}
+	if result.PolicyID != seeded.PolicyID || result.PolicyVersion != 1 || result.ModelVersion != core.RetentionPolicyModelVersion {
+		t.Fatalf("eligibility evidence mismatch: %+v", result)
+	}
+
+	// Before the floor → not_due.
+	stdout, stderr, code = runCLI(t, "retention-policy", "evaluate", "--ruc", cliRucA,
+		"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice",
+		"--object-period", "202312", "--db", db)
+	if code != 0 {
+		t.Fatalf("evaluate failed (exit %d): %s", code, stderr)
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("evaluate output not JSON: %v\n%s", err, stdout)
+	}
+	if result.Eligibility != core.RetentionEligibilityNotDue {
+		t.Fatalf("eligibility = %q, want not_due", result.Eligibility)
+	}
+
+	// No exact active policy → fail closed UNKNOWN_RETENTION_STATE (exit 1).
+	stdout, stderr, code = runCLI(t, "retention-policy", "evaluate", "--ruc", cliRucA,
+		"--jurisdiction", "BR", "--legislation", "X", "--category", "invoice",
+		"--object-period", "202401", "--db", db)
+	if code != 1 {
+		t.Fatalf("unknown-state evaluate exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if stdout != "" {
+		t.Fatalf("unknown-state evaluate must not write stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "UNKNOWN_RETENTION_STATE") {
+		t.Fatalf("stderr must carry UNKNOWN_RETENTION_STATE: %q", stderr)
+	}
+}
+
+// TestCLIRetentionPolicyUsageErrors covers the CLI validation envelope: missing
+// evidence, malformed object periods and invalid scope tuples are usage errors
+// (exit 2) that never touch the store; help lists the new surface.
+func TestCLIRetentionPolicyUsageErrors(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	cases := [][]string{
+		// put without the required resolution evidence.
+		{"retention-policy", "put", "--ruc", cliRucA, "--db", db},
+		{"retention-policy", "put", "--ruc", cliRucA, "--jurisdiction", "PE", "--legislation", "L", "--authority", "a", "--source", "s", "--category", "c", "--db", db},
+		// a period without a RUC is an invalid scope.
+		{"retention-policy", "put", "--period", "202401", "--jurisdiction", "PE", "--legislation", "L", "--authority", "a", "--source", "s", "--category", "c", "--min-period", "202401", "--db", db},
+		// resolve/evaluate without the evidence tuple.
+		{"retention-policy", "resolve", "--ruc", cliRucA, "--db", db},
+		{"retention-policy", "evaluate", "--ruc", cliRucA, "--jurisdiction", "PE", "--legislation", "L", "--category", "c", "--db", db},
+		// malformed object period.
+		{"retention-policy", "evaluate", "--ruc", cliRucA, "--jurisdiction", "PE", "--legislation", "L", "--category", "c", "--object-period", "2024", "--db", db},
+		// unknown subcommand.
+		{"retention-policy", "bogus", "--db", db},
+	}
+	for _, args := range cases {
+		stdout, stderr, code := runCLI(t, args...)
+		if code != 2 {
+			t.Fatalf("%v exit = %d, want 2; stdout=%q stderr=%q", args, code, stdout, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("%v must not write stdout: %q", args, stdout)
+		}
+	}
+
+	// help lists the retention-policy surface.
+	stdout, _, code := runCLI(t, "help")
+	if code != 0 {
+		t.Fatalf("help exit = %d, want 0", code)
+	}
+	if !strings.Contains(stdout, "retention-policy") {
+		t.Fatalf("help output missing retention-policy: %s", stdout)
+	}
 }

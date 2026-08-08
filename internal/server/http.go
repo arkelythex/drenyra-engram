@@ -279,6 +279,12 @@ func (h *HTTPServer) Handler() http.Handler {
 	// guard — no authenticated principal, no approval semantics.
 	mux.HandleFunc("POST /accounting/objects", h.requireToken(h.handleObjectStore))
 	mux.HandleFunc("GET /accounting/objects/{objectId}", h.requireToken(h.handleObjectGet))
+	// v0.8 batch 2 retention policies — narrow surface: policy put (AUTHENTICATED
+	// principal mutation only) + scope-first resolve/evaluate reads. NO holds,
+	// NO purge, NO export, NO deletion, NO scheduling.
+	mux.HandleFunc("POST /accounting/retention-policies", h.authenticate(h.handleRetentionPolicyPut))
+	mux.HandleFunc("GET /accounting/retention-policies/resolve", h.requireToken(h.handleRetentionPolicyResolve))
+	mux.HandleFunc("POST /accounting/retention-policies/evaluate", h.requireToken(h.handleRetentionPolicyEvaluate))
 	// Period-over-period comparison (v0.5.0, design §4/§6): a PURE scope-first
 	// read over one company's two periods — same shared token guard as the
 	// other read surfaces; both scopes come from the query

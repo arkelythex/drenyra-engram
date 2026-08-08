@@ -71,13 +71,31 @@ const (
 // codes gate the second approval: DUAL_APPROVAL_REQUIRED fires when a second
 // approval is attempted for a category that is not configured for dual approval,
 // SAME_PRINCIPAL_SECOND_APPROVAL when the second approver IS the first approver.
-// The blocker/state codes of §8.3 (BLOCKER_PRECEDES_APPROVAL, UNKNOWN_RETENTION_STATE,
-// HOLD_ACTIVE, ...) belong to the deferred store layer, not to the pure policy.
 const (
 	CodeRoleDenied                  = "ROLE_DENIED"
 	CodeApproverIsRequester         = "APPROVER_IS_REQUESTER"
 	CodeDualApprovalRequired        = "DUAL_APPROVAL_REQUIRED"
 	CodeSamePrincipalSecondApproval = "SAME_PRINCIPAL_SECOND_APPROVAL"
+)
+
+// Frozen blocker/state codes (v0.8.0 evidence-lifecycle — design §8.3, batch 2
+// delivery). UNKNOWN_RETENTION_STATE is the fail-closed outcome when no EXACT
+// active policy resolves (the engine never guesses a retention outcome);
+// RETENTION_POLICY_AMBIGUOUS fires when multiple enabled candidates share the
+// highest version of the exact tuple (schema UNIQUE is the corruption backstop);
+// RETENTION_NOT_DUE blocks a request for a resolved policy whose min_period has
+// not been reached; LIFECYCLE_VERSION_MISMATCH is the expected-version drift guard
+// of policy supersession; NOT_PURGEABLE rejects institutional (cross-company)
+// objects; POLICY_EVIDENCE_REQUIRED rejects a policy row without
+// jurisdiction/legislation/authority/source. HOLD_ACTIVE and the purge-transition
+// codes of §8.3 belong to the deferred holds/request/execution batches.
+const (
+	CodeUnknownRetentionState  = "UNKNOWN_RETENTION_STATE"
+	CodeRetentionPolicyAmbiguous = "RETENTION_POLICY_AMBIGUOUS"
+	CodeRetentionNotDue        = "RETENTION_NOT_DUE"
+	CodeLifecycleVersionMismatch = "LIFECYCLE_VERSION_MISMATCH"
+	CodeNotPurgeable           = "NOT_PURGEABLE"
+	CodePolicyEvidenceRequired = "POLICY_EVIDENCE_REQUIRED"
 )
 
 // Error is the typed approval/judgment/reconciliation error: a frozen code
