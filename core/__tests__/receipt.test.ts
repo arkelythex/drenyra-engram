@@ -134,7 +134,7 @@ function codeOf(fn: () => void): string | undefined {
 	}
 }
 
-const FIFTEEN_ACTIONS: readonly ReceiptAction[] = [
+const TWENTY_THREE_ACTIONS: readonly ReceiptAction[] = [
 	"memory_recorded",
 	"memory_approved",
 	"memory_rejected",
@@ -148,6 +148,16 @@ const FIFTEEN_ACTIONS: readonly ReceiptAction[] = [
 	"reconciliation_confirmed",
 	"reconciliation_rejected",
 	"object_stored",
+	// v0.9.0 evidence-lifecycle acts: retention binding plus the six purge
+	// transitions and the execution-intent act — Go IsValidReceiptAction parity.
+	"retention_bound",
+	"purge_requested",
+	"purge_approved",
+	"purge_rejected",
+	"purge_cancelled",
+	"purge_withdrawn",
+	"purge_intent",
+	"purge_executed",
 	// v0.8.0 object-level legal holds (batch 3): the two hold acts chain on
 	// the evidence_object subject.
 	"hold_placed",
@@ -162,8 +172,8 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 			"reconciliation",
 			"evidence_object",
 		]);
-		expect(RECEIPT_ACTIONS).toEqual([...FIFTEEN_ACTIONS]);
-		expect(RECEIPT_ACTIONS.length).toBe(15);
+		expect(RECEIPT_ACTIONS).toEqual([...TWENTY_THREE_ACTIONS]);
+		expect(RECEIPT_ACTIONS.length).toBe(23);
 		expect(RECEIPT_ALGORITHM).toBe("Ed25519");
 	});
 
@@ -243,6 +253,81 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 		expect(() =>
 			verifyReceipt(receipt, baseReceiptPayload(), publicKey),
 		).not.toThrow();
+	});
+
+	it("accepts a v0.9 purge_intent receipt as a closed action (strict verify)", () => {
+		// WU-2 Go↔TS parity: the execution-intent act joins the closed set, so
+		// the strict verifier must ACCEPT a signed purge_intent receipt instead
+		// of failing the closed-action check. The payload mirrors Go's
+		// purgeReceiptPayload: H1 == H2 (the intent changes no canonical
+		// snapshot field), the object identity rides evidenceRef, the frozen
+		// evidence-lifecycle policy version is stamped and the
+		// execution-attempt id (the (tenant, executionId) of the attempt)
+		// rides executionAttemptId.
+		expect(RECEIPT_ACTIONS).toContain("purge_intent");
+		const payload: ReceiptPayload = {
+			...baseReceiptPayload({
+				version: "receipt-payload/v0.9.0",
+				subjectType: "evidence_object",
+				subjectId: "a".repeat(64),
+				action: "purge_intent",
+				reviewedEnvelopeHash: "",
+				resultingEnvelopeHash: "",
+				evidenceRef: "a".repeat(64),
+				reason: "execute approved purge",
+				policyVersion: "evidence-lifecycle-policy/v0.8.0",
+				reviewedLifecycleHash: "h1-reviewed-lifecycle-hash",
+				resultingLifecycleHash: "h1-reviewed-lifecycle-hash",
+				executionAttemptId: "00000000-0000-4000-8000-000000000901",
+			}),
+		};
+		const { receipt, publicKey } = signReceipt(payload, paritySeed());
+		expect(receipt.action).toBe("purge_intent");
+		expect(() => verifyReceipt(receipt, payload, publicKey)).not.toThrow();
+	});
+
+	it("accepts every v0.9 evidence-lifecycle receipt action as closed (strict verify)", () => {
+		// Go↔TS parity (full closed set): the strict verifier must ACCEPT a
+		// signed receipt for every Go-emitted lifecycle act — retention binding,
+		// purge request/approval/rejection/cancellation/withdrawal and physical
+		// execution — instead of failing the closed-action check. The payloads
+		// mirror Go's lifecycle payloads: evidence_object subject, object
+		// identity in evidenceRef and the frozen evidence-lifecycle policy
+		// version; purge_intent keeps H1 == H2 (the intent changes no canonical
+		// snapshot field) while the other acts carry distinct lifecycle hashes.
+		const lifecycleActs = [
+			"retention_bound",
+			"purge_requested",
+			"purge_approved",
+			"purge_rejected",
+			"purge_cancelled",
+			"purge_withdrawn",
+			"purge_executed",
+		] as const;
+		for (const action of lifecycleActs) {
+			const intentLike = action === "retention_bound";
+			const payload: ReceiptPayload = {
+				...baseReceiptPayload({
+					version: "receipt-payload/v0.9.0",
+					subjectType: "evidence_object",
+					subjectId: "a".repeat(64),
+					action,
+					reviewedEnvelopeHash: "",
+					resultingEnvelopeHash: "",
+					evidenceRef: "a".repeat(64),
+					reason: "evidence lifecycle act",
+					policyVersion: "evidence-lifecycle-policy/v0.8.0",
+					reviewedLifecycleHash: "h1-reviewed-lifecycle-hash",
+					resultingLifecycleHash: intentLike
+						? "h1-reviewed-lifecycle-hash"
+						: "h2-resulting-lifecycle-hash",
+				}),
+			};
+			const { receipt, publicKey } = signReceipt(payload, paritySeed());
+			expect(RECEIPT_ACTIONS).toContain(action);
+			expect(receipt.action).toBe(action);
+			expect(() => verifyReceipt(receipt, payload, publicKey)).not.toThrow();
+		}
 	});
 
 	it("rejects a modified payload with RECEIPT_PAYLOAD_HASH_MISMATCH", () => {

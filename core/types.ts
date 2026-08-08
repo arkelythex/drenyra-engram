@@ -315,16 +315,16 @@ export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"INVALID_JUDGMENT_TRANSITION",
 	"JUDGMENT_CONFLICT",
 	"JUDGMENT_HASH_MISMATCH",
-"PERIOD_CLOSED",
-"PERIOD_ALREADY_CLOSED",
-"RECONCILIATION_NOT_FOUND",
-"INVALID_RECONCILIATION_TRANSITION",
-"RECONCILIATION_CONFLICT",
-"RECONCILIATION_HASH_MISMATCH",
-"ROLE_DENIED",
-"APPROVER_IS_REQUESTER",
-"DUAL_APPROVAL_REQUIRED",
-"SAME_PRINCIPAL_SECOND_APPROVAL",
+	"PERIOD_CLOSED",
+	"PERIOD_ALREADY_CLOSED",
+	"RECONCILIATION_NOT_FOUND",
+	"INVALID_RECONCILIATION_TRANSITION",
+	"RECONCILIATION_CONFLICT",
+	"RECONCILIATION_HASH_MISMATCH",
+	"ROLE_DENIED",
+	"APPROVER_IS_REQUESTER",
+	"DUAL_APPROVAL_REQUIRED",
+	"SAME_PRINCIPAL_SECOND_APPROVAL",
 ];
 
 /**
@@ -1569,10 +1569,15 @@ export const RECEIPT_SUBJECT_TYPES = [
 export type ReceiptSubjectType = (typeof RECEIPT_SUBJECT_TYPES)[number];
 
 /**
- * The CLOSED set of covered acts (v0.4.0 Step 3; extended with the two
- * v0.5.0 close actions memory_closed / memory_reopened and the two v0.5.0
- * reconciliation actions reconciliation_confirmed / reconciliation_rejected)
- * — an unknown action fails closed. Mirrors core.ReceiptAction.
+ * The CLOSED set of covered acts (v0.4.0 Step 3): the thirteen v0.4–v0.7
+ * acts (the eight original acts, memory_closed / memory_reopened,
+ * reconciliation_confirmed / reconciliation_rejected and object_stored),
+ * the eight v0.9 evidence-lifecycle acts — retention binding plus the six
+ * purge-transition acts (request / approval / rejection / cancellation /
+ * withdrawal / execution) and the durable execution-intent act
+ * purge_intent — and the two v0.8 object-level hold acts. Exact parity with
+ * Go's core.IsValidReceiptAction (twenty-three closed actions); an unknown
+ * action fails closed. Mirrors core.ReceiptAction.
  */
 export const RECEIPT_ACTIONS = [
 	"memory_recorded",
@@ -1588,6 +1593,21 @@ export const RECEIPT_ACTIONS = [
 	"reconciliation_confirmed",
 	"reconciliation_rejected",
 	"object_stored",
+	// v0.9.0 evidence-lifecycle acts (design §4 step 3 / §5): retention
+	// binding (retention_bound) plus the six purge-transition acts
+	// (purge_requested, purge_approved, purge_rejected, purge_cancelled,
+	// purge_withdrawn, purge_executed) and the durable execution-intent act
+	// purge_intent (design §11 step 1 — the intent transaction is
+	// receipt-covered on the evidence_object chain BEFORE any byte is
+	// removed). Full parity with Go's IsValidReceiptAction.
+	"retention_bound",
+	"purge_requested",
+	"purge_approved",
+	"purge_rejected",
+	"purge_cancelled",
+	"purge_withdrawn",
+	"purge_intent",
+	"purge_executed",
 	// v0.8.0 object-level legal holds (batch 3): the two hold acts are
 	// emitted atomically on the evidence_object subject chain.
 	"hold_placed",
@@ -1617,16 +1637,32 @@ export const RECEIPT_PAYLOAD_VERSION_V05 = "receipt-payload/v0.5.0";
  * AND accept v0.7.0 payloads without a protocol break (the versioned
  * protocol decision). Mirrors core.ReceiptPayloadVersionV07.
  */
-    export const RECEIPT_PAYLOAD_VERSION_V07 = "receipt-payload/v0.7.0";
+export const RECEIPT_PAYLOAD_VERSION_V07 = "receipt-payload/v0.7.0";
 
-    /**
-     * Payload version stamped on the v0.8.0 object-level hold acts
-     * (hold_placed, hold_lifted — batch 3). Canonicalization is version-agnostic
-     * (the payload SHAPE is unchanged), so verifiers keep accepting v0.4.0–v0.7.0
-     * payloads unchanged AND accept v0.8.0 payloads without a protocol break.
-     * Mirrors core.ReceiptPayloadVersionV08.
-     */
-    export const RECEIPT_PAYLOAD_VERSION_V08 = "receipt-payload/v0.8.0";
+/**
+ * Payload version stamped on the v0.8.0 object-level hold acts
+ * (hold_placed, hold_lifted — batch 3). Canonicalization is version-agnostic
+ * (the payload SHAPE is unchanged), so verifiers keep accepting v0.4.0–v0.7.0
+ * payloads unchanged AND accept v0.8.0 payloads without a protocol break.
+ * Mirrors core.ReceiptPayloadVersionV08.
+ */
+export const RECEIPT_PAYLOAD_VERSION_V08 = "receipt-payload/v0.8.0";
+
+/**
+ * Payload version stamped on the v0.9.0 evidence-lifecycle purge acts
+ * (retention_bound, purge_requested, purge_approved, purge_rejected,
+ * purge_cancelled, purge_withdrawn — batch 4, schema v11). Unlike v0.5–v0.8
+ * (which reused the existing envelope-hash fields), the v0.9.0 payload ADDS
+ * the two lifecycle-hash fields reviewedLifecycleHash / resultingLifecycleHash
+ * (the canonical lifecycle snapshot hashes H1/H2) and the additive
+ * execution-attempt field executionAttemptId (the per-attempt discriminator of
+ * a purge_intent receipt). Canonicalization is version-conditional for these
+ * three fields ONLY: pre-v0.9 payloads canonicalize byte-identically to today
+ * (verifiers keep accepting v0.4.0–v0.8.0 payloads unchanged), while v0.9.0
+ * payloads append the fields in fixed order after issuedAt. Mirrors
+ * core.ReceiptPayloadVersionV09.
+ */
+export const RECEIPT_PAYLOAD_VERSION_V09 = "receipt-payload/v0.9.0";
 
 /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
 export const RECEIPT_ALGORITHM = "Ed25519";
@@ -1664,6 +1700,12 @@ export interface SignedReceipt {
  * principal, policy, timestamp, subject and action equal the envelope
  * (verifyReceipt enforces it). Roles are canonicalized (sorted +
  * deduplicated). Mirrors core.ReceiptPayload.
+ *
+ * v0.9.0 additive extension: the two lifecycle-hash fields below are OPTIONAL
+ * and empty for every pre-v0.9 action/version, so every existing payload
+ * constructor stays valid. Canonicalization appends them ONLY for the v0.9.0
+ * payload version (in fixed order after issuedAt), keeping pre-v0.9 payload
+ * bytes frozen.
  */
 export interface ReceiptPayload {
 	version: string;
@@ -1692,6 +1734,18 @@ export interface ReceiptPayload {
 	principalAuthenticatedAt: string;
 	policyVersion: string;
 	issuedAt: string;
+	// v0.9.0 additive fields (evidence-lifecycle purge acts, batch 4): the
+	// reviewed/resulting CANONICAL LIFECYCLE SNAPSHOT HASHES (H1/H2) and the
+	// execution-attempt id of a purge_intent receipt (the (tenant, executionId)
+	// of the attempt — populated ONLY for purge_intent, so a fresh-ID retry
+	// after an interrupted intent emits a DISTINCT payload and never collides on
+	// the UNIQUE(subject_type, subject_id, action, payload_hash) backstop).
+	// Optional and empty for every pre-v0.9 action/version; canonicalization
+	// appends them ONLY for the v0.9.0 payload version so pre-v0.9 payload bytes
+	// stay frozen.
+	reviewedLifecycleHash?: string;
+	resultingLifecycleHash?: string;
+	executionAttemptId?: string;
 }
 
 export interface EvidenceObject {

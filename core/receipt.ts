@@ -28,6 +28,7 @@ import {
 import {
 	RECEIPT_ACTIONS,
 	RECEIPT_ALGORITHM,
+	RECEIPT_PAYLOAD_VERSION_V09,
 	RECEIPT_SUBJECT_TYPES,
 	type ReceiptPayload,
 	type SignedReceipt,
@@ -82,9 +83,18 @@ function canonicalRoles(roles: string[]): string[] {
  * SetEscapeHTML(false)), every key present (inapplicable fields stay ""), roles
  * canonicalized. Maps, nulls and optional properties are forbidden. The UTF-8
  * encoding of the returned string equals core.CanonicalReceiptPayload's bytes.
+ *
+ * Version-conditional v0.9.0 extension (mirrors core.CanonicalReceiptPayload
+ * exactly): a v0.9.0 payload appends reviewedLifecycleHash /
+ * resultingLifecycleHash / executionAttemptId AFTER issuedAt (the
+ * execution-attempt id is populated ONLY for purge_intent — the per-attempt
+ * discriminator; it stays empty for every other act, keeping non-intent
+ * payload semantics untouched); every other version canonicalizes to the
+ * frozen legacy bytes (byte-identical with the pre-v0.9 protocol — legacy
+ * receipts never re-version, so pre-v0.9 payloads stay byte-identical).
  */
 export function canonicalReceiptPayload(payload: ReceiptPayload): string {
-	return JSON.stringify({
+	const canonical: Record<string, string | string[]> = {
 		version: payload.version,
 		subjectType: payload.subjectType,
 		subjectId: payload.subjectId,
@@ -111,7 +121,13 @@ export function canonicalReceiptPayload(payload: ReceiptPayload): string {
 		principalAuthenticatedAt: payload.principalAuthenticatedAt,
 		policyVersion: payload.policyVersion,
 		issuedAt: payload.issuedAt,
-	});
+	};
+	if (payload.version === RECEIPT_PAYLOAD_VERSION_V09) {
+		canonical.reviewedLifecycleHash = payload.reviewedLifecycleHash ?? "";
+		canonical.resultingLifecycleHash = payload.resultingLifecycleHash ?? "";
+		canonical.executionAttemptId = payload.executionAttemptId ?? "";
+	}
+	return JSON.stringify(canonical);
 }
 
 /** The unsigned envelope object in the design's exact canonical order. */

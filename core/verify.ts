@@ -229,6 +229,16 @@ const RECEIPT_PAYLOAD_STRING_FIELDS = [
 	"principalAuthenticatedAt",
 	"policyVersion",
 	"issuedAt",
+	// v0.9.0 additive fields (evidence-lifecycle purge acts, batch 4): the
+	// reviewed/resulting canonical lifecycle snapshot hashes (H1/H2) and the
+	// execution-attempt id of a purge_intent receipt (populated ONLY for the
+	// intent act — the per-attempt discriminator). Present ONLY in v0.9.0
+	// payloads; pre-v0.9 stored payloads stay frozen and decode with the fields
+	// absent (mirrors core.DecodeStoredPayload against the extended
+	// ReceiptPayload struct).
+	"reviewedLifecycleHash",
+	"resultingLifecycleHash",
+	"executionAttemptId",
 ] as const;
 
 const RECEIPT_PAYLOAD_KEYS: ReadonlySet<string> = new Set([
