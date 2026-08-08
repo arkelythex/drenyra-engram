@@ -87,15 +87,22 @@ const (
 // not been reached; LIFECYCLE_VERSION_MISMATCH is the expected-version drift guard
 // of policy supersession; NOT_PURGEABLE rejects institutional (cross-company)
 // objects; POLICY_EVIDENCE_REQUIRED rejects a policy row without
-// jurisdiction/legislation/authority/source. HOLD_ACTIVE and the purge-transition
-// codes of §8.3 belong to the deferred holds/request/execution batches.
+// jurisdiction/legislation/authority/source. HOLD_ACTIVE (batch 4 — an active
+// blocking hold protects the object) joins the frozen §8.3 blocker list with the
+// purge pipeline; the purge-transition reason codes of §8.3 (INVALID_TRANSITION,
+// ALREADY_DECIDED, IDEMPOTENCY_CONFLICT, REASON_REQUIRED, OBJECT_NOT_FOUND) are
+// the shared codes already frozen above.
 const (
-	CodeUnknownRetentionState  = "UNKNOWN_RETENTION_STATE"
+	CodeUnknownRetentionState    = "UNKNOWN_RETENTION_STATE"
 	CodeRetentionPolicyAmbiguous = "RETENTION_POLICY_AMBIGUOUS"
-	CodeRetentionNotDue        = "RETENTION_NOT_DUE"
+	CodeRetentionNotDue          = "RETENTION_NOT_DUE"
 	CodeLifecycleVersionMismatch = "LIFECYCLE_VERSION_MISMATCH"
-	CodeNotPurgeable           = "NOT_PURGEABLE"
-	CodePolicyEvidenceRequired = "POLICY_EVIDENCE_REQUIRED"
+	CodeNotPurgeable             = "NOT_PURGEABLE"
+	CodePolicyEvidenceRequired   = "POLICY_EVIDENCE_REQUIRED"
+	// CodeHoldActive is the batch-4 blocker: an ACTIVE (not lifted) hold whose
+	// kind is in the deployment's blocking set protects the object — request and
+	// approval fail closed with HOLD_ACTIVE and no override exists (design §7).
+	CodeHoldActive = "HOLD_ACTIVE"
 )
 
 // Error is the typed approval/judgment/reconciliation error: a frozen code
@@ -255,4 +262,6 @@ var (
 	ErrApproverIsRequester         = &Error{Code: CodeApproverIsRequester, Message: "the approver cannot be the requester (separation of duties)"}
 	ErrDualApprovalRequired        = &Error{Code: CodeDualApprovalRequired, Message: "a second approval requires a dual-approval-configured category"}
 	ErrSamePrincipalSecondApproval = &Error{Code: CodeSamePrincipalSecondApproval, Message: "the second approver must be a distinct principal"}
+	// ── v0.8.0 evidence-lifecycle blocker code (batch 4 — purge pipeline) ──
+	ErrHoldActive = &Error{Code: CodeHoldActive, Message: "an active blocking hold protects the object"}
 )

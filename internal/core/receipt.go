@@ -137,6 +137,12 @@ const (
 	ReceiptActionPurgeCancelled ReceiptAction = "purge_cancelled"
 	// ReceiptActionPurgeWithdrawn covers an approval retraction.
 	ReceiptActionPurgeWithdrawn ReceiptAction = "purge_withdrawn"
+	// ReceiptActionPurgeIntent covers the durable execution-intent act (design
+	// §11 step 1): the intent transaction is receipt-covered so an interrupted
+	// execution is auditable (the purge_intent event + receipt commit BEFORE any
+	// byte is removed). Emitted by the execution work unit; the receipts action
+	// CHECK and the singleton-index exclusion land in the v11→v12 migration.
+	ReceiptActionPurgeIntent ReceiptAction = "purge_intent"
 	// ReceiptActionPurgeExecuted covers the physical execution (terminal).
 	ReceiptActionPurgeExecuted ReceiptAction = "purge_executed"
 	// ── v0.8.0 object-level legal holds (batch 3, design §7) ──
@@ -151,8 +157,8 @@ const (
 	ReceiptActionHoldLifted ReceiptAction = "hold_lifted"
 )
 
-// IsValidReceiptAction reports whether a is one of the twenty-two closed actions
-// (thirteen v0.4–v0.7 acts, the seven v0.8 evidence-lifecycle acts and the two
+// IsValidReceiptAction reports whether a is one of the twenty-three closed actions
+// (thirteen v0.4–v0.7 acts, the eight v0.8 evidence-lifecycle acts and the two
 // v0.8 object-level hold acts).
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
@@ -166,7 +172,7 @@ func IsValidReceiptAction(a ReceiptAction) bool {
 		ReceiptActionRetentionBound, ReceiptActionPurgeRequested,
 		ReceiptActionPurgeApproved, ReceiptActionPurgeRejected,
 		ReceiptActionPurgeCancelled, ReceiptActionPurgeWithdrawn,
-		ReceiptActionPurgeExecuted,
+		ReceiptActionPurgeIntent, ReceiptActionPurgeExecuted,
 		ReceiptActionHoldPlaced, ReceiptActionHoldLifted:
 		return true
 	}
@@ -205,6 +211,23 @@ const ReceiptPayloadVersionV07 = "receipt-payload/v0.7.0"
 // lifecycle snapshot hashes H1/H2 of the deferred hash batch are NOT part of
 // this payload). Existing receipts never re-version.
 const ReceiptPayloadVersionV08 = "receipt-payload/v0.8.0"
+
+// ReceiptPayloadVersionV09 is the payload version stamped on the v0.9.0
+// evidence-lifecycle purge acts (retention_bound, purge_requested, purge_approved,
+// purge_rejected, purge_cancelled, purge_withdrawn — batch 4, schema v11).
+// Unlike v0.5–v0.8 (which reused the existing envelope-hash fields), the v0.9.0
+// payload ADDS the two lifecycle-hash fields reviewedLifecycleHash /
+// resultingLifecycleHash (design §3.8/§5: the canonical lifecycle snapshot
+// hashes H1/H2 the human examined and the transition produced) and the additive
+// execution-attempt field executionAttemptId (the (tenant, executionId) of a
+// purge_intent attempt — the per-attempt discriminator that keeps every intent
+// receipt uniquely auditable). Canonicalization is version-conditional for these
+// three fields ONLY: pre-v0.9 payloads canonicalize byte-identically to today
+// (the frozen v0.4.0 key list — verifiers keep accepting v0.4.0–v0.8.0 payloads
+// unchanged, and existing receipts never re-version), while v0.9.0 payloads
+// append the fields in fixed order after issuedAt. The Go↔TS mirrors implement
+// the same conditional bytes.
+const ReceiptPayloadVersionV09 = "receipt-payload/v0.9.0"
 
 // ReceiptAlgorithm is the frozen signing algorithm.
 const ReceiptAlgorithm = "Ed25519"
@@ -268,6 +291,24 @@ type ReceiptPayload struct {
 	PrincipalAuthenticatedAt string        `json:"principalAuthenticatedAt"`
 	PolicyVersion            string        `json:"policyVersion"`
 	IssuedAt                 string        `json:"issuedAt"`
+	// ReviewedLifecycleHash is the canonical lifecycle snapshot hash (H1) the
+	// human examined (design §3.8/§9). It is carried ONLY by v0.9.0
+	// evidence-lifecycle payloads (empty for every other action/version —
+	// canonicalization appends it only for v0.9.0 so pre-v0.9 payload bytes stay
+	// frozen).
+	ReviewedLifecycleHash string `json:"reviewedLifecycleHash"`
+	// ResultingLifecycleHash is the canonical lifecycle snapshot hash (H2) the
+	// transition produced (always != H1) — same v0.9.0-only carrier contract.
+	ResultingLifecycleHash string `json:"resultingLifecycleHash"`
+	// ExecutionAttemptID is the additive execution-attempt discriminator: the
+	// (tenant, executionId) of the execution attempt a purge_intent receipt
+	// covers (design §3.7/§11). It is populated ONLY by the intent receipt (the
+	// exact UNIQUE(subject_type, subject_id, action, payload_hash) backstop needs
+	// every intent attempt to canonicalize to a DISTINCT payload, so a fresh-ID
+	// retry after an interrupted intent never collides); every other action/
+	// version carries it empty. Same v0.9.0-only additive carrier contract as
+	// the lifecycle hashes — pre-v0.9 payload bytes stay frozen.
+	ExecutionAttemptID string `json:"executionAttemptId"`
 }
 
 // ──────────────────────────────────────────────
@@ -325,12 +366,51 @@ func receiptErr(code, format string, args ...any) error {
 // Canonicalization (the byte contract)
 // ──────────────────────────────────────────────
 
-// canonicalReceiptPayload is the canonical JSON shape of a receipt payload: the
-// struct field order IS the property order (Go marshals in declaration order).
-// No omitempty — every key present, empty strings stay "". The roles array is
-// always a JSON array (never null) and is canonicalized (sorted, deduplicated,
-// empty strings dropped).
-type canonicalReceiptPayload ReceiptPayload
+// canonicalReceiptPayload is the canonical JSON shape of a LEGACY (pre-v0.9.0)
+// receipt payload: the struct field order IS the property order (Go marshals in
+// declaration order). No omitempty — every key present, empty strings stay "".
+// The roles array is always a JSON array (never null) and is canonicalized
+// (sorted, deduplicated, empty strings dropped). The v0.9.0 shape (canonicalReceiptPayloadV09)
+// embeds this shape and appends the two lifecycle-hash fields.
+type canonicalReceiptPayload struct {
+	Version                  string        `json:"version"`
+	SubjectType              SubjectType   `json:"subjectType"`
+	SubjectID                string        `json:"subjectId"`
+	Action                   ReceiptAction `json:"action"`
+	TenantID                 string        `json:"tenantId"`
+	CompanyID                string        `json:"companyId"`
+	FiscalPeriodID           string        `json:"fiscalPeriodId"`
+	ReviewedEnvelopeHash     string        `json:"reviewedEnvelopeHash"`
+	ResultingEnvelopeHash    string        `json:"resultingEnvelopeHash"`
+	ReviewedJudgmentHash     string        `json:"reviewedJudgmentHash"`
+	ResultingJudgmentHash    string        `json:"resultingJudgmentHash"`
+	FromMemoryID             string        `json:"fromMemoryId"`
+	FromEnvelopeHash         string        `json:"fromEnvelopeHash"`
+	ToMemoryID               string        `json:"toMemoryId"`
+	ToEnvelopeHash           string        `json:"toEnvelopeHash"`
+	SuccessorID              string        `json:"successorId"`
+	EvidenceRef              string        `json:"evidenceRef"`
+	Reason                   string        `json:"reason"`
+	PrincipalID              string        `json:"principalId"`
+	MembershipID             string        `json:"membershipId"`
+	PrincipalRoles           []string      `json:"principalRoles"`
+	AuthenticationMethod     string        `json:"authenticationMethod"`
+	AssuranceLevel           string        `json:"assuranceLevel"`
+	PrincipalAuthenticatedAt string        `json:"principalAuthenticatedAt"`
+	PolicyVersion            string        `json:"policyVersion"`
+	IssuedAt                 string        `json:"issuedAt"`
+}
+
+// canonicalReceiptPayloadV09 is the v0.9.0 canonical shape: the legacy fields
+// in the legacy order (the embedded struct is flattened by Go JSON) PLUS the
+// two lifecycle-hash fields and the execution-attempt identifier appended after
+// issuedAt — the additive v0.9.0 payload contract.
+type canonicalReceiptPayloadV09 struct {
+	canonicalReceiptPayload
+	ReviewedLifecycleHash  string `json:"reviewedLifecycleHash"`
+	ResultingLifecycleHash string `json:"resultingLifecycleHash"`
+	ExecutionAttemptID     string `json:"executionAttemptId"`
+}
 
 // canonicalRoles returns a defensive copy of roles as a sorted, deduplicated
 // set with empty strings dropped — the canonical order the payload covers (Go
@@ -352,16 +432,68 @@ func canonicalRoles(roles []string) []string {
 	return out
 }
 
+// legacyCanonicalPayload copies every legacy payload field in declaration
+// order (the pre-v0.9 canonical shape). The explicit field-by-field copy keeps
+// the legacy canonical bytes frozen even though ReceiptPayload grew the two
+// v0.9.0-only fields.
+func legacyCanonicalPayload(p ReceiptPayload) canonicalReceiptPayload {
+	return canonicalReceiptPayload{
+		Version:                  p.Version,
+		SubjectType:              p.SubjectType,
+		SubjectID:                p.SubjectID,
+		Action:                   p.Action,
+		TenantID:                 p.TenantID,
+		CompanyID:                p.CompanyID,
+		FiscalPeriodID:           p.FiscalPeriodID,
+		ReviewedEnvelopeHash:     p.ReviewedEnvelopeHash,
+		ResultingEnvelopeHash:    p.ResultingEnvelopeHash,
+		ReviewedJudgmentHash:     p.ReviewedJudgmentHash,
+		ResultingJudgmentHash:    p.ResultingJudgmentHash,
+		FromMemoryID:             p.FromMemoryID,
+		FromEnvelopeHash:         p.FromEnvelopeHash,
+		ToMemoryID:               p.ToMemoryID,
+		ToEnvelopeHash:           p.ToEnvelopeHash,
+		SuccessorID:              p.SuccessorID,
+		EvidenceRef:              p.EvidenceRef,
+		Reason:                   p.Reason,
+		PrincipalID:              p.PrincipalID,
+		MembershipID:             p.MembershipID,
+		PrincipalRoles:           p.PrincipalRoles,
+		AuthenticationMethod:     p.AuthenticationMethod,
+		AssuranceLevel:           p.AssuranceLevel,
+		PrincipalAuthenticatedAt: p.PrincipalAuthenticatedAt,
+		PolicyVersion:            p.PolicyVersion,
+		IssuedAt:                 p.IssuedAt,
+	}
+}
+
 // CanonicalReceiptPayload returns the canonical compact UTF-8 JSON bytes of a
-// receipt payload: fixed property order (exactly the struct field order above),
-// JSON string escaping, NO HTML escaping (matching canonicalJSON in
-// judgment.go — Go escapes <,>,& by default, the mirror does not; disabling it
-// keeps Go and TS bytes identical). Roles are canonicalized (sorted +
-// deduplicated). Maps, nulls and optional properties are forbidden.
+// receipt payload: fixed property order, JSON string escaping, NO HTML escaping
+// (matching canonicalJSON in judgment.go — Go escapes <,>,& by default, the
+// mirror does not; disabling it keeps Go and TS bytes identical). Roles are
+// canonicalized (sorted + deduplicated). Maps, nulls and optional properties are
+// forbidden. Version-conditional v0.9.0 extension: a v0.9.0 payload appends
+// reviewedLifecycleHash/resultingLifecycleHash/executionAttemptId after issuedAt
+// (executionAttemptId is populated ONLY for purge_intent — the per-attempt
+// discriminator; it stays empty for every other act, keeping non-intent payload
+// semantics untouched); every other version canonicalizes to the frozen legacy
+// bytes (byte-identical with the pre-v0.9 protocol — the Go↔TS mirrors
+// implement the same condition).
 func CanonicalReceiptPayload(p ReceiptPayload) []byte {
-	canonical := canonicalReceiptPayload(p)
-	canonical.PrincipalRoles = canonicalRoles(p.PrincipalRoles)
-	return canonicalJSONBytes(canonical)
+	roles := canonicalRoles(p.PrincipalRoles)
+	if p.Version == ReceiptPayloadVersionV09 {
+		v := canonicalReceiptPayloadV09{
+			canonicalReceiptPayload: legacyCanonicalPayload(p),
+			ReviewedLifecycleHash:   p.ReviewedLifecycleHash,
+			ResultingLifecycleHash:  p.ResultingLifecycleHash,
+			ExecutionAttemptID:      p.ExecutionAttemptID,
+		}
+		v.PrincipalRoles = roles
+		return canonicalJSONBytes(v)
+	}
+	c := legacyCanonicalPayload(p)
+	c.PrincipalRoles = roles
+	return canonicalJSONBytes(c)
 }
 
 // canonicalUnsignedEnvelope is the canonical JSON shape of the UNSIGNED

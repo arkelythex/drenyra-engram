@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -160,6 +161,9 @@ func TestReceiptClosedEnums(t *testing.T) {
 	if core.ReceiptPayloadVersionV05 != "receipt-payload/v0.5.0" {
 		t.Errorf("ReceiptPayloadVersionV05 = %q, want receipt-payload/v0.5.0 (v0.5.0 close actions)", core.ReceiptPayloadVersionV05)
 	}
+	if core.ReceiptPayloadVersionV09 != "receipt-payload/v0.9.0" {
+		t.Errorf("ReceiptPayloadVersionV09 = %q, want receipt-payload/v0.9.0 (v0.9.0 evidence-lifecycle purge acts)", core.ReceiptPayloadVersionV09)
+	}
 }
 
 // TestReceiptModelRoundTrip marshals/unmarshals a signed receipt and a payload
@@ -248,6 +252,109 @@ func TestCanonicalReceiptPayload(t *testing.T) {
 func TestReceiptPayloadHashPinned(t *testing.T) {
 	if got := core.ReceiptPayloadHash(baseReceiptPayload()); got != parityPayloadHash {
 		t.Errorf("ReceiptPayloadHash = %s, want %s", got, parityPayloadHash)
+	}
+}
+
+// TestReceiptPayloadV09ExecutionAttemptIDPinned freezes the additive v0.9.0
+// execution-attempt discriminator (executionAttemptId) in the canonical payload
+// contract — the exact Go counterpart of the pins in
+// core/__tests__/receipt-v09-lifecycle.test.ts:
+//
+//   - the field joins the v0.9.0 canonical shape AFTER resultingLifecycleHash
+//     (version-driven, like the lifecycle hashes): populated ONLY by purge_intent
+//     receipts (the (tenant, executionId) of the attempt — the per-attempt
+//     discriminator that keeps every intent receipt uniquely auditable, so a
+//     fresh-ID retry after an interrupted intent never collides on the
+//     UNIQUE(subject_type, subject_id, action, payload_hash) backstop), empty
+//     for every other v0.9 act;
+//   - pre-v0.9 bytes stay FROZEN: a legacy v0.8 payload carrying the lifecycle
+//     and attempt fields drops them (byte-identical with the pre-v0.9 protocol);
+//   - the pinned SHA-256 digests below are the Go↔TS shared digest contract
+//     (identical fixtures and literals in the TS mirror).
+func TestReceiptPayloadV09ExecutionAttemptIDPinned(t *testing.T) {
+	objectID := strings.Repeat("a", 64)
+	const (
+		h1          = "h1-reviewed-lifecycle-hash"
+		h2          = "h2-resulting-lifecycle-hash"
+		executionID = "00000000-0000-4000-8000-000000000901"
+	)
+	base := core.ReceiptPayload{
+		Version:                  core.ReceiptPayloadVersionV09,
+		SubjectType:              core.SubjectTypeEvidenceObject,
+		SubjectID:                objectID,
+		TenantID:                 "tenant-1",
+		CompanyID:                "acme",
+		FiscalPeriodID:           "202601",
+		EvidenceRef:              objectID,
+		Reason:                   "retention period elapsed",
+		PrincipalID:              "subject-1",
+		MembershipID:             "membership-1",
+		PrincipalRoles:           []string{"controller", "accountant", "controller"},
+		AuthenticationMethod:     "session",
+		AssuranceLevel:           "standard",
+		PrincipalAuthenticatedAt: "2026-08-05T13:00:00Z",
+		PolicyVersion:            "evidence-lifecycle-policy/v0.8.0",
+		IssuedAt:                 "2026-08-05T13:00:00Z",
+	}
+
+	// 1. A v0.9 non-intent payload (purge_requested) canonicalizes with the
+	// execution-attempt field present but EMPTY (version-driven shape, never
+	// action-driven; the semantics of non-intent receipts stay untouched).
+	requested := base
+	requested.Action = core.ReceiptActionPurgeRequested
+	requested.ReviewedLifecycleHash = h1
+	requested.ResultingLifecycleHash = h2
+	pinnedRequested := fmt.Sprintf(`{"version":"receipt-payload/v0.9.0","subjectType":"evidence_object","subjectId":"%s","action":"purge_requested","tenantId":"tenant-1","companyId":"acme","fiscalPeriodId":"202601","reviewedEnvelopeHash":"","resultingEnvelopeHash":"","reviewedJudgmentHash":"","resultingJudgmentHash":"","fromMemoryId":"","fromEnvelopeHash":"","toMemoryId":"","toEnvelopeHash":"","successorId":"","evidenceRef":"%s","reason":"retention period elapsed","principalId":"subject-1","membershipId":"membership-1","principalRoles":["accountant","controller"],"authenticationMethod":"session","assuranceLevel":"standard","principalAuthenticatedAt":"2026-08-05T13:00:00Z","policyVersion":"evidence-lifecycle-policy/v0.8.0","issuedAt":"2026-08-05T13:00:00Z","reviewedLifecycleHash":"h1-reviewed-lifecycle-hash","resultingLifecycleHash":"h2-resulting-lifecycle-hash","executionAttemptId":""}`, objectID, objectID)
+	if got := string(core.CanonicalReceiptPayload(requested)); got != pinnedRequested {
+		t.Fatalf("v0.9 non-intent canonical bytes differ from the pinned literal:\n got %s\nwant %s", got, pinnedRequested)
+	}
+	if got := core.ReceiptPayloadHash(requested); got != "bdf6ad3e57791ea7ac5524523fa4504dd059446b01780bfac6afbeefc9f0e3bd" {
+		t.Fatalf("v0.9 non-intent payload hash = %s, want the pinned Go↔TS digest bdf6ad3e…", got)
+	}
+
+	// 2. The purge_intent payload carries its (tenant, executionId) in the
+	// execution-attempt field (H1 == H2: the intent changes no canonical snapshot
+	// field) — the additive discriminator that makes every intent receipt
+	// uniquely auditable.
+	intent := base
+	intent.Action = core.ReceiptActionPurgeIntent
+	intent.Reason = "execute approved purge"
+	intent.ReviewedLifecycleHash = h1
+	intent.ResultingLifecycleHash = h1
+	intent.ExecutionAttemptID = executionID
+	pinnedIntent := fmt.Sprintf(`{"version":"receipt-payload/v0.9.0","subjectType":"evidence_object","subjectId":"%s","action":"purge_intent","tenantId":"tenant-1","companyId":"acme","fiscalPeriodId":"202601","reviewedEnvelopeHash":"","resultingEnvelopeHash":"","reviewedJudgmentHash":"","resultingJudgmentHash":"","fromMemoryId":"","fromEnvelopeHash":"","toMemoryId":"","toEnvelopeHash":"","successorId":"","evidenceRef":"%s","reason":"execute approved purge","principalId":"subject-1","membershipId":"membership-1","principalRoles":["accountant","controller"],"authenticationMethod":"session","assuranceLevel":"standard","principalAuthenticatedAt":"2026-08-05T13:00:00Z","policyVersion":"evidence-lifecycle-policy/v0.8.0","issuedAt":"2026-08-05T13:00:00Z","reviewedLifecycleHash":"h1-reviewed-lifecycle-hash","resultingLifecycleHash":"h1-reviewed-lifecycle-hash","executionAttemptId":"00000000-0000-4000-8000-000000000901"}`, objectID, objectID)
+	if got := string(core.CanonicalReceiptPayload(intent)); got != pinnedIntent {
+		t.Fatalf("purge_intent canonical bytes differ from the pinned literal:\n got %s\nwant %s", got, pinnedIntent)
+	}
+	if got := core.ReceiptPayloadHash(intent); got != "238684abdc19291cd22b22b34604ca7a345582e56c2b6a706dd7f6e00d7363fe" {
+		t.Fatalf("purge_intent payload hash = %s, want the pinned Go↔TS digest 238684ab…", got)
+	}
+
+	// 3. A FRESH execution id (a retry after an interrupted intent) changes ONLY
+	// the execution-attempt field — the payload hash must differ, proving the
+	// two intent receipts never collide on the payload-hash UNIQUE backstop.
+	retry := intent
+	retry.ExecutionAttemptID = "00000000-0000-4000-8000-000000000902"
+	if got := core.ReceiptPayloadHash(retry); got == core.ReceiptPayloadHash(intent) {
+		t.Fatal("a fresh execution id must change the intent payload hash (per-attempt auditable intents)")
+	}
+	if got := core.ReceiptPayloadHash(retry); got != "2afe2717071eb9162e6b02a7dcd87d51902f898bea1be1e95b70233e121773ec" {
+		t.Fatalf("retry intent payload hash = %s, want the pinned Go↔TS digest 2afe2717…", got)
+	}
+
+	// 4. Pre-v0.9 bytes stay FROZEN: the same fixture stamped v0.8.0 drops the
+	// lifecycle AND execution-attempt fields (byte-identical with the pinned
+	// legacy literal — legacy receipts never re-version).
+	legacy := intent
+	legacy.Version = core.ReceiptPayloadVersionV08
+	legacy.Action = core.ReceiptActionHoldPlaced
+	legacy.Reason = "hold placed"
+	pinnedLegacy := fmt.Sprintf(`{"version":"receipt-payload/v0.8.0","subjectType":"evidence_object","subjectId":"%s","action":"hold_placed","tenantId":"tenant-1","companyId":"acme","fiscalPeriodId":"202601","reviewedEnvelopeHash":"","resultingEnvelopeHash":"","reviewedJudgmentHash":"","resultingJudgmentHash":"","fromMemoryId":"","fromEnvelopeHash":"","toMemoryId":"","toEnvelopeHash":"","successorId":"","evidenceRef":"%s","reason":"hold placed","principalId":"subject-1","membershipId":"membership-1","principalRoles":["accountant","controller"],"authenticationMethod":"session","assuranceLevel":"standard","principalAuthenticatedAt":"2026-08-05T13:00:00Z","policyVersion":"evidence-lifecycle-policy/v0.8.0","issuedAt":"2026-08-05T13:00:00Z"}`, objectID, objectID)
+	if got := string(core.CanonicalReceiptPayload(legacy)); got != pinnedLegacy {
+		t.Fatalf("legacy v0.8 canonical bytes must drop the v0.9 fields:\n got %s\nwant %s", got, pinnedLegacy)
+	}
+	if got := core.ReceiptPayloadHash(legacy); got != "5268b4daae84a51f06d1c08b8f07c971021a77b3801d4df41f52ce830dd3d435" {
+		t.Fatalf("legacy v0.8 payload hash = %s, want the frozen legacy digest 5268b4da…", got)
 	}
 }
 
