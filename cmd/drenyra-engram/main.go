@@ -100,6 +100,10 @@ func run(args []string) int {
 		return cmdHold(args[1:])
 	case "retention-policy":
 		return cmdRetentionPolicy(args[1:])
+	case "purge":
+		return cmdPurge(args[1:])
+	case "export":
+		return cmdExport(args[1:])
 	case "period-summary":
 		return cmdPeriodSummary(args[1:])
 	case "compare-periods":
@@ -3153,6 +3157,478 @@ func cmdRetentionPolicyEvaluate(args []string) int {
 	return emit(result)
 }
 
+// ──────────────────────────────────────────────
+// purge — v0.8 batch 4 evidence purge pipeline (request/approve/reject/
+// cancel/withdraw/execute)
+// ──────────────────────────────────────────────
+
+// cmdPurge dispatches the v0.8 batch 4 evidence purge subcommands
+// (docs/architecture/evidence-lifecycle-v0.8.md §2/§3/§9/§10/§11): request,
+// approve, reject, cancel, withdraw and execute are the AUTHENTICATED
+// principal mutations (the principal is DERIVED from the stored CLI session
+// like approve, never from a caller flag — there is deliberately NO
+// --actor/--subject/--role flag). approve serves BOTH the default approver
+// (order 1) and the dual second approver (order 2) — the store derives the
+// order from the decision ledger. The read-only lifecycle export lives under
+// `export lifecycle` (design §12). NO deletion outside the guarded execute
+// protocol.
+func cmdPurge(args []string) int {
+	if len(args) == 0 {
+		printPurgeUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "request":
+		return cmdPurgeRequest(args[1:])
+	case "approve":
+		return cmdPurgeApprove(args[1:])
+	case "reject":
+		return cmdPurgeReject(args[1:])
+	case "cancel":
+		return cmdPurgeCancel(args[1:])
+	case "withdraw":
+		return cmdPurgeWithdraw(args[1:])
+	case "execute":
+		return cmdPurgeExecute(args[1:])
+	case "help", "-h", "--help":
+		printPurgeUsage(os.Stdout)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown purge subcommand %q\n", args[0])
+		printPurgeUsage(os.Stderr)
+		return 2
+	}
+}
+
+func printPurgeUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: drenyra-engram purge request <object-id> --jurisdiction <token> --legislation <id> --category <cat> --expected-hash <hash> --reason <text> [--request-id <id>] [--db <path>]   (authenticated session; identity never from flags)")
+	fmt.Fprintln(w, "       drenyra-engram purge approve <request-id> --expected-hash <hash> --reason <text> [--request-id-key <id>] [--db <path>]   (authenticated session; order 1 or the dual second approval — derived by the store)")
+	fmt.Fprintln(w, "       drenyra-engram purge reject <request-id> --reason <text> [--request-id-key <id>] [--db <path>]   (authenticated session; terminal)")
+	fmt.Fprintln(w, "       drenyra-engram purge cancel <request-id> [--request-id-key <id>] [--db <path>]   (authenticated session; original requester retraction)")
+	fmt.Fprintln(w, "       drenyra-engram purge withdraw <request-id> --reason <text> [--request-id-key <id>] [--db <path>]   (authenticated session; approval retraction)")
+	fmt.Fprintln(w, "       drenyra-engram purge execute <request-id> --expected-hash <hash> [--reason <text>] [--execution-id <id>] [--db <path>]   (authenticated session; two-phase receipt-covered protocol)")
+}
+
+// cliPurgePrincipal authenticates the stored CLI session and returns the
+// pre-verified principal — the ONLY identity source of the purge mutations
+// (ADR-003: caller-supplied authority is gone).
+func cliPurgePrincipal(st *store.SQLiteStore) (auth.VerifiedApprovalPrincipal, error) {
+	token, err := loadSessionToken()
+	if err != nil {
+		return auth.VerifiedApprovalPrincipal{}, fmt.Errorf("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	return resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+}
+
+// cmdPurgeRequest opens ONE purge pipeline per object (v0.8 batch 4, design
+// §2/§3.3/§9/§10): the FULL blocker set (closed-period gate → exact active
+// retention resolution → eligibility → active blocking hold scan → expected
+// lifecycle hash) BEFORE the authenticated request gate (accounting ladder),
+// (tenant, requestId) idempotency, the immutable request row (one per
+// object), the retention binding and the purge_requested event + receipt all
+// live in the store. --request-id is optional; a fresh UUID is generated when
+// absent.
+func cmdPurgeRequest(args []string) int {
+	fs := flag.NewFlagSet("purge request", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	jurisdiction := fs.String("jurisdiction", "", "REQUIRED jurisdiction token (^[A-Z][A-Z0-9-]{1,15}$)")
+	legislation := fs.String("legislation", "", "REQUIRED regime/family identifier (resolution evidence)")
+	category := fs.String("category", "", "REQUIRED retention category (resolution evidence)")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED the canonical lifecycle snapshot hash (H1) the requester reviewed (64 lowercase hex)")
+	reason := fs.String("reason", "", "REQUIRED non-empty justification")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--jurisdiction": true, "--legislation": true, "--category": true,
+		"--expected-hash": true, "--reason": true, "--request-id": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*jurisdiction) == "" || strings.TrimSpace(*legislation) == "" ||
+		strings.TrimSpace(*category) == "" || strings.TrimSpace(*expectedHash) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("purge request: %v", err)
+	}
+	result, err := server.New(st, "cli").RequestPurge(context.Background(), core.RequestPurgeCommand{
+		ObjectID:              rest[0],
+		Jurisdiction:          *jurisdiction,
+		Legislation:           *legislation,
+		Category:              *category,
+		ExpectedLifecycleHash: *expectedHash,
+		Reason:                *reason,
+		RequestID:             key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdPurgeApprove records ONE human approval (v0.8 batch 4, design §2/§3.4/
+// §8/§9): the SAME command serves the default approver (order 1) and the
+// DISTINCT dual second approver (order 2) — the store derives the order from
+// the decision ledger, re-checks the FULL blocker set BEFORE authz and
+// enforces requester ≠ approver plus the distinct-principal rule store-side.
+// --request-id-key is optional; a fresh UUID is generated when absent.
+func cmdPurgeApprove(args []string) int {
+	fs := flag.NewFlagSet("purge approve", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED the reviewed canonical lifecycle snapshot hash H1 (64 lowercase hex; for the second approval, the first approval's resulting hash)")
+	reason := fs.String("reason", "", "REQUIRED non-empty justification")
+	requestIDKey := fs.String("request-id-key", "", "tenant-scoped idempotency key of this approval act (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--expected-hash": true, "--reason": true, "--request-id-key": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*expectedHash) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestIDKey)
+	if err != nil {
+		return fail("purge approve: %v", err)
+	}
+	result, err := server.New(st, "cli").ApprovePurge(context.Background(), core.ApprovePurgeCommand{
+		RequestID:             rest[0],
+		ExpectedLifecycleHash: *expectedHash,
+		Reason:                *reason,
+		RequestIDKey:          key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdPurgeReject records the TERMINAL rejection (v0.8 batch 4, design §2):
+// an authenticated default approver closes the request with a reason; the
+// projection moves to purge_rejected and never re-opens.
+func cmdPurgeReject(args []string) int {
+	fs := flag.NewFlagSet("purge reject", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	reason := fs.String("reason", "", "REQUIRED non-empty rejection justification")
+	requestIDKey := fs.String("request-id-key", "", "tenant-scoped idempotency key of this act (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--reason": true, "--request-id-key": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestIDKey)
+	if err != nil {
+		return fail("purge reject: %v", err)
+	}
+	result, err := server.New(st, "cli").RejectPurge(context.Background(), core.RejectPurgeCommand{
+		RequestID:    rest[0],
+		Reason:       *reason,
+		RequestIDKey: key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdPurgeCancel is the ORIGINAL requester's idempotent retraction (v0.8
+// batch 4, design §2): the pipeline returns to stored and a fresh request is
+// a fresh act on the same one-per-object row. There is no reason flag — a
+// cancellation carries no command evidence.
+func cmdPurgeCancel(args []string) int {
+	fs := flag.NewFlagSet("purge cancel", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	requestIDKey := fs.String("request-id-key", "", "tenant-scoped idempotency key of this act (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--request-id-key": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestIDKey)
+	if err != nil {
+		return fail("purge cancel: %v", err)
+	}
+	result, err := server.New(st, "cli").CancelPurge(context.Background(), core.CancelPurgeCommand{
+		RequestID:    rest[0],
+		RequestIDKey: key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdPurgeWithdraw is the approval retraction — the documented cleanup (v0.8
+// batch 4, design §2/§7): a default approver or dual second approver
+// withdraws an approved pipeline with a reason; the pipeline returns to
+// stored.
+func cmdPurgeWithdraw(args []string) int {
+	fs := flag.NewFlagSet("purge withdraw", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	reason := fs.String("reason", "", "REQUIRED non-empty withdrawal justification")
+	requestIDKey := fs.String("request-id-key", "", "tenant-scoped idempotency key of this act (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--reason": true, "--request-id-key": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestIDKey)
+	if err != nil {
+		return fail("purge withdraw: %v", err)
+	}
+	result, err := server.New(st, "cli").WithdrawPurge(context.Background(), core.WithdrawPurgeCommand{
+		RequestID:    rest[0],
+		Reason:       *reason,
+		RequestIDKey: key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdPurgeExecute physically executes an APPROVED purge pipeline (v0.8 batch
+// 4, design §2/§3.7/§9/§11): the TWO-PHASE, RECEIPT-COVERED protocol (durable
+// intent → byte removal outside SQL with the pre-removal hash check → durable
+// completion) all lives in the store. --execution-id is the (tenant,
+// executionId) idempotency key of THIS attempt (optional; a fresh UUID is
+// generated when absent — a retry after an interrupted attempt MUST use a
+// FRESH id, replaying the same id returns the stored outcome). Only object
+// bytes are removed; the immutable audit rows never change.
+func cmdPurgeExecute(args []string) int {
+	fs := flag.NewFlagSet("purge execute", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	expectedHash := fs.String("expected-hash", "", "REQUIRED the reviewed canonical lifecycle snapshot hash (64 lowercase hex; the store fails closed on drift)")
+	reason := fs.String("reason", "", "optional execution note")
+	executionID := fs.String("execution-id", "", "tenant-scoped idempotency key of this execution attempt (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printPurgeUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--expected-hash": true, "--reason": true, "--execution-id": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*expectedHash) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliPurgePrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*executionID)
+	if err != nil {
+		return fail("purge execute: %v", err)
+	}
+	result, err := server.New(st, "cli").FinalizePurge(context.Background(), core.ExecutePurgeCommand{
+		RequestID:             rest[0],
+		ExpectedLifecycleHash: *expectedHash,
+		Reason:                *reason,
+		ExecutionID:           key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// ──────────────────────────────────────────────
+// export — v0.8 batch 4 deterministic evidence-lifecycle export (design §12)
+// ──────────────────────────────────────────────
+
+// cmdExport dispatches the read-only export subcommands. This slice ships the
+// deterministic lifecycle bundle (`export lifecycle`) — a READ-ONLY,
+// tenant/RUC-scoped audit query that emits NO receipt and never reads object
+// bytes.
+func cmdExport(args []string) int {
+	if len(args) == 0 {
+		printExportUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "lifecycle":
+		return cmdExportLifecycle(args[1:])
+	case "help", "-h", "--help":
+		printExportUsage(os.Stdout)
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown export subcommand %q\n", args[0])
+		printExportUsage(os.Stderr)
+		return 2
+	}
+}
+
+func printExportUsage(w io.Writer) {
+	fmt.Fprintln(w, "usage: drenyra-engram export lifecycle [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] [--db <path>]   (read-only, scope-first; empty --period selects all periods of the RUC)")
+}
+
+// cmdExportLifecycle produces the deterministic evidence-lifecycle audit
+// bundle (v0.8 batch 4, design §12 — WU-3/WU-4): a READ-ONLY, tenant/RUC-
+// scoped query for the exact company scope built from the flags (organizationId
+// defaults to cli; --ruc is REQUIRED — the export requires an exact company
+// scope; an empty --period selects ALL periods of the RUC). The store enforces
+// the tenant/company/RUC/period boundary structurally and the bundle fails
+// closed on any cross-scope row. The export emits NO receipt and never reads
+// object bytes (purged objects export immutable metadata + lifecycle +
+// receipt evidence only). Pure read — no session, no mutation.
+func cmdExportLifecycle(args []string) int {
+	fs := flag.NewFlagSet("export lifecycle", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	organization := fs.String("organization", "", "organization id (default cli)")
+	ruc := fs.String("ruc", "", "REQUIRED company RUC (exactly 11 digits; the export requires an exact company scope)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; empty selects ALL periods of the RUC)")
+	fs.Usage = func() {
+		printExportUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--organization": true, "--ruc": true, "--period": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() != 0 || strings.TrimSpace(*ruc) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := objectCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		return fail("%v", err)
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	bundle, err := server.New(st, "cli").ExportEvidenceLifecycle(context.Background(), core.EvidenceExportCriteria{Scope: scope})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(bundle)
+}
+
 // multiFlag collects repeated string flags (e.g. --ref a --ref b).
 type multiFlag []string
 
@@ -3217,6 +3693,13 @@ Usage:
   drenyra-engram retention-policy put [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --authority <owner> --source <decision> --category <cat> --min-period <YYYYMM> [--db <path>]   (v0.8 authenticated administration mutation)
   drenyra-engram retention-policy resolve [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> [--db <path>]   (scope-first read)
   drenyra-engram retention-policy evaluate [--ruc <11 digits>] [--period <YYYYMM>] --jurisdiction <token> --legislation <id> --category <cat> --object-period <YYYYMM> [--db <path>]   (fail-closed read)
+  drenyra-engram purge request <object-id> --jurisdiction <token> --legislation <id> --category <cat> --expected-hash <hash> --reason <text> [--request-id <id>] [--db <path>]   (v0.8 authenticated purge pipeline)
+  drenyra-engram purge approve <request-id> --expected-hash <hash> --reason <text> [--request-id-key <id>] [--db <path>]   (v0.8 authenticated; order 1 or the dual second approval — derived by the store)
+  drenyra-engram purge reject <request-id> --reason <text> [--request-id-key <id>] [--db <path>]   (v0.8 authenticated; terminal)
+  drenyra-engram purge cancel <request-id> [--request-id-key <id>] [--db <path>]   (v0.8 authenticated; original requester retraction)
+  drenyra-engram purge withdraw <request-id> --reason <text> [--request-id-key <id>] [--db <path>]   (v0.8 authenticated; approval retraction)
+  drenyra-engram purge execute <request-id> --expected-hash <hash> [--reason <text>] [--execution-id <id>] [--db <path>]   (v0.8 authenticated; two-phase receipt-covered protocol)
+  drenyra-engram export lifecycle [--ruc <11 digits>] [--period <YYYYMM>] [--organization <id>] [--db <path>]   (v0.8 read-only deterministic audit bundle)
   drenyra-engram period-summary <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram compare-periods <ruc> --from <YYYYMM> --to <YYYYMM> [--db <path>]
   drenyra-engram close create <ruc> --period YYYYMM [--total code=currency=amountCents[=memoryId]]... [--reason <text>] [--db <path>]   (agent save, pending_review)
@@ -3266,6 +3749,9 @@ Flags:
   --blocking-hold-kinds <list> comma-separated subset of legal,audit,dispute,fiscalization,other (retention-policy put)
   --enabled         enable the policy for resolution (retention-policy put)
   --request-id <id>  idempotency key for retention-policy put (optional; a UUID is generated when absent)
+  --expected-hash <hash> canonical lifecycle snapshot hash H1 the caller reviewed (purge request/approve/execute, REQUIRED; 64 lowercase hex)
+  --request-id-key <id>  tenant-scoped idempotency key of the approval act (purge approve/reject/cancel/withdraw, optional; a UUID is generated when absent)
+  --execution-id <id>  tenant-scoped idempotency key of the execution attempt (purge execute, optional; a UUID is generated when absent)
   --kind <kind>    closed hold-kind token legal|audit|dispute|fiscalization|other (hold place, REQUIRED)
   --owner <subject-id> subject responsible for the hold (hold place, REQUIRED)
   --blocking-kinds <list> comma-separated subset of legal,audit,dispute,fiscalization,other (hold list, optional; absent = nothing blocks)

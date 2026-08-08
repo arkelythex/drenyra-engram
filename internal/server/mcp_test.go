@@ -6,11 +6,16 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
+	"github.com/arkelythex/drenyra-engram/internal/store"
 )
 
 // jsonrpcResponse is the wire shape the tests decode (result as raw JSON so
@@ -180,11 +185,11 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 43 {
-		// 13 engram_* + 30 accounting_* (current context in v0.5, object storage
-		// in v0.7, retention policies in v0.8 batch 2, and object-level holds in
-		// v0.8 batch 3).
-		t.Fatalf("tool count = %d, want 43 (13 engram_* + 30 accounting_*)", len(result.Tools))
+	if len(result.Tools) != 50 {
+		// 13 engram_* + 37 accounting_* (current context in v0.5, object storage
+		// in v0.7, retention policies in v0.8 batch 2, object-level holds in
+		// v0.8 batch 3, and the evidence purge lifecycle + export in v0.8 batch 4).
+		t.Fatalf("tool count = %d, want 50 (13 engram_* + 37 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)
@@ -432,6 +437,121 @@ func TestMCPDoctor(t *testing.T) {
 	}
 	if report.Observations != 1 {
 		t.Fatalf("observations = %d, want 1", report.Observations)
+	}
+}
+
+// TestMCPDoctorSurfacesPurgeRecoveryFindings proves engram_doctor serializes
+// the §13.3 purge-recovery findings over the wire (additive schema over the
+// EXISTING tool — no new transport operation): a crash-window intent (the
+// durable intent committed, the completion never did, bytes already gone) is
+// reported as a PURGE_EXECUTION_INTENT finding carrying the execution/request/
+// object identity, the intent metadata, NO completion receipt and bytesState
+// absent — plus the documented_intent object-layer reconciliation. The store
+// is opened at an explicit objects root so the test can simulate the crash
+// window by removing the bytes before execution.
+func TestMCPDoctorSurfacesPurgeRecoveryFindings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "engram.db")
+	root := filepath.Join(t.TempDir(), "objects")
+	st, err := store.OpenWithObjects(path, root)
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	api := New(st, "test")
+	m := NewMCPServer(api)
+
+	recordsToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "lucia.ramirez",
+		[]auth.AccountingRole{auth.RoleRecordsComplianceOfficer})
+	accountantToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "ana.garcia",
+		[]auth.AccountingRole{auth.RoleAccountant})
+	objectID, policy, scope, h := purgeFixture(t, api, recordsToken)
+	requested := requestPurgeDirect(t, api, objectID, h, "req-purge-mcp-doctor-window", accountantToken)
+	hRequested := purgeSnapshotHash(t, scope, objectID, core.PurgeLifecycleRequested,
+		core.RetentionEligibilityEligible, policy.PolicyID, policy.Category, policy.Version,
+		requested.Request.RequestID, nil)
+	approved, err := api.ApprovePurge(context.Background(), core.ApprovePurgeCommand{
+		RequestID:             requested.Request.RequestID,
+		ExpectedLifecycleHash: hRequested,
+		Reason:                "verified against the reviewed snapshot",
+		RequestIDKey:          "req-approve-mcp-doctor-window",
+	}, purgePrincipal(t, api, recordsToken))
+	if err != nil {
+		t.Fatalf("approve purge: %v", err)
+	}
+	hApproved := purgeSnapshotHash(t, scope, objectID, core.PurgeLifecycleApproved,
+		core.RetentionEligibilityEligible, policy.PolicyID, policy.Category, policy.Version,
+		requested.Request.RequestID, []string{approved.Approval.ApprovalID})
+
+	// Crash window: the bytes are gone BEFORE execution, so the durable intent
+	// commits and the byte removal fails closed on OBJECT_BYTES_MISSING — the
+	// exact database state a crash between the authorized unlink and the
+	// completion commit leaves behind (executions row 'intent', bytes gone).
+	obj, _, err := api.GetObject(context.Background(), objectID, scope)
+	if err != nil {
+		t.Fatalf("resolve crash-window object: %v", err)
+	}
+	if err := os.Remove(filepath.Join(root, filepath.FromSlash(obj.RelPath))); err != nil {
+		t.Fatalf("remove object bytes (simulated crash window): %v", err)
+	}
+	execID := "00000000-0000-4000-8000-00000000d001"
+	if _, err := api.FinalizePurge(context.Background(), core.ExecutePurgeCommand{
+		RequestID:             requested.Request.RequestID,
+		ExpectedLifecycleHash: hApproved,
+		Reason:                "execution batch approved",
+		ExecutionID:           execID,
+	}, purgePrincipal(t, api, recordsToken)); err == nil || !strings.Contains(err.Error(), "OBJECT_BYTES_MISSING") {
+		t.Fatalf("execute on pre-missing bytes = %v, want OBJECT_BYTES_MISSING (the interrupted window)", err)
+	}
+
+	response := call(t, m, 6, "tools/call", map[string]any{"name": "engram_doctor"})
+	if response.Error != nil {
+		t.Fatalf("doctor error: %+v", response.Error)
+	}
+	var report struct {
+		PurgeRequests int `json:"purgeRequests"`
+		PurgeFindings []struct {
+			Kind                string `json:"kind"`
+			ExecutionID         string `json:"executionId"`
+			RequestID           string `json:"requestId"`
+			ObjectID            string `json:"objectId"`
+			State               string `json:"state"`
+			IntentAt            string `json:"intentAt"`
+			IntentBy            string `json:"intentBy"`
+			BytesState          string `json:"bytesState"`
+			CompletionReceiptID string `json:"completionReceiptId"`
+		} `json:"purgeFindings"`
+		ObjectFindings []struct {
+			Kind     string `json:"kind"`
+			ObjectID string `json:"objectId"`
+		} `json:"objectFindings"`
+	}
+	if err := json.Unmarshal([]byte(toolResultText(t, response)), &report); err != nil {
+		t.Fatalf("decode doctor: %v", err)
+	}
+	if report.PurgeRequests != 1 {
+		t.Fatalf("purgeRequests = %d, want 1", report.PurgeRequests)
+	}
+	if len(report.PurgeFindings) != 1 {
+		t.Fatalf("purgeFindings = %+v, want exactly the intent row", report.PurgeFindings)
+	}
+	f := report.PurgeFindings[0]
+	if f.Kind != "PURGE_EXECUTION_INTENT" || f.State != "intent" {
+		t.Fatalf("finding = %+v, want PURGE_EXECUTION_INTENT / intent", f)
+	}
+	if f.ExecutionID != execID || f.RequestID != requested.Request.RequestID || f.ObjectID != objectID {
+		t.Fatalf("finding identity = %+v, want the crash-window execution/request/object", f)
+	}
+	if f.BytesState != "absent" || f.CompletionReceiptID != "" || f.IntentAt == "" || f.IntentBy == "" {
+		t.Fatalf("finding = %+v, want bytesState absent, no completion receipt, intent metadata present", f)
+	}
+	var documentedIntent bool
+	for _, of := range report.ObjectFindings {
+		if of.Kind == "documented_intent" && of.ObjectID == objectID {
+			documentedIntent = true
+		}
+	}
+	if !documentedIntent {
+		t.Fatalf("objectFindings = %+v, want a documented_intent finding for %s", report.ObjectFindings, objectID)
 	}
 }
 

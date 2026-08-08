@@ -832,6 +832,84 @@ func ToolCatalog() []map[string]any {
 				"blocking_kinds": stringSchema("comma-separated subset of legal,audit,dispute,fiscalization,other (optional)"),
 			}, "object_id", "scope"),
 		},
+		// ── accounting_purge_* + accounting_lifecycle_export (v0.8 batch 4
+		// evidence purge pipeline, design §2/§3/§9/§10/§11/§12): request/
+		// approve/reject/cancel/withdraw/finalize are the AUTHENTICATED principal
+		// mutations (all fail closed with AUTHENTICATION_REQUIRED on this
+		// session-less stdio server, exactly like accounting_retention_policy_put
+		// — tool arguments NEVER supply identity). approve serves BOTH the default
+		// approver (order 1) and the dual second approver (order 2) — the store
+		// derives the order from the decision ledger. lifecycle_export is a
+		// READ-ONLY SCOPE-FIRST read whose exact scope tuple is part of the
+		// arguments (the store enforces the tenant/company/RUC/period boundary
+		// structurally; the export emits NO receipt and never reads object bytes).
+		// NO deletion outside the guarded finalize protocol.
+		{
+			"name":        "accounting_purge_request",
+			"description": "Open ONE purge pipeline per object (v0.8 batch 4, design §2/§3.3/§9/§10): the FULL blocker set BEFORE the authenticated request gate — closed-period gate, exact active retention resolution, eligibility, active blocking hold scan and the expected lifecycle hash (LIFECYCLE_VERSION_MISMATCH on drift); then (tenant, requestId) idempotency, the immutable request row (one per object), the retention binding and the purge_requested event + receipt. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED. Never deletes bytes.",
+			"inputSchema": objectSchema(map[string]any{
+				"object_id":               stringSchema("content address (64 lowercase hex SHA-256 digits) of the evidence object to purge (required)"),
+				"jurisdiction":            stringSchema("uppercase jurisdiction token ^[A-Z][A-Z0-9-]{1,15}$ (required)"),
+				"legislation":             stringSchema("regime/family identifier — resolution evidence (required)"),
+				"category":                stringSchema("retention category — resolution evidence (required)"),
+				"expected_lifecycle_hash": stringSchema("the canonical lifecycle snapshot hash (H1) the requester reviewed — 64 lowercase hex digits (required)"),
+				"reason":                  stringSchema("non-empty justification (required)"),
+				"request_id":              stringSchema("tenant-scoped idempotency key (required)"),
+			}, "object_id", "jurisdiction", "legislation", "category", "expected_lifecycle_hash", "reason", "request_id"),
+		},
+		{
+			"name":        "accounting_purge_approve",
+			"description": "Record ONE human approval (v0.8 batch 4, design §2/§3.4/§8/§9): the SAME operation serves the default approver (order 1) and the DISTINCT dual second approver (order 2) — the store derives the order from the decision ledger, re-checks the FULL blocker set BEFORE authz (approval can never override a blocker) and enforces requester ≠ approver plus the distinct-principal rule store-side. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"request_id":              stringSchema("the purge request id (a UUID) being approved (required)"),
+				"expected_lifecycle_hash": stringSchema("the reviewed canonical lifecycle snapshot hash H1 — 64 lowercase hex digits (required; for the second approval, the first approval's resulting hash)"),
+				"reason":                  stringSchema("non-empty justification (required)"),
+				"request_id_key":          stringSchema("tenant-scoped idempotency key of THIS approval act (required)"),
+			}, "request_id", "expected_lifecycle_hash", "reason", "request_id_key"),
+		},
+		{
+			"name":        "accounting_purge_reject",
+			"description": "Record the TERMINAL rejection of a purge request (v0.8 batch 4, design §2): an authenticated default approver closes the request with a reason; the projection moves to purge_rejected and never re-opens. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"request_id":     stringSchema("the purge request id (a UUID) being rejected (required)"),
+				"reason":         stringSchema("non-empty rejection justification (required)"),
+				"request_id_key": stringSchema("tenant-scoped idempotency key of this act (required)"),
+			}, "request_id", "reason", "request_id_key"),
+		},
+		{
+			"name":        "accounting_purge_cancel",
+			"description": "ORIGINAL requester's idempotent retraction (v0.8 batch 4, design §2): the pipeline returns to stored and a fresh request is a fresh act on the same one-per-object row. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"request_id":     stringSchema("the purge request id (a UUID) being cancelled (required)"),
+				"request_id_key": stringSchema("tenant-scoped idempotency key of this act (required)"),
+			}, "request_id", "request_id_key"),
+		},
+		{
+			"name":        "accounting_purge_withdraw",
+			"description": "Approval retraction — the documented cleanup (v0.8 batch 4, design §2/§7): a default approver or dual second approver withdraws an approved pipeline with a reason; the pipeline returns to stored. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"request_id":     stringSchema("the purge request id (a UUID) being withdrawn (required)"),
+				"reason":         stringSchema("non-empty withdrawal justification (required)"),
+				"request_id_key": stringSchema("tenant-scoped idempotency key of this act (required)"),
+			}, "request_id", "reason", "request_id_key"),
+		},
+		{
+			"name":        "accounting_purge_finalize",
+			"description": "Physically finalize an APPROVED purge pipeline (v0.8 batch 4, design §2/§3.7/§9/§11): the TWO-PHASE receipt-covered protocol (durable intent → byte removal outside SQL with the pre-removal hash check → durable completion) lives in the store. Only object bytes are removed; the immutable audit rows never change. Retry is safe by execution id: replaying the same id returns the stored outcome; an interrupted attempt is REPORTED as PURGE_EXECUTION_INTERRUPTED and a retry uses a FRESH execution id. Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED. (The tool name deliberately avoids \"execute\" — the catalog has NO authorize/allow/execute tool, ever; the guarded finalize act is the human executor's step.)",
+			"inputSchema": objectSchema(map[string]any{
+				"request_id":              stringSchema("the approved purge request id (a UUID) to execute (required)"),
+				"expected_lifecycle_hash": stringSchema("the reviewed canonical lifecycle snapshot hash — 64 lowercase hex digits (required; the store fails closed on drift)"),
+				"reason":                  stringSchema("optional execution note"),
+				"execution_id":            stringSchema("tenant-scoped idempotency key of THIS execution attempt (a UUID; required — a retry after an interrupted attempt uses a FRESH id)"),
+			}, "request_id", "expected_lifecycle_hash", "execution_id"),
+		},
+		{
+			"name":        "accounting_lifecycle_export",
+			"description": "READ-ONLY deterministic evidence-lifecycle export (v0.8 batch 4, design §12): the tenant/RUC-scoped audit bundle (objects metadata — never bytes, lifecycle states, bound retention policies, holds, purge requests/approvals/executions, lifecycle events, per-subject receipt chains and public signing keys) with a self-hashing manifest and content-addressed exportId. The caller's exact company scope is part of the arguments (tenant/company/RUC, optional YYYYMM period — an empty period selects ALL periods of the RUC); the store enforces the boundary structurally and the bundle fails closed on any cross-scope row. Pure read: emits NO receipt and never reads object bytes.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope": stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (period optional — empty selects all periods of the RUC; required)`),
+			}, "scope"),
+		},
 		{
 			"name":        "accounting_doctor",
 			"description": "Store health snapshot: schema version, storage, counts. Fails closed on corruption.",
@@ -1455,6 +1533,182 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(err), nil
 		}
 		return textContent(mustJSON(holdListResponse{Holds: holds, ActiveBlockingHolds: active})), nil
+
+	// ── purge tools (v0.8 batch 4 evidence purge pipeline, design §2/§3/§9/
+	// §10/§11): request/approve/reject/cancel/withdraw/execute are the
+	// AUTHENTICATED principal mutations and fail closed with
+	// AUTHENTICATION_REQUIRED on this session-less stdio server (exactly like
+	// accounting_retention_policy_put — tool arguments NEVER supply identity);
+	// lifecycle_export is a READ-ONLY SCOPE-FIRST read whose exact scope is part
+	// of the arguments, so a caller whose scope differs sees no cross-scope row.
+	case "accounting_purge_request":
+		var args struct {
+			ObjectID              string `json:"object_id"`
+			Jurisdiction          string `json:"jurisdiction"`
+			Legislation           string `json:"legislation"`
+			Category              string `json:"category"`
+			ExpectedLifecycleHash string `json:"expected_lifecycle_hash"`
+			Reason                string `json:"reason"`
+			RequestID             string `json:"request_id"`
+		}
+		// Strict shape (design §6): the tool accepts EXACTLY its declared
+		// arguments — unknown fields (including any caller-supplied identity or
+		// scope) are rejected, never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("object_id", args.ObjectID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("jurisdiction", args.Jurisdiction); err != nil {
+			return nil, err
+		}
+		if err := requireParams("legislation", args.Legislation); err != nil {
+			return nil, err
+		}
+		if err := requireParams("category", args.Category); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_lifecycle_hash", args.ExpectedLifecycleHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_request requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_purge_approve":
+		var args struct {
+			RequestID             string `json:"request_id"`
+			ExpectedLifecycleHash string `json:"expected_lifecycle_hash"`
+			Reason                string `json:"reason"`
+			RequestIDKey          string `json:"request_id_key"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_lifecycle_hash", args.ExpectedLifecycleHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id_key", args.RequestIDKey); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_approve requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_purge_reject":
+		var args struct {
+			RequestID    string `json:"request_id"`
+			Reason       string `json:"reason"`
+			RequestIDKey string `json:"request_id_key"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id_key", args.RequestIDKey); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_reject requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_purge_cancel":
+		var args struct {
+			RequestID    string `json:"request_id"`
+			RequestIDKey string `json:"request_id_key"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id_key", args.RequestIDKey); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_cancel requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_purge_withdraw":
+		var args struct {
+			RequestID    string `json:"request_id"`
+			Reason       string `json:"reason"`
+			RequestIDKey string `json:"request_id_key"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id_key", args.RequestIDKey); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_withdraw requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_purge_finalize":
+		var args struct {
+			RequestID             string `json:"request_id"`
+			ExpectedLifecycleHash string `json:"expected_lifecycle_hash"`
+			Reason                string `json:"reason"`
+			ExecutionID           string `json:"execution_id"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_lifecycle_hash", args.ExpectedLifecycleHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("execution_id", args.ExecutionID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_purge_finalize requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_lifecycle_export":
+		var args struct {
+			Scope string `json:"scope"`
+		}
+		// Strict shape (design §6): the read accepts EXACTLY its declared scope
+		// argument — unknown fields (including any caller-supplied identity) are
+		// rejected, never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		bundle, err := m.api.ExportEvidenceLifecycle(context.Background(), core.EvidenceExportCriteria{Scope: scope})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(bundle)), nil
 
 	case "accounting_search":
 		var args struct {

@@ -102,11 +102,11 @@ func classify(err error) *apiError {
 // (internal/store/object_store.go). classify maps them before the generic
 // prefixes so the wire codes stay stable on the HTTP routes.
 const (
-	objectCodeNotFound     = "OBJECT_NOT_FOUND"
-	objectCodeInvalid      = "INVALID_OBJECT"
-	objectCodeBytesMiss    = "OBJECT_BYTES_MISSING"
-	objectCodeHashDiff     = "OBJECT_HASH_MISMATCH"
-	objectCodePathInvalid  = "OBJECT_PATH_INVALID"
+	objectCodeNotFound      = "OBJECT_NOT_FOUND"
+	objectCodeInvalid       = "INVALID_OBJECT"
+	objectCodeBytesMiss     = "OBJECT_BYTES_MISSING"
+	objectCodeHashDiff      = "OBJECT_HASH_MISMATCH"
+	objectCodePathInvalid   = "OBJECT_PATH_INVALID"
 	objectCodeScopeConflict = "OBJECT_SCOPE_CONFLICT"
 )
 
@@ -294,6 +294,22 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /accounting/objects/{objectId}/holds", h.authenticate(h.handleHoldPlace))
 	mux.HandleFunc("POST /accounting/holds/{holdId}/lift", h.authenticate(h.handleHoldLift))
 	mux.HandleFunc("GET /accounting/objects/{objectId}/holds", h.requireToken(h.handleHoldList))
+	// v0.8 batch 4 evidence purge pipeline (WU-4): every mutation is an
+	// AUTHENTICATED principal mutation (strict bodies never declare identity;
+	// the Idempotency-Key header rides the (tenant, requestId) idempotency key —
+	// for execute it rides the (tenant, executionId) key of the attempt). The
+	// SAME approve operation serves order 1 and the dual second approval (the
+	// store derives the order from the decision ledger). The lifecycle export is
+	// a READ-ONLY SCOPE-FIRST read (?ruc= + ?organizationId= + optional ?period=)
+	// that emits NO receipt and never reads object bytes. NO deletion outside
+	// the guarded execute protocol.
+	mux.HandleFunc("POST /accounting/objects/{objectId}/purge", h.authenticate(h.handlePurgeRequest))
+	mux.HandleFunc("POST /accounting/purge-requests/{requestId}/approve", h.authenticate(h.handlePurgeApprove))
+	mux.HandleFunc("POST /accounting/purge-requests/{requestId}/reject", h.authenticate(h.handlePurgeReject))
+	mux.HandleFunc("POST /accounting/purge-requests/{requestId}/cancel", h.authenticate(h.handlePurgeCancel))
+	mux.HandleFunc("POST /accounting/purge-requests/{requestId}/withdraw", h.authenticate(h.handlePurgeWithdraw))
+	mux.HandleFunc("POST /accounting/purge-requests/{requestId}/execute", h.authenticate(h.handlePurgeExecute))
+	mux.HandleFunc("GET /accounting/lifecycle/export", h.requireToken(h.handleLifecycleExport))
 	// Period-over-period comparison (v0.5.0, design §4/§6): a PURE scope-first
 	// read over one company's two periods — same shared token guard as the
 	// other read surfaces; both scopes come from the query
@@ -1571,7 +1587,11 @@ func (h *HTTPServer) handleDoctor(w http.ResponseWriter, r *http.Request) {
 
 // httpQueryScope builds a company scope from query parameters. For kind=company
 // (the default) ruc is required; kind=institutional produces an institutional
-// scope. period is validated when present.
+// scope. period is validated when present. An EXPLICIT ?companyId= query
+// parameter selects that company id (the export surface REQUIRES it — the
+// export must resolve the same company scope the stored evidence uses, never
+// the RUC); when companyId is absent the established HTTP/CLI derivation
+// (companyId := ruc) is kept for the other scope-first read surfaces.
 func httpQueryScope(r *http.Request, institutional bool) (core.Scope, error) {
 	query := r.URL.Query()
 	if institutional || query.Get("kind") == "institutional" {
@@ -1585,10 +1605,17 @@ func httpQueryScope(r *http.Request, institutional bool) (core.Scope, error) {
 	if period != "" && !core.IsValidPeriod(period) {
 		return core.Scope{}, errors.New("INVALID_PERIOD: query parameter period must be YYYYMM with month 01-12")
 	}
+	companyID := query.Get("companyId")
+	if companyID == "" {
+		// Established derivation for the generic scope-first reads; the lifecycle
+		// export overrides this by REQUIRING an explicit companyId (see
+		// handleLifecycleExport) — it never derives the company id from the RUC.
+		companyID = ruc
+	}
 	return core.Scope{
 		Kind:           core.ScopeKindCompany,
 		OrganizationID: query.Get("organizationId"),
-		CompanyID:      ruc,
+		CompanyID:      companyID,
 		RUC:            ruc,
 		Period:         period,
 	}, nil

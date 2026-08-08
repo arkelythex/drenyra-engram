@@ -248,6 +248,82 @@ func (a *API) HoldsForObject(ctx context.Context, objectID string, scope core.Sc
 	return a.Store.HoldsForObject(ctx, objectID, scope)
 }
 
+// RequestPurge opens ONE purge pipeline per object (v0.8 batch 4, design
+// §2/§3.3/§9/§10): the API is a thin delegation over the store — the FULL
+// blocker set BEFORE authz (closed-period gate, exact active retention
+// resolution, eligibility, active blocking hold scan, expected lifecycle
+// hash), (tenant, requestId) idempotency, the immutable request row, the
+// guarded projection, the retention binding and the purge_requested event +
+// receipt all live in the store. The principal is the PRE-VERIFIED caller
+// from the transport middleware (ADR-003 — the payload can never declare
+// identity). Never deletes bytes.
+func (a *API) RequestPurge(ctx context.Context, cmd core.RequestPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.RequestPurgeResult, error) {
+	return a.Store.RequestPurge(ctx, cmd, principal)
+}
+
+// ApprovePurge records ONE human approval (v0.8 batch 4, design §2/§3.4/§8/
+// §9): the API is a thin delegation over the store. The approval ORDER is
+// derived by the store from the stored decision ledger — order 1 = the
+// default approver, order 2 = the DISTINCT dual second approver for a
+// policy-designated fiscal/material category — so one operation serves both
+// the first and the second approval (the result carries approvalOrder 1|2).
+// SoD and the distinct-principal rule are enforced store-side against the
+// stored requester/first approver.
+func (a *API) ApprovePurge(ctx context.Context, cmd core.ApprovePurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.ApprovePurgeResult, error) {
+	return a.Store.ApprovePurge(ctx, cmd, principal)
+}
+
+// RejectPurge records the TERMINAL rejection (v0.8 batch 4, design §2): the
+// API is a thin delegation over the store — the authenticated default
+// approver closes the request with a reason; the projection moves to
+// purge_rejected and never re-opens.
+func (a *API) RejectPurge(ctx context.Context, cmd core.RejectPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.RejectPurgeResult, error) {
+	return a.Store.RejectPurge(ctx, cmd, principal)
+}
+
+// CancelPurge is the ORIGINAL requester's idempotent retraction (v0.8 batch
+// 4, design §2): the API is a thin delegation over the store — the pipeline
+// returns to stored and a fresh request is a fresh act on the same
+// one-per-object row.
+func (a *API) CancelPurge(ctx context.Context, cmd core.CancelPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.CancelPurgeResult, error) {
+	return a.Store.CancelPurge(ctx, cmd, principal)
+}
+
+// WithdrawPurge is the approval retraction (v0.8 batch 4, design §2/§7): the
+// API is a thin delegation over the store — a default approver or dual
+// second approver withdraws an approved pipeline with a reason (the
+// documented cleanup); the pipeline returns to stored.
+func (a *API) WithdrawPurge(ctx context.Context, cmd core.WithdrawPurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.WithdrawPurgeResult, error) {
+	return a.Store.WithdrawPurge(ctx, cmd, principal)
+}
+
+// FinalizePurge physically executes an APPROVED purge pipeline (v0.8 batch 4,
+// design §2/§3.7/§9/§11): the API is a thin delegation over the store — the
+// TWO-PHASE, RECEIPT-COVERED protocol (durable intent, byte removal outside
+// SQL, durable completion) and the retry-by-execution-id safety all live in
+// the store. Only object bytes are removed; the immutable audit rows never
+// change. The name deliberately avoids "execute" (the shared API surface has
+// NO authorize/allow/execute operation, ever — contracts/provenance.md); the
+// human executor act is exposed as FinalizePurge, a pure delegation over the
+// store's guarded ExecutePurge protocol.
+func (a *API) FinalizePurge(ctx context.Context, cmd core.ExecutePurgeCommand, principal auth.VerifiedApprovalPrincipal) (core.ExecutePurgeResult, error) {
+	return a.Store.ExecutePurge(ctx, cmd, principal)
+}
+
+// ExportEvidenceLifecycle is the deterministic evidence-lifecycle export read
+// (v0.8 batch 4, design §12 — WU-3): a READ-ONLY, tenant/RUC-scoped audit
+// bundle for an explicit RUC-scoped request, with a self-hashing manifest and a
+// content-addressed exportId. The API is a thin delegation over the store (the
+// read-only transaction, the scope-first queries and the fail-closed scope
+// coverage all live there). Reads never require a principal (scope-first, not
+// authenticated — same contract as ResolveRetentionPolicy/HoldsForObject), and
+// the export INTENTIONALLY emits NO receipt: it is a read-only query, never a
+// material export act (documented in the store contract; identical data yields
+// the identical bundle + exportId, so replay/idempotency is structural).
+func (a *API) ExportEvidenceLifecycle(ctx context.Context, criteria core.EvidenceExportCriteria) (core.EvidenceExportBundle, error) {
+	return a.Store.ExportEvidenceLifecycle(ctx, criteria)
+}
+
 // ──────────────────────────────────────────────
 // compare — identity / scope / content deltas + relation verdict
 // ──────────────────────────────────────────────

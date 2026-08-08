@@ -238,6 +238,44 @@ func TestHTTPTokenAuth(t *testing.T) {
 	}
 }
 
+// TestHTTPDoctorSurfacesPurgeLifecycle proves /v1/doctor serializes the §13.3
+// lifecycle surface automatically: after a completed purge pipeline the report
+// JSON carries the lifecycle table counts and the documented-purge object
+// finding — additive fields over the EXISTING route, no new transport
+// operation, no new route.
+func TestHTTPDoctorSurfacesPurgeLifecycle(t *testing.T) {
+	ts, api := newTestHTTPServer(t, "secret-token")
+	objectID := completedPurgePipelineForDoctor(t, api)
+
+	status, raw := httpJSON(t, http.MethodGet, ts.URL+"/v1/doctor", "secret-token", nil)
+	if status != http.StatusOK {
+		t.Fatalf("doctor status = %d, want 200; body %s", status, raw)
+	}
+	var report struct {
+		PurgeRequests   int `json:"purgeRequests"`
+		PurgeExecutions int `json:"purgeExecutions"`
+		ObjectFindings  []struct {
+			Kind     string `json:"kind"`
+			ObjectID string `json:"objectId"`
+		} `json:"objectFindings"`
+	}
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		t.Fatalf("decode doctor: %v", err)
+	}
+	if report.PurgeRequests != 1 || report.PurgeExecutions != 1 {
+		t.Fatalf("lifecycle counts = (%d requests, %d executions), want (1,1)", report.PurgeRequests, report.PurgeExecutions)
+	}
+	var documentedPurge bool
+	for _, of := range report.ObjectFindings {
+		if of.Kind == "documented_purge" && of.ObjectID == objectID {
+			documentedPurge = true
+		}
+	}
+	if !documentedPurge {
+		t.Fatalf("objectFindings = %+v, want a documented_purge finding for %s", report.ObjectFindings, objectID)
+	}
+}
+
 // TestHTTPNoAuthorizationEndpoints is the transport-level non-authorization
 // boundary: no authorize/approve/allow route exists on the HTTP surface.
 func TestHTTPNoAuthorizationEndpoints(t *testing.T) {

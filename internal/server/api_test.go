@@ -6,10 +6,12 @@
 package server
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
 )
@@ -366,8 +368,88 @@ func TestDoctorFailsClosedOnMissingTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if report.SchemaVersion != 10 {
-		t.Fatalf("schemaVersion = %d, want 10", report.SchemaVersion)
+	if report.SchemaVersion != 12 {
+		t.Fatalf("schemaVersion = %d, want 12", report.SchemaVersion)
+	}
+}
+
+// completedPurgePipelineForDoctor drives ONE full request → approve → execute
+// purge pipeline through the shared API (the same domain services the HTTP/MCP
+// surfaces delegate to) and returns the purged object id — the shared fixture
+// of the §13.3 doctor transport-surface tests.
+func completedPurgePipelineForDoctor(t *testing.T, api *API) string {
+	t.Helper()
+	ctx := context.Background()
+	recordsToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "lucia.ramirez",
+		[]auth.AccountingRole{auth.RoleRecordsComplianceOfficer})
+	accountantToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "ana.garcia",
+		[]auth.AccountingRole{auth.RoleAccountant})
+
+	objectID, policy, scope, h := purgeFixture(t, api, recordsToken)
+	requested := requestPurgeDirect(t, api, objectID, h, "req-purge-doctor-surface", accountantToken)
+	hRequested := purgeSnapshotHash(t, scope, objectID, core.PurgeLifecycleRequested,
+		core.RetentionEligibilityEligible, policy.PolicyID, policy.Category, policy.Version,
+		requested.Request.RequestID, nil)
+	approved, err := api.ApprovePurge(ctx, core.ApprovePurgeCommand{
+		RequestID:             requested.Request.RequestID,
+		ExpectedLifecycleHash: hRequested,
+		Reason:                "verified against the reviewed snapshot",
+		RequestIDKey:          "req-approve-doctor-surface",
+	}, purgePrincipal(t, api, recordsToken))
+	if err != nil {
+		t.Fatalf("approve purge: %v", err)
+	}
+	hApproved := purgeSnapshotHash(t, scope, objectID, core.PurgeLifecycleApproved,
+		core.RetentionEligibilityEligible, policy.PolicyID, policy.Category, policy.Version,
+		requested.Request.RequestID, []string{approved.Approval.ApprovalID})
+	executed, err := api.FinalizePurge(ctx, core.ExecutePurgeCommand{
+		RequestID:             requested.Request.RequestID,
+		ExpectedLifecycleHash: hApproved,
+		Reason:                "execution batch approved",
+		ExecutionID:           "00000000-0000-4000-8000-00000000e001",
+	}, purgePrincipal(t, api, recordsToken))
+	if err != nil {
+		t.Fatalf("finalize purge: %v", err)
+	}
+	if executed.Execution.State != core.PurgeExecutionCompleted {
+		t.Fatalf("executed state = %s, want completed", executed.Execution.State)
+	}
+	return objectID
+}
+
+// TestDoctorReportsPurgeLifecycleThroughAPI proves the shared API surface
+// carries the §13.3 lifecycle surface after a completed purge pipeline: the
+// lifecycle table counts, NO intent/interrupted findings (the execution
+// completed) and the object-layer absence reconciled as a documented_purge
+// finding — never a corruption failure, never a write.
+func TestDoctorReportsPurgeLifecycleThroughAPI(t *testing.T) {
+	api := newTestAPI(t)
+	objectID := completedPurgePipelineForDoctor(t, api)
+
+	report, err := api.Doctor()
+	if err != nil {
+		t.Fatalf("doctor must NOT fail closed on a documented purge: %v", err)
+	}
+	if report.SchemaVersion != 12 {
+		t.Fatalf("schemaVersion = %d, want 12", report.SchemaVersion)
+	}
+	if report.PurgeRequests != 1 || report.PurgeApprovals != 1 || report.PurgeExecutions != 1 {
+		t.Fatalf("lifecycle counts = (%d requests, %d approvals, %d executions), want (1,1,1)", report.PurgeRequests, report.PurgeApprovals, report.PurgeExecutions)
+	}
+	if report.RetentionState != 1 || report.LifecycleEvents < 4 || report.PurgeIdempotencyKeys < 3 {
+		t.Fatalf("retentionState/lifecycleEvents/purgeIdempotencyKeys = %d/%d/%d, want 1/>=4/>=3", report.RetentionState, report.LifecycleEvents, report.PurgeIdempotencyKeys)
+	}
+	if len(report.PurgeFindings) != 0 {
+		t.Fatalf("purgeFindings = %+v, want none (the execution completed)", report.PurgeFindings)
+	}
+	var documentedPurge bool
+	for _, of := range report.ObjectFindings {
+		if of.Kind == "documented_purge" && of.ObjectID == objectID {
+			documentedPurge = true
+		}
+	}
+	if !documentedPurge {
+		t.Fatalf("objectFindings = %+v, want a documented_purge finding for %s", report.ObjectFindings, objectID)
 	}
 }
 
