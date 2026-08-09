@@ -48,6 +48,16 @@ func (f *fixedSessionStore) LoadMembership(context.Context, string) (auth.Member
 	return f.membership, nil
 }
 
+// LookupMembershipByScope satisfies the auth.SessionStore contract. These
+// approval tests never exercise the OIDC path, so the stub returns the
+// configured membership for any (subject, tenant, company) tuple.
+func (f *fixedSessionStore) LookupMembershipByScope(context.Context, string, string, string) (auth.MembershipRecord, error) {
+	if f.lookupErr != nil {
+		return auth.MembershipRecord{}, f.lookupErr
+	}
+	return f.membership, nil
+}
+
 func fixtureSessionStore(tenantID, companyID string, roles []auth.AccountingRole, assurance auth.AssuranceLevel) auth.SessionStore {
 	return &fixedSessionStore{
 		session: auth.StoredSession{

@@ -10,6 +10,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
@@ -32,6 +33,19 @@ func (f *approvalFixedSessionStore) LookupByTokenHash(context.Context, string) (
 }
 
 func (f *approvalFixedSessionStore) LoadMembership(context.Context, string) (auth.MembershipRecord, error) {
+	return f.membership, nil
+}
+
+// LookupMembershipByScope satisfies the auth.SessionStore contract with the
+// SAME fail-closed tuple semantics as the real store
+// (internal/store/session_store.go): the configured membership is returned ONLY
+// when the exact (subject, tenant, company) tuple matches — any other tuple is a
+// plain not-found error the resolver maps to PRINCIPAL_INVALID. The fake must
+// not mint memberships for arbitrary claimed tuples.
+func (f *approvalFixedSessionStore) LookupMembershipByScope(_ context.Context, subjectID, tenantID, companyID string) (auth.MembershipRecord, error) {
+	if subjectID != f.membership.SubjectID || tenantID != f.membership.TenantID || companyID != f.membership.CompanyID {
+		return auth.MembershipRecord{}, errors.New("membership not found")
+	}
 	return f.membership, nil
 }
 

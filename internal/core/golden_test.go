@@ -326,6 +326,13 @@ func (g *goldenSessionStore) LoadMembership(context.Context, string) (auth.Membe
 	}, nil
 }
 
+// LookupMembershipByScope satisfies the auth.SessionStore contract. The golden
+// vectors never exercise the OIDC path, so the stub derives the same single
+// membership record for any (subject, tenant, company) tuple.
+func (g *goldenSessionStore) LookupMembershipByScope(context.Context, string, string, string) (auth.MembershipRecord, error) {
+	return g.LoadMembership(context.Background(), g.principal.MembershipID)
+}
+
 // mintGoldenPrincipal derives the vector's principal through the resolver — the
 // ONLY factory path (ADR-003).
 func mintGoldenPrincipal(p goldenPrincipal) (auth.VerifiedApprovalPrincipal, error) {

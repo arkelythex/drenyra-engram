@@ -18,13 +18,16 @@ import (
 
 // fakeSessionStore is a hash-keyed in-memory SessionStore. It records every
 // token hash it receives so tests can prove raw credentials never cross the
-// boundary.
+// boundary, and every (subject, tenant, company) scope lookup so tests can
+// prove the OIDC cross-check path.
 type fakeSessionStore struct {
-	sessions      map[string]StoredSession
-	memberships   map[string]MembershipRecord
-	lookupErr     error
-	membershipErr error
-	lookedUpHashes []string
+	sessions          map[string]StoredSession
+	memberships       map[string]MembershipRecord
+	membershipByScope map[string]MembershipRecord
+	lookupErr         error
+	membershipErr     error
+	lookedUpHashes    []string
+	scopeLookups      []string
 }
 
 func (f *fakeSessionStore) LookupByTokenHash(_ context.Context, tokenHash string) (StoredSession, error) {
@@ -44,6 +47,19 @@ func (f *fakeSessionStore) LoadMembership(_ context.Context, membershipID string
 		return MembershipRecord{}, f.membershipErr
 	}
 	m, ok := f.memberships[membershipID]
+	if !ok {
+		return MembershipRecord{}, errors.New("membership not found")
+	}
+	return m, nil
+}
+
+func (f *fakeSessionStore) LookupMembershipByScope(_ context.Context, subjectID, tenantID, companyID string) (MembershipRecord, error) {
+	key := subjectID + "|" + tenantID + "|" + companyID
+	f.scopeLookups = append(f.scopeLookups, key)
+	if f.membershipErr != nil {
+		return MembershipRecord{}, f.membershipErr
+	}
+	m, ok := f.membershipByScope[key]
 	if !ok {
 		return MembershipRecord{}, errors.New("membership not found")
 	}
@@ -241,12 +257,14 @@ func TestAuthenticateInactiveMembershipReturnsMembershipInactive(t *testing.T) {
 }
 
 func TestAuthenticateOIDCReturnsAuthenticationRequired(t *testing.T) {
+	// Without a configured OIDC validator the oidc method fails closed — the
+	// resolver never guesses a trust contract.
 	_, err := newTestResolver(&fakeSessionStore{}, RuntimeProduction).Authenticate(context.Background(), AuthenticationAssertion{
 		Method:     AuthMethodOIDC,
 		Credential: "id-token",
 	})
 	if Code(err) != CodeAuthenticationRequired {
-		t.Errorf("Code(err) = %q, want AUTHENTICATION_REQUIRED (oidc not resolvable in Step 1)", Code(err))
+		t.Errorf("Code(err) = %q, want AUTHENTICATION_REQUIRED (oidc not configured)", Code(err))
 	}
 }
 

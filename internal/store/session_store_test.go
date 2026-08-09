@@ -158,3 +158,40 @@ func TestLoadMembershipMissing(t *testing.T) {
 		t.Fatal("missing membership must return an error")
 	}
 }
+
+// TestLookupMembershipByScope: the DB-backed OIDC cross-check resolves the
+// membership for the exact (subject, tenant, company) tuple with roles and the
+// company active flag; a missing or mismatched tuple is an error (the resolver
+// maps it to PRINCIPAL_INVALID — ambiguity fails closed).
+func TestLookupMembershipByScope(t *testing.T) {
+	s := newTestStore(t)
+	seedSessionFixture(t, s)
+
+	m, err := s.LookupMembershipByScope(context.Background(), "subject-1", testOrgID, "acme")
+	if err != nil {
+		t.Fatalf("lookup membership by scope: %v", err)
+	}
+	if m.ID != "membership-1" || m.SubjectID != "subject-1" || m.TenantID != testOrgID || m.CompanyID != "acme" {
+		t.Errorf("membership = %+v, want membership-1/subject-1/%s/acme", m, testOrgID)
+	}
+	if m.Status != "active" || !m.CompanyActive {
+		t.Errorf("status/companyActive = %q/%v, want active/true", m.Status, m.CompanyActive)
+	}
+	if len(m.Roles) != 1 || m.Roles[0] != auth.RoleController {
+		t.Errorf("roles = %v, want [controller]", m.Roles)
+	}
+}
+
+// TestLookupMembershipByScopeMismatch: the wrong company for the same subject
+// (a claim/membership drift) and a fully unknown tuple must both fail closed.
+func TestLookupMembershipByScopeMismatch(t *testing.T) {
+	s := newTestStore(t)
+	seedSessionFixture(t, s)
+
+	if _, err := s.LookupMembershipByScope(context.Background(), "subject-1", testOrgID, "other-co"); err == nil {
+		t.Fatal("wrong company tuple must return an error")
+	}
+	if _, err := s.LookupMembershipByScope(context.Background(), "no-such-subject", testOrgID, "acme"); err == nil {
+		t.Fatal("unknown subject tuple must return an error")
+	}
+}

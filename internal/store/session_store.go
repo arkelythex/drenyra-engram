@@ -61,16 +61,39 @@ func (s *SQLiteStore) LookupByTokenHash(ctx context.Context, tokenHash string) (
 // company active flag. It does NOT reject inactive memberships — the resolver
 // maps the record to MEMBERSHIP_INACTIVE after this call (internal/auth/resolver.go).
 func (s *SQLiteStore) LoadMembership(ctx context.Context, membershipID string) (auth.MembershipRecord, error) {
+	return s.loadMembershipBy(ctx, `
+		SELECT m.id, m.subject_id, m.tenant_id, m.company_id, m.status, c.active
+		FROM memberships m
+		JOIN companies c ON c.tenant_id = m.tenant_id AND c.id = m.company_id
+		WHERE m.id = ?`, membershipID)
+}
+
+// LookupMembershipByScope resolves the membership for the exact
+// (subject, tenant, company) tuple — the DB-backed cross-check of the OIDC
+// resolver (internal/auth/resolver.go). At most one row can exist (schema
+// UNIQUE subject_id,tenant_id,company_id), so a missing tuple IS the claim
+// mismatch and the caller maps it to PRINCIPAL_INVALID (fail closed). Like
+// LoadMembership it does NOT reject inactive memberships — the resolver maps
+// the record to MEMBERSHIP_INACTIVE after this call.
+func (s *SQLiteStore) LookupMembershipByScope(ctx context.Context, subjectID, tenantID, companyID string) (auth.MembershipRecord, error) {
+	return s.loadMembershipBy(ctx, `
+		SELECT m.id, m.subject_id, m.tenant_id, m.company_id, m.status, c.active
+		FROM memberships m
+		JOIN companies c ON c.tenant_id = m.tenant_id AND c.id = m.company_id
+		WHERE m.subject_id = ? AND m.tenant_id = ? AND m.company_id = ?`,
+		subjectID, tenantID, companyID)
+}
+
+// loadMembershipBy executes the shared membership+company+roles row load. The
+// query must select m.id, m.subject_id, m.tenant_id, m.company_id, m.status,
+// c.active in that order with the given args. A not-found tuple is a plain
+// error; the resolver decides the mapping.
+func (s *SQLiteStore) loadMembershipBy(ctx context.Context, query string, args ...any) (auth.MembershipRecord, error) {
 	var (
 		m             auth.MembershipRecord
 		companyActive int
 	)
-	err := s.db.QueryRowContext(ctx, `
-		SELECT m.id, m.subject_id, m.tenant_id, m.company_id, m.status, c.active
-		FROM memberships m
-		JOIN companies c ON c.tenant_id = m.tenant_id AND c.id = m.company_id
-		WHERE m.id = ?`, membershipID,
-	).Scan(&m.ID, &m.SubjectID, &m.TenantID, &m.CompanyID, &m.Status, &companyActive)
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&m.ID, &m.SubjectID, &m.TenantID, &m.CompanyID, &m.Status, &companyActive)
 	if errors.Is(err, sql.ErrNoRows) {
 		return auth.MembershipRecord{}, errors.New("membership not found")
 	}
@@ -78,7 +101,7 @@ func (s *SQLiteStore) LoadMembership(ctx context.Context, membershipID string) (
 		return auth.MembershipRecord{}, fmt.Errorf("load membership: %w", err)
 	}
 	m.CompanyActive = companyActive == 1
-	roles, err := s.loadMembershipRoles(ctx, membershipID)
+	roles, err := s.loadMembershipRoles(ctx, m.ID)
 	if err != nil {
 		return auth.MembershipRecord{}, err
 	}
