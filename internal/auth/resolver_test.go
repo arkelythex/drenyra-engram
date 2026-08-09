@@ -20,10 +20,10 @@ import (
 // token hash it receives so tests can prove raw credentials never cross the
 // boundary.
 type fakeSessionStore struct {
-	sessions      map[string]StoredSession
-	memberships   map[string]MembershipRecord
-	lookupErr     error
-	membershipErr error
+	sessions       map[string]StoredSession
+	memberships    map[string]MembershipRecord
+	lookupErr      error
+	membershipErr  error
 	lookedUpHashes []string
 }
 
@@ -216,8 +216,8 @@ func TestAuthenticateRevokedSessionReturnsPrincipalInvalid(t *testing.T) {
 
 func TestAuthenticateInactiveMembershipReturnsMembershipInactive(t *testing.T) {
 	tests := []struct {
-		name       string
-		mutate     func(*MembershipRecord)
+		name   string
+		mutate func(*MembershipRecord)
 	}{
 		{"membership status inactive", func(m *MembershipRecord) { m.Status = "inactive" }},
 		{"company inactive", func(m *MembershipRecord) { m.CompanyActive = false }},
@@ -278,7 +278,7 @@ func TestAuthenticateNoSilentFallback(t *testing.T) {
 
 func TestAuthenticateLocalDevDeniedInProduction(t *testing.T) {
 	_, err := newTestResolver(&fakeSessionStore{}, RuntimeProduction).Authenticate(context.Background(), AuthenticationAssertion{
-		Method:          AuthMethodLocalDev,
+		Method:            AuthMethodLocalDev,
 		LocalDevSubjectID: "local-dev-1",
 	})
 	if Code(err) != CodeAuthenticationRequired {
