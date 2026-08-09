@@ -174,6 +174,65 @@ func defaultObjectsRoot(dbPath string) string {
 	return filepath.Join(filepath.Dir(dbPath), "objects")
 }
 
+// oidcConfigFromEnv builds the stateless OIDC access-token configuration of
+// the serve surface from the DRENYRA_OIDC_* environment variables. It FAILS
+// CLOSED: when ANY oidc variable is set the whole set must be complete and
+// valid (issuer + audience required, https URLs, bounded clock skew), and a
+// partial or invalid set is an error — the server never starts with a partial
+// trust contract. When NONE are set, oidc is disabled (nil, nil).
+//
+// Optional variables follow the repo env-or-default convention:
+//   - DRENYRA_OIDC_ISSUER (required when oidc is enabled) — the exact `iss`.
+//   - DRENYRA_OIDC_AUDIENCE (required) — the exact resource-server `aud`.
+//   - DRENYRA_OIDC_JWKS_URL (optional) — defaults to <issuer>/.well-known/jwks.json.
+//   - DRENYRA_OIDC_CLAIM_TENANT (optional) — defaults to tenant_id.
+//   - DRENYRA_OIDC_CLAIM_COMPANY (optional) — defaults to company_id.
+//   - DRENYRA_OIDC_CLOCK_SKEW (optional) — Go duration (e.g. 30s); bounded to
+//     MaxOIDCClockSkew; defaults to 30s.
+func oidcConfigFromEnv() (*auth.OIDCConfig, error) {
+	var (
+		cfg auth.OIDCConfig
+		enabled bool
+	)
+	if v := os.Getenv("DRENYRA_OIDC_ISSUER"); v != "" {
+		enabled = true
+		cfg.Issuer = v
+	}
+	if v := os.Getenv("DRENYRA_OIDC_AUDIENCE"); v != "" {
+		enabled = true
+		cfg.Audience = v
+	}
+	if v := os.Getenv("DRENYRA_OIDC_JWKS_URL"); v != "" {
+		enabled = true
+		cfg.JWKSURL = v
+	}
+	if v := os.Getenv("DRENYRA_OIDC_CLAIM_TENANT"); v != "" {
+		enabled = true
+		cfg.TenantClaim = v
+	}
+	if v := os.Getenv("DRENYRA_OIDC_CLAIM_COMPANY"); v != "" {
+		enabled = true
+		cfg.CompanyClaim = v
+	}
+	if v := os.Getenv("DRENYRA_OIDC_CLOCK_SKEW"); v != "" {
+		enabled = true
+		skew, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("DRENYRA_OIDC_CLOCK_SKEW: %v", err)
+		}
+		cfg.ClockSkew = skew
+	}
+	if !enabled {
+		return nil, nil
+	}
+	// NormalizeOIDCConfig is the single fail-closed gate: missing issuer or
+	// audience, non-https URLs or an out-of-bounds skew all error here.
+	if _, err := auth.NormalizeOIDCConfig(cfg); err != nil {
+		return nil, fmt.Errorf("invalid oidc configuration: %w", err)
+	}
+	return &cfg, nil
+}
+
 func cmdSave(args []string) int {
 	fs := flag.NewFlagSet("save", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
@@ -1675,7 +1734,20 @@ func cmdServe(args []string) int {
 	if err != nil {
 		return fail("%v", err)
 	}
-	fmt.Fprintf(os.Stderr, "drenyra-engram: serving on http://%s (db %s)%s\n", *addr, *dbPath, tokenSuffix(*token))
+	// Stateless OIDC access-token validation (first Production Identity slice):
+	// configured via DRENYRA_OIDC_*; partial or invalid configuration fails the
+	// server at startup, never at request time.
+	oidcCfg, err := oidcConfigFromEnv()
+	if err != nil {
+		return fail("serve: %v", err)
+	}
+	if oidcCfg != nil {
+		if _, err := httpServer.EnableOIDC(*oidcCfg); err != nil {
+			return fail("serve: %v", err)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "drenyra-engram: serving on http://%s (db %s)%s%s\n",
+		*addr, *dbPath, tokenSuffix(*token), oidcSuffix(oidcCfg))
 	if err := http.ListenAndServe(*addr, httpServer.Handler()); err != nil {
 		return fail("serve: %v", err)
 	}
@@ -1687,6 +1759,13 @@ func tokenSuffix(token string) string {
 		return " (no token — localhost only)"
 	}
 	return " (bearer token required)"
+}
+
+func oidcSuffix(cfg *auth.OIDCConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	return " (oidc access tokens enabled)"
 }
 
 // ──────────────────────────────────────────────
@@ -3791,6 +3870,20 @@ local_dev identity + one expiring session and prints the raw token once
 use the SAME authenticated session — the verified principal is the only
 adjudicator; propose/withdraw carry agent provenance (cli/cli/agent) and
 never authorize.
+
+OIDC access tokens (first Production Identity slice): the serve surface can
+additionally authenticate STATELESSLY with Auth0 resource-server access
+tokens. DRENYRA_OIDC_ISSUER and DRENYRA_OIDC_AUDIENCE are REQUIRED together
+(a partial DRENYRA_OIDC_* set fails startup); DRENYRA_OIDC_JWKS_URL,
+DRENYRA_OIDC_CLAIM_TENANT, DRENYRA_OIDC_CLAIM_COMPANY and
+DRENYRA_OIDC_CLOCK_SKEW are optional (JWKS defaults to
+<issuer>/.well-known/jwks.json, claim names to tenant_id/company_id, skew
+to 30s bounded at 5m). Tokens are verified in memory — RS256 ONLY, exact
+issuer/audience, bounded exp/nbf/iat, JWKS cache with one refresh on an
+unknown kid — and the tenant/company claims are cross-checked against the
+ACTIVE DB membership for the token sub; any mismatch fails closed. OIDC
+NEVER creates sessions and NEVER persists raw tokens; the CLI remains
+session-based (docs/architecture/oidc-access-token-identity.md).
 
 Signing keys (v0.4 Step 3): covered acts are signed with the ACTIVE Ed25519
 key. The private seeds live ONLY in the user-owned 0600 keyring

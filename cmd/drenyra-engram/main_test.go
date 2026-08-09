@@ -1292,6 +1292,20 @@ func (f *cliRetentionSessionStore) LoadMembership(context.Context, string) (auth
 	return f.membership, nil
 }
 
+// LookupMembershipByScope satisfies the auth.SessionStore contract with the
+// SAME fail-closed tuple semantics as the real store
+// (internal/store/session_store.go): the configured membership is returned ONLY
+// when the exact (subject, tenant, company) tuple matches — any other tuple is a
+// plain not-found error the resolver maps to PRINCIPAL_INVALID. This CLI
+// retention fixture uses the session path, but the fake must not mint
+// memberships for arbitrary claimed tuples.
+func (f *cliRetentionSessionStore) LookupMembershipByScope(_ context.Context, subjectID, tenantID, companyID string) (auth.MembershipRecord, error) {
+	if subjectID != f.membership.SubjectID || tenantID != f.membership.TenantID || companyID != f.membership.CompanyID {
+		return auth.MembershipRecord{}, errors.New("membership not found")
+	}
+	return f.membership, nil
+}
+
 // seedCLIRetentionPolicy seeds ONE enabled company-scope policy directly on db
 // (tenant cli, company cliRucA) through the REAL store path with a
 // records_compliance_officer principal (design section 8: fixtures seed state
@@ -1646,5 +1660,146 @@ func TestCLIRetentionPolicyUsageErrors(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "retention-policy") {
 		t.Fatalf("help output missing retention-policy: %s", stdout)
+	}
+}
+
+// ──────────────────────────────────────────────
+// OIDC environment configuration (first Production Identity slice)
+// ──────────────────────────────────────────────
+
+// TestOIDCConfigFromEnv freezes the fail-closed DRENYRA_OIDC_* environment
+// parsing of the serve surface: NO oidc variables disable OIDC (nil, nil), a
+// COMPLETE set yields a configuration that normalizes with the optional
+// defaults (issuer-derived JWKS URL, standard claim names, 30s skew), and a
+// PARTIAL or INVALID set (missing issuer/audience, out-of-bounds or
+// unparseable clock skew) is an error — the server never starts with a partial
+// trust contract.
+func TestOIDCConfigFromEnv(t *testing.T) {
+	const (
+		issuer   = "https://issuer.drenyra.test/"
+		audience = "https://engram.drenyra.test/api"
+	)
+	tests := []struct {
+		name    string
+		env     map[string]string
+		wantNil bool // oidc fully disabled
+		want    *auth.OIDCConfig
+		wantErr bool
+	}{
+		{
+			name:    "no oidc variables disable oidc",
+			env:     map[string]string{},
+			wantNil: true,
+		},
+		{
+			name: "complete issuer and audience",
+			env: map[string]string{
+				"DRENYRA_OIDC_ISSUER":   issuer,
+				"DRENYRA_OIDC_AUDIENCE": audience,
+			},
+			want: &auth.OIDCConfig{Issuer: issuer, Audience: audience},
+		},
+		{
+			name: "complete set with explicit optional overrides",
+			env: map[string]string{
+				"DRENYRA_OIDC_ISSUER":        issuer,
+				"DRENYRA_OIDC_AUDIENCE":      audience,
+				"DRENYRA_OIDC_JWKS_URL":      "https://keys.drenyra.test/jwks.json",
+				"DRENYRA_OIDC_CLAIM_TENANT":  "org_id",
+				"DRENYRA_OIDC_CLAIM_COMPANY": "co_id",
+				"DRENYRA_OIDC_CLOCK_SKEW":    "2m",
+			},
+			want: &auth.OIDCConfig{
+				Issuer:       issuer,
+				Audience:     audience,
+				JWKSURL:      "https://keys.drenyra.test/jwks.json",
+				TenantClaim:  "org_id",
+				CompanyClaim: "co_id",
+				ClockSkew:    2 * time.Minute,
+			},
+		},
+		{
+			name: "issuer without audience fails closed",
+			env: map[string]string{
+				"DRENYRA_OIDC_ISSUER": issuer,
+			},
+			wantErr: true,
+		},
+		{
+			name: "audience without issuer fails closed",
+			env: map[string]string{
+				"DRENYRA_OIDC_AUDIENCE": audience,
+			},
+			wantErr: true,
+		},
+		{
+			name: "clock skew over the maximum fails closed",
+			env: map[string]string{
+				"DRENYRA_OIDC_ISSUER":     issuer,
+				"DRENYRA_OIDC_AUDIENCE":   audience,
+				"DRENYRA_OIDC_CLOCK_SKEW": "6m",
+			},
+			wantErr: true,
+		},
+		{
+			name: "unparseable clock skew fails closed",
+			env: map[string]string{
+				"DRENYRA_OIDC_ISSUER":     issuer,
+				"DRENYRA_OIDC_AUDIENCE":   audience,
+				"DRENYRA_OIDC_CLOCK_SKEW": "soon",
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			cfg, err := oidcConfigFromEnv()
+			if tt.wantNil {
+				if cfg != nil || err != nil {
+					t.Fatalf("oidcConfigFromEnv = (%v, %v), want (nil, nil) — oidc disabled", cfg, err)
+				}
+				return
+			}
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("oidcConfigFromEnv = %+v, want an error (fail closed)", cfg)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("oidcConfigFromEnv: %v", err)
+			}
+			if cfg == nil {
+				t.Fatal("oidcConfigFromEnv returned nil config with no error")
+			}
+			if cfg.Issuer != tt.want.Issuer || cfg.Audience != tt.want.Audience || cfg.JWKSURL != tt.want.JWKSURL ||
+				cfg.TenantClaim != tt.want.TenantClaim || cfg.CompanyClaim != tt.want.CompanyClaim ||
+				cfg.ClockSkew != tt.want.ClockSkew {
+				t.Errorf("oidcConfigFromEnv = %+v, want %+v", cfg, tt.want)
+			}
+			// A complete config must normalize into the effective trust contract:
+			// when the optional fields were left empty the defaults are applied
+			// (issuer-derived JWKS URL, standard claim names, default skew), and
+			// explicit overrides are preserved — the serve surface passes this
+			// config to EnableOIDC.
+			normalized, err := auth.NormalizeOIDCConfig(*cfg)
+			if err != nil {
+				t.Fatalf("NormalizeOIDCConfig(%+v): %v", *cfg, err)
+			}
+			if cfg.JWKSURL == "" {
+				if normalized.JWKSURL == "" || normalized.TenantClaim != auth.DefaultOIDCTenantClaim ||
+					normalized.CompanyClaim != auth.DefaultOIDCCompanyClaim || normalized.ClockSkew != auth.DefaultOIDCClockSkew {
+					t.Errorf("normalized config = %+v, want the optional defaults applied", normalized)
+				}
+			} else {
+				if normalized.JWKSURL != cfg.JWKSURL || normalized.TenantClaim != cfg.TenantClaim ||
+					normalized.CompanyClaim != cfg.CompanyClaim || normalized.ClockSkew != cfg.ClockSkew {
+					t.Errorf("normalized config = %+v, want the explicit overrides preserved (%+v)", normalized, cfg)
+				}
+			}
+		})
 	}
 }

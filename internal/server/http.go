@@ -62,7 +62,11 @@ type apiError struct {
 func (e *apiError) Error() string { return e.message }
 
 // classify maps a domain error to its HTTP status, preserving the engine's
-// stable error code as the machine-readable `code`.
+// stable error code as the machine-readable `code`. Frozen auth/identity codes
+// (rejected credentials, membership/role denials) map through authErrorHTTPStatus
+// BEFORE the generic prefixes so a rejected bearer credential keeps its frozen
+// 401/403 status and reason code on every route that writes through the shared
+// writer (design section 6 + the v0.8 evidence-lifecycle surface).
 func classify(err error) *apiError {
 	if err == nil {
 		return nil
@@ -70,6 +74,17 @@ func classify(err error) *apiError {
 	var mapped *apiError
 	if errors.As(err, &mapped) {
 		return mapped
+	}
+	// Frozen auth/identity codes (rejected credentials, membership/role denials)
+	// map through authErrorHTTPStatus BEFORE the generic prefixes so a rejected
+	// bearer credential keeps its frozen 401/403 status and reason code on every
+	// route that writes through the shared writer (design section 6 + the v0.8
+	// evidence-lifecycle surface). An unmapped frozen auth code falls through to
+	// the generic classification (fail closed — never a guessed status).
+	if code := auth.Code(err); code != "" {
+		if status, ok := authErrorHTTPStatus(code); ok {
+			return &apiError{status: status, code: code, message: err.Error()}
+		}
 	}
 	switch {
 	case closeCode(err) != "":
@@ -134,6 +149,36 @@ func closeCode(err error) string {
 		return code
 	}
 	return ""
+}
+
+// authErrorHTTPStatus maps the frozen auth/identity code family to its canonical
+// HTTP status: the shared mapping of design section 6 plus the v0.8
+// evidence-lifecycle surface (the same statuses the approval/close/judgment/
+// reconciliation/purge writers freeze route-locally). It backs the rejected-
+// credential and policy-denial paths that write through the generic
+// writeError/classify, so a rejected bearer credential is reported as its frozen
+// 401/403 status with the frozen reason code — never a 500 INTERNAL. An unmapped
+// code fails closed (not ok) and falls through to the generic classification.
+func authErrorHTTPStatus(code string) (int, bool) {
+	switch code {
+	case auth.CodeAuthenticationRequired, auth.CodePrincipalInvalid:
+		return http.StatusUnauthorized, true
+	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
+		auth.CodeRoleNotAuthorized, auth.CodeRoleDenied, auth.CodeAssuranceTooLow,
+		auth.CodeMaterialityLimitExceeded, auth.CodeApproverIsRequester,
+		auth.CodeDualApprovalRequired, auth.CodeSamePrincipalSecondApproval:
+		return http.StatusForbidden, true
+	case auth.CodeReasonRequired, auth.CodePolicyEvidenceRequired:
+		return http.StatusBadRequest, true
+	case auth.CodeMemoryNotFound:
+		return http.StatusNotFound, true
+	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided,
+		auth.CodeIdempotencyConflict, auth.CodePeriodClosed, auth.CodePeriodAlreadyClosed,
+		auth.CodeUnknownRetentionState, auth.CodeRetentionPolicyAmbiguous, auth.CodeRetentionNotDue,
+		auth.CodeLifecycleVersionMismatch, auth.CodeNotPurgeable, auth.CodeHoldActive:
+		return http.StatusConflict, true
+	}
+	return 0, false
 }
 
 // HTTPServer is the HTTP REST surface over the shared API.
@@ -228,6 +273,28 @@ func (h *HTTPServer) SetAuthMode(mode auth.RuntimeMode) *HTTPServer {
 		h.resolver.Mode = mode
 	}
 	return h
+}
+
+// EnableOIDC attaches the stateless Auth0/OpenID Connect access-token
+// validator of the first Production Identity slice (internal/auth/oidc.go) to
+// the resolver. The configuration is validated up front — an incomplete or
+// invalid OIDC configuration is an error (fail closed at startup; the server
+// never starts with a partial trust contract). OIDC authentication is
+// STATELESS: access tokens are verified in memory, never persisted, and no
+// session is ever created; the CLI remains session-based. When OIDC is
+// enabled, the authenticate middleware routes JWT-shaped bearer credentials
+// (three dot-separated segments) to OIDC validation and every other credential
+// to the session store — never both.
+func (h *HTTPServer) EnableOIDC(cfg auth.OIDCConfig) (*HTTPServer, error) {
+	validator, err := auth.NewOIDCValidator(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if h.resolver == nil {
+		return nil, errors.New("oidc requires a session/membership store; the server has no resolver")
+	}
+	h.resolver.OIDC = validator
+	return h, nil
 }
 
 // Handler returns the full route table (REST + MCP /mcp). Go 1.22+ ServeMux
@@ -334,14 +401,23 @@ func (h *HTTPServer) Handler() http.Handler {
 }
 
 // authenticate resolves the Authorization bearer credential ONCE per request
-// (design section 3). A missing/malformed header leaves the context empty;
-// a rejected credential stores the typed auth error. No silent fallback.
+// (design section 3). A missing/malformed header leaves the context empty; a
+// rejected credential stores the typed auth error. No silent fallback. When
+// OIDC is configured, JWT-shaped credentials are validated as stateless OIDC
+// access tokens (RS256, exact issuer/audience, tenant/company claims
+// cross-checked to the DB membership) and every other credential resolves
+// through the session store — the routing rule is deterministic and never
+// tries both paths for the same credential.
 func (h *HTTPServer) authenticate(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.resolver != nil {
 			if token, ok := parseBearer(r.Header.Get("Authorization")); ok {
+				method := auth.AuthMethodSession
+				if h.resolver.OIDC != nil && looksLikeJWT(token) {
+					method = auth.AuthMethodOIDC
+				}
 				principal, err := h.resolver.Authenticate(r.Context(), auth.AuthenticationAssertion{
-					Method:     auth.AuthMethodSession,
+					Method:     method,
 					Credential: token,
 				})
 				if err != nil {
@@ -353,6 +429,15 @@ func (h *HTTPServer) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// looksLikeJWT reports whether the bearer credential has the compact JWT shape
+// (three dot-separated non-empty segments). Session/service credentials are
+// high-entropy opaque strings (hex — never JWT-shaped), so the shape is a safe
+// deterministic discriminator when OIDC is configured.
+func looksLikeJWT(token string) bool {
+	parts := strings.Split(token, ".")
+	return len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != ""
 }
 
 // parseBearer extracts the token from an Authorization: Bearer <token> header.
