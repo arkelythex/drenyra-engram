@@ -7,6 +7,11 @@
 > Status: frozen for v0.4.0 Step 1 (ApprovalPrincipal autenticado). Applies to
 > the Go engine and the TypeScript semantic mirror. Related: ADR-003,
 > contracts/lifecycle.md (the human approval gate), contracts/provenance.md.
+>
+> Updated 2026-08-08 (unreleased slice): `oidc` is now resolvable — stateless
+> RS256 access-token validation with exact issuer/audience and a DB
+> membership/scope cross-check; assurance stays `standard`. Limits and
+> configuration: [docs/architecture/oidc-access-token-identity.md](../docs/architecture/oidc-access-token-identity.md).
 
 ## Invariant
 
@@ -49,9 +54,15 @@ interface VerifiedApprovalPrincipal {
 ```
 
 Constructed only inside the authentication module (`Resolver.Authenticate`).
-No public arbitrary-input constructor. `oidc` is recognized but not resolvable
-in Step 1 (`AUTHENTICATION_REQUIRED`). `service_assertion` is an opaque stored
-bearer credential (SHA-256 hash in `sessions`); no self-declared JWT claims.
+No public arbitrary-input constructor. `oidc` resolves through the stateless
+access-token slice: RS256 JWT validation against the exact configured
+issuer/audience, then a DB membership/scope cross-check; assurance is always
+`standard` (no ACR/MFA elevation). Limits: no token revocation beyond DB
+membership, no ID tokens, no browser flows — see
+[docs/architecture/oidc-access-token-identity.md](../docs/architecture/oidc-access-token-identity.md).
+`service_assertion` is an
+opaque stored bearer credential (SHA-256 hash in `sessions`); no self-declared
+JWT claims.
 
 ## Result
 

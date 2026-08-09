@@ -83,7 +83,7 @@ a business action.
 - **Explainable period summary** — the killer demo: why did account 4011 end
   with this balance (facts, approved adjustments, rules applied, evidence,
   late exceptions — ordered by accounting-effective date).
-- **MCP, HTTP, CLI** — same engine, multiple surfaces (37 MCP tools: 24
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (50 MCP tools: 37
   `accounting_*` + 13 `engram_*`).
 
 ## Quick start
@@ -139,12 +139,35 @@ mission write + fiscal memory), live-tested against the released binary.
   | `engram_context` | current memory for a scope (latest per chain) |
   | `engram_compare` | identity/scope/content deltas + relation verdict |
   | `engram_doctor` | store health (schema guards, counts) |
-  | `engram_review` / `engram_promote` / `engram_supersede` | lifecycle transitions (adjacent-forward) |
+  | `engram_reject` | reject a pending_review memory (terminal, human only) |
+  | `engram_void` | void an active/pending_review/approved memory (terminal, human or system, never agent) |
+  | `engram_supersede` | promoted → superseded with a required replacement target (never auto-promotes) |
   | `engram_relations` | every recorded relation |
   | `engram_transitions` | the lifecycle audit trail |
 
-  The tool catalog has no authorize/approve/allow tool — memory never
-  authorizes. Domain failures return in-band tool results (isError=true)
+      The fiscal lifecycle adds the `accounting_*` catalog (37 tools):
+
+      - **Memory** — `accounting_record`, `accounting_get`, `accounting_search`,
+        `accounting_context`, `accounting_timeline`, `accounting_compare`,
+        `accounting_link_evidence`
+      - **Human gate** — `accounting_approve` (professional review, principal-only)
+      - **Judgment** — `accounting_judgment_propose` / `_confirm` / `_reject` /
+        `_withdraw` (confirm/reject principal-only)
+      - **Reconciliation** — `accounting_reconciliation_propose` / `_confirm` /
+        `_reject` / `_withdraw`
+      - **Close & periods** — `accounting_close_create`, `accounting_period_reopen`,
+        `accounting_period_summary`, `accounting_compare_periods`
+      - **Evidence objects** — `accounting_object_store`, `accounting_object_get`
+      - **Retention & holds** — `accounting_retention_policy_put` / `_evaluate` /
+        `_resolve`, `accounting_hold_place`, `accounting_hold_lift`,
+        `accounting_holds_list`
+      - **Approved purge** — `accounting_purge_request` / `_approve` / `_reject` /
+        `_cancel` / `_withdraw` / `_finalize`
+      - **Context & export** — `accounting_current_context`,
+        `accounting_lifecycle_export`, `accounting_doctor`
+
+      The tool catalog has no authorize/approve/allow tool — memory never
+      authorizes. Domain failures return in-band tool results (isError=true)
   with the engine's stable error codes; shape errors are JSON-RPC -32602.
 - **HTTP** — `drenyra-engram serve --addr 127.0.0.1:8787 [--token <secret>]`
   exposes REST `/v1/*` (observations, topic, search, context, compare,
@@ -152,6 +175,16 @@ mission write + fiscal memory), live-tested against the released binary.
   when a token is configured every request must present
   `Authorization: Bearer <token>`. Error envelope:
   `{"error": {"code", "message"}}` with statuses 400/404/409/500.
+
+### Production identity (OIDC)
+
+`drenyra-engram serve` can validate OpenID Connect access tokens as a first
+production identity slice: stateless RS256 JWT validation with exact
+issuer/audience, a DB membership/scope cross-check, and standard assurance
+only (no MFA elevation, no revocation beyond DB membership). Enable it with
+`DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE`; a partial
+`DRENYRA_OIDC_*` set fails startup. See
+[docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
 
 - **Sync** — `drenyra-engram sync --from <src-db> --to <dst-db>` reconciles two
   local stores additively: full revision history, relations and the lifecycle

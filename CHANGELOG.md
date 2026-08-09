@@ -7,6 +7,21 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## Unreleased
+
+### Identity — first production slice: stateless OIDC access tokens
+
+`drenyra-engram serve` can now validate OpenID Connect access tokens as a first
+production identity slice on the HTTP surface, alongside the session-based CLI
+path. Implemented but not yet released.
+
+- **Stateless RS256 access-token validation** ([internal/auth/oidc.go](internal/auth/oidc.go)): `alg` pinned to RS256 (no algorithm confusion); `kid` required and resolved from an in-memory JWKS cache (unknown `kid` triggers exactly ONE refresh, then fails closed); the `iss` and `aud` claims must match the configured settings exactly; `sub` and the tenant/company custom claims are required; `exp`, `nbf` and `iat` are enforced with a bounded clock skew. Raw tokens are never persisted, logged or hashed.
+- **DB membership/scope cross-check**: the verified `(sub, tenant, company)` tuple must exist in `memberships` (`LookupMembershipByScope`); missing → `PRINCIPAL_INVALID`, inactive → `MEMBERSHIP_INACTIVE`. Claims alone never mint membership.
+- **Standard assurance only**: no ACR/MFA elevation — `acr` and `amr` are ignored; no ID tokens, no browser/refresh flows, no user provisioning; the engine remains a resource server. Token revocation is bounded to DB membership state.
+- **Fail closed at startup**: a partial or invalid `DRENYRA_OIDC_*` set aborts `serve`; OIDC stays disabled by default (`EnableOIDC`); the shared `--token` guard remains a transport guard, never identity.
+- **Surfaces**: `serve` routes JWT-shaped credentials to OIDC when enabled; session/service credentials keep the existing path. CLI `auth login` is unchanged.
+- **Configuration**: `DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE` enable it; optional `DRENYRA_OIDC_JWKS_URL`, `DRENYRA_OIDC_CLAIM_TENANT`, `DRENYRA_OIDC_CLAIM_COMPANY`, `DRENYRA_OIDC_CLOCK_SKEW`. See [docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
+
 ## v0.4.0 — Evidence, Conflict and Judgment (unreleased)
 
 ### Step 1 — ApprovalPrincipal autenticado (DONE)
@@ -61,7 +76,8 @@ reproducible policy against the exact envelope version that was reviewed.
 - **Service assertions are opaque stored bearer credentials** (token hash in
   `sessions`, `authentication_method='service_assertion'`); no self-declared
   JWT claims until a signed-assertion trust contract exists. OIDC recognized
-  but not resolvable in Step 1.
+  but not resolvable in Step 1 — superseded by the stateless OIDC
+  access-token slice in Unreleased above.
 - **Materiality is a declared level** (`materialityLevel`: normal | material |
   critical, set by the writing agent); the policy never reinterprets the
   `Materiality *int64` threshold field.

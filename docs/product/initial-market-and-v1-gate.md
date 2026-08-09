@@ -214,7 +214,7 @@ with an open item.** Current status of every item: **NOT MET**, unless noted.
 | G-1 | One paying customer profile and one workflow validated | D-1, D-2, D-3 | NOT MET | ICP + workflow closure evidence (audit Block B) |
 | G-2 | One real or legally approved anonymized close is reproducible end-to-end | D-2 | NOT MET | Fixture + drill; audit Block C |
 | G-3 | Ledger boundary and first ERP/SUNAT integration are explicit | D-4 | NOT MET | Integration decision is DEFERRED (audit decision #5, Block W); no SUNAT/ERP integration is implemented |
-| G-4 | Human identity, MFA/assurance, membership, SoD, dual approval production-backed | D-3 | NOT MET | Production identity provider is DEFERRED (audit decision #4); `oidc` is recognized but not resolvable — [contracts/approval.md](../../contracts/approval.md) |
+| G-4 | Human identity, MFA/assurance, membership, SoD, dual approval production-backed | D-3 | PARTIAL (first OIDC slice delivered: stateless RS256 access tokens, exact issuer/audience, DB membership/scope cross-check, standard assurance only — [docs/architecture/oidc-access-token-identity.md](../architecture/oidc-access-token-identity.md); **MFA/ACR elevation, token revocation beyond DB membership, membership provisioning, and dual approval remain NOT MET**) | [contracts/approval.md](../../contracts/approval.md) |
 | G-5 | Evidence objects have hash, retention, availability, legal-hold, export semantics | — | PARTIAL (hash + availability DELIVERED, v0.7.0 local-first: content-addressed WORM bytes, schema v8, `object_stored` receipts, scoped store/get, rehash availability verification; **retention, legal hold, export, purge, cloud remain DEFERRED**) | [docs/security/evidence-lifecycle-and-threat-model.md](../security/evidence-lifecycle-and-threat-model.md) (delivered vs deferred split) |
 | G-6 | Cross-tenant, race, fuzz, restore, and corruption drills pass | — | PARTIAL (cross-tenant structural + race coverage exist; fuzz/restore/corruption drills not demonstrated) | [contracts/scope.md](../../contracts/scope.md); audit Blocks G, K, Q, Z |
 | G-7 | Signing-key rotation/revocation and compromise response are tested | — | PARTIAL (rotation + revocation are implemented and tested; compromise-response playbook is not) | [contracts/receipts.md](../../contracts/receipts.md); audit Block O |
@@ -234,7 +234,10 @@ PostgreSQL inside this repository, product UI — [ROADMAP.md](../../ROADMAP.md)
 - **No validated customers, prices, or pilots.** D-1, D-2, D-3, D-5 remain
   hypotheses until their closure evidence lands (audit Blocks B, AM, AO).
 - **No implemented SUNAT/ERP integration** (D-6 G-3; audit Block W UNKNOWN).
-- **No production identity provider or MFA** (G-4; `oidc` is not resolvable).
+- **No MFA or full production identity program** (G-4): the first OIDC
+  access-token slice is delivered (stateless RS256, exact issuer/audience, DB
+  membership/scope cross-check, standard assurance only); MFA/ACR elevation,
+  token revocation beyond DB membership, and membership provisioning are not.
 - **No cloud infrastructure or managed offering** (ROADMAP non-goal).
 - **No compliance certification** of any kind (audit: legal/tax/compliance
   validation is out of scope for repository evidence).

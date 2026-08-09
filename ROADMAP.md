@@ -1,6 +1,6 @@
 # Drenyra Engram — Roadmap
 
-> **Last updated:** 2026-08-07. Status: alpha (v0.7.0 local-first EvidenceObject slice delivered; v0.5.0 Close Intelligence released).
+> **Last updated:** 2026-08-08. Status: alpha (v0.7.0 local-first EvidenceObject slice delivered; v0.5.0 Close Intelligence released; first OIDC production identity slice implemented in the working tree, unreleased).
 >
 > **Version nomenclature (frozen):** `v0.3.0` is the Accounting Memory Kernel.
 > The original vision's "V0.2 Evidence and Judgment" is NOT closed by it —
@@ -243,6 +243,31 @@ or content search over objects, SUNAT/ERP object ingestion, and production
 object-store operations (backup/restore drills, encryption-at-rest/TDE,
 recovery objectives). Architecture: docs/architecture/evidence-object-v0.7.md;
 threat model: docs/security/evidence-lifecycle-and-threat-model.md.
+
+## Phase 6c — Production identity — OIDC first slice (implemented, unreleased)
+
+> First production identity slice: stateless OpenID Connect access-token
+> validation on the HTTP surface. Implemented in the working tree (unreleased);
+> remaining identity work is listed explicitly and is NOT implemented.
+> Design: [docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
+
+- [x] **Stateless RS256 access-token validation** — `alg` pinned to RS256 (no
+      algorithm confusion), `kid` resolved from a cached JWKS (one unknown-kid
+      refresh, bounded fetch), exact `iss` and `aud`, required `sub` plus
+      tenant/company custom claims, `exp`/`nbf`/`iat` with bounded clock skew;
+      raw tokens never persisted, logged or hashed.
+- [x] **DB membership/scope cross-check** — verified `(sub, tenant, company)`
+      must exist in `memberships` (`LookupMembershipByScope`); missing →
+      `PRINCIPAL_INVALID`, inactive → `MEMBERSHIP_INACTIVE`. Claims alone never
+      mint membership.
+- [x] **Fail-closed configuration** — partial or invalid `DRENYRA_OIDC_*` set
+      aborts `serve`; OIDC disabled by default.
+- [x] **Standard assurance only** — no ACR/MFA elevation; `acr` and `amr`
+      ignored; no ID tokens, browser/refresh flows, or user provisioning.
+- [ ] **Remaining identity work (not implemented):** MFA/ACR assurance
+      elevation; token revocation beyond DB membership; proactive TTL-based
+      JWKS refresh; signed service assertions; user provisioning; HSM/KMS key
+      management. G-4 (v1 gate) stays PARTIAL until these land.
 
 ## Phase 7 — Institutional Accounting Brain (v1.0.0)
 

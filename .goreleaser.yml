@@ -4,7 +4,9 @@
 #   - cross-platform static binaries
 #   - SHA-256 checksums (artifact checksum verification)
 #   - SPDX SBOM (software bill of materials for supply-chain review)
-#   - signed provenance via the release workflow (SLSA/attestations)
+# SLSA provenance/attestations are NOT shipped: GitHub Attestations requires a
+# paid plan for private repos (see RELEASING.md and .github/workflows/release.yml);
+# SBOMs + checksums are the current audit evidence.
 # See RELEASING.md for the full release process.
 
 version: 2

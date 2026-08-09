@@ -58,23 +58,24 @@ Relations:  related · compatible · scoped · conflicts_with · supersedes · n
 ## Layer model
 
 ```text
-mcp / http / tui / cli / clients      surfaces (adapters)
+mcp / http / cli                       surfaces (adapters)
         │
-search/relations/lifecycle            domain services
+internal/server                       shared domain services (API, approval, judgment, verification, MCP)
         │
-core                                  memory model
+internal/core                         memory model, lifecycle machine, policies, receipts
         │
-store                                 persistence (local + cloud)
+internal/store                        persistence: local SQLite + local WORM object store
 ```
 
 - **Scope is structural.** `company/RUC/period` lives in the observation schema and in search indexes; every query filters scope before ranking.
-- **Surfaces are adapters.** MCP, HTTP, TUI, and CLI exercise the same domain services.
+- **Surfaces are adapters.** MCP, HTTP, and CLI exercise the same domain services (`internal/server`).
+- **Local-first by design.** The engine persists to a local SQLite database plus a local content-addressed WORM object root on the operator's host; there is no cloud storage or remote database in this repository (ADR-002, ROADMAP non-goals).
 - **Provenance is written at creation** and cannot be silently rewritten; a correction is a new observation linked via relations.
 - **Deterministic behavior is tested.** Search ranking, lifecycle transitions, and relation judgments ship with conformance vectors.
 
 ## Sync
 
-Local and cloud stores sync with explicit semantics: tombstone-aware, provenance-preserving, and conflict-visible (conflicts are surfaced for human/relation review — never silently resolved).
+`drenyra-engram sync --from <src-db> --to <dst-db>` reconciles two local stores additively: full revision history, relations and the lifecycle audit trail cross with original ids/provenance; status propagates via transition replay. Divergence is surfaced, never silently resolved — divergent chain heads are preserved in both stores and linked with a `conflicts_with` relation plus a report entry. Re-running the same pair is a no-op. Cloud sync is deferred (ROADMAP non-goals).
 
 ## Repository scope
 
