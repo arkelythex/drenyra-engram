@@ -191,7 +191,7 @@ func defaultObjectsRoot(dbPath string) string {
 //     MaxOIDCClockSkew; defaults to 30s.
 func oidcConfigFromEnv() (*auth.OIDCConfig, error) {
 	var (
-		cfg auth.OIDCConfig
+		cfg     auth.OIDCConfig
 		enabled bool
 	)
 	if v := os.Getenv("DRENYRA_OIDC_ISSUER"); v != "" {
