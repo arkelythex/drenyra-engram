@@ -15,14 +15,18 @@ import "sort"
 
 // AuthenticationMethod discriminates how a principal proved its identity.
 //
-//	v0.4.0 Step 1: oidc is RECOGNIZED but the resolver must return
-//	AUTHENTICATION_REQUIRED for it (no OIDC trust/key contract yet); session and
-//	service_assertion are opaque high-entropy bearer credentials resolved by
-//	SHA-256 token hash; local_dev is a loopback-only development mode.
+//	First Production Identity slice: oidc is resolvable ONLY when the resolver
+//	carries a configured OIDC validator (stateless RS256 access-token
+//	validation, no session created); without one it fails closed with
+//	AUTHENTICATION_REQUIRED. session and service_assertion are opaque
+//	high-entropy bearer credentials resolved by SHA-256 token hash; local_dev is
+//	a loopback-only development mode.
 type AuthenticationMethod string
 
 const (
-	// AuthMethodOIDC is OpenID Connect (recognized; not resolvable in Step 1).
+	// AuthMethodOIDC is OpenID Connect: resolvable when the resolver carries a
+	// configured OIDC validator (stateless RS256 access tokens); fails closed
+	// with AUTHENTICATION_REQUIRED otherwise.
 	AuthMethodOIDC AuthenticationMethod = "oidc"
 	// AuthMethodSession is an interactive session bearer credential.
 	AuthMethodSession AuthenticationMethod = "session"

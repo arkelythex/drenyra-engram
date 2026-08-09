@@ -4,9 +4,16 @@
 // (ADR-003). The engine records the claim for provenance; it never proves
 // authorization.
 //
-// v0.4.0 Step 1 resolution rules:
-//   - oidc: recognized but NOT resolvable → AUTHENTICATION_REQUIRED (no trust
-//     contract yet).
+// v0.4.0 Step 1 resolution rules (session-based) plus the first Production
+// Identity slice (stateless OIDC access tokens):
+//   - oidc: resolvable ONLY when the resolver carries a configured OIDC
+//     validator; the raw access token is verified in memory (RS256, exact
+//     issuer/audience, bounded time claims), then the verified tenant/company
+//     claims are cross-checked against the ACTIVE DB membership for `sub`
+//     (missing/mismatched tuple → PRINCIPAL_INVALID; inactive membership →
+//     MEMBERSHIP_INACTIVE). Without a configured validator oidc fails closed
+//     with AUTHENTICATION_REQUIRED. OIDC is STATELESS: no session is ever
+//     created and no raw token is ever persisted.
 //   - session / service_assertion: SHA-256(token) → session lookup; revoked or
 //     expired → PRINCIPAL_INVALID; then membership lookup; inactive membership
 //     or inactive company → MEMBERSHIP_INACTIVE.
@@ -14,8 +21,8 @@
 //     builds a standard-assurance principal with the explicit local_dev marker.
 //   - NO silent fallback: an absent or unknown assertion is AUTHENTICATION_REQUIRED.
 //
-// Raw credentials are hashed immediately and are never stored, logged or
-// returned.
+// Raw credentials are hashed (session paths) or verified in memory (oidc) and
+// are never stored, logged or returned.
 package auth
 
 import (
@@ -37,10 +44,13 @@ const (
 )
 
 // Resolver derives verified principals. Sessions is the session/membership
-// store; Mode gates local_dev authentication.
+// store; Mode gates local_dev authentication; OIDC is the stateless access-token
+// validator of the first Production Identity slice. A nil OIDC validator keeps
+// the Step 1 fail-closed behavior (AuthMethodOIDC → AUTHENTICATION_REQUIRED).
 type Resolver struct {
 	Sessions SessionStore
 	Mode     RuntimeMode
+	OIDC     *OIDCValidator
 }
 
 // AuthenticationAssertion carries CREDENTIAL material produced by a
@@ -65,11 +75,7 @@ type AuthenticationAssertion struct {
 func (r *Resolver) Authenticate(ctx context.Context, a AuthenticationAssertion) (VerifiedApprovalPrincipal, error) {
 	switch a.Method {
 	case AuthMethodOIDC:
-		// Recognized but intentionally not resolvable in Step 1.
-		return VerifiedApprovalPrincipal{}, New(
-			CodeAuthenticationRequired,
-			"oidc authentication is not available in this slice; present a session or service_assertion credential",
-		)
+		return r.authenticateOIDC(ctx, a)
 	case AuthMethodSession, AuthMethodServiceAssertion:
 		return r.authenticateBearer(ctx, a)
 	case AuthMethodLocalDev:
@@ -81,6 +87,56 @@ func (r *Resolver) Authenticate(ctx context.Context, a AuthenticationAssertion) 
 			"no authenticatable credential present",
 		)
 	}
+}
+
+func (r *Resolver) authenticateOIDC(ctx context.Context, a AuthenticationAssertion) (VerifiedApprovalPrincipal, error) {
+	if r.OIDC == nil {
+		// Fail closed: without a configured trust contract oidc is not
+		// resolvable — same behavior as the Step 1 stub.
+		return VerifiedApprovalPrincipal{}, New(
+			CodeAuthenticationRequired,
+			"oidc authentication is not configured; present a session or service_assertion credential",
+		)
+	}
+	if strings.TrimSpace(a.Credential) == "" {
+		return VerifiedApprovalPrincipal{}, New(CodeAuthenticationRequired, "missing bearer credential")
+	}
+	// The raw access token is verified IN MEMORY (RS256, exact issuer/audience,
+	// bounded time claims, JWKS cache with one unknown-kid refresh). It is never
+	// hashed into a session, never stored and never returned.
+	claims, err := r.OIDC.Validate(ctx, a.Credential)
+	if err != nil {
+		return VerifiedApprovalPrincipal{}, New(CodePrincipalInvalid, "oidc access token rejected: "+err.Error())
+	}
+	// DB-backed cross-check: the claimed tenant/company tuple must resolve to
+	// the ACTIVE membership of the verified `sub`. A missing tuple is the
+	// mismatch — ambiguity or drift fails closed as PRINCIPAL_INVALID.
+	membership, err := r.Sessions.LookupMembershipByScope(ctx, claims.Subject, claims.TenantID, claims.CompanyID)
+	if err != nil {
+		return VerifiedApprovalPrincipal{}, New(
+			CodePrincipalInvalid,
+			"oidc subject has no membership for the claimed tenant/company scope",
+		)
+	}
+	if membership.Status != "active" || !membership.CompanyActive {
+		return VerifiedApprovalPrincipal{}, New(CodeMembershipInactive, "membership is not active")
+	}
+	// Default OIDC assurance is standard; no unconfigured ACR/MFA elevation.
+	// OIDC is stateless: the principal carries no session id. The snapshot's
+	// authenticatedAt is the SERVER-OBSERVED validation time (ValidatedAt — the
+	// instant this resolver verified the token), never the token `iat`: audit
+	// provenance records when the server authenticated the caller.
+	return newVerifiedPrincipal(
+		membership.SubjectID,
+		membership.TenantID,
+		membership.ID,
+		[]string{membership.CompanyID},
+		membership.Roles,
+		AuthMethodOIDC,
+		AssuranceStandard,
+		claims.ValidatedAt.UTC().Format(time.RFC3339),
+		"",
+	), nil
 }
 
 func (r *Resolver) authenticateBearer(ctx context.Context, a AuthenticationAssertion) (VerifiedApprovalPrincipal, error) {

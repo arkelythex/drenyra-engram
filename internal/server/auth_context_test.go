@@ -33,6 +33,22 @@ func (f *fixedSessionStore) LoadMembership(context.Context, string) (auth.Member
 	return f.membership, nil
 }
 
+// LookupMembershipByScope satisfies the auth.SessionStore contract with the
+// SAME fail-closed tuple semantics as the real store
+// (internal/store/session_store.go): the configured membership is returned ONLY
+// when the exact (subject, tenant, company) tuple matches — any other tuple is a
+// plain not-found error the resolver maps to PRINCIPAL_INVALID. The fake must
+// not mint memberships for arbitrary claimed tuples.
+func (f *fixedSessionStore) LookupMembershipByScope(_ context.Context, subjectID, tenantID, companyID string) (auth.MembershipRecord, error) {
+	if f.lookupErr != nil {
+		return auth.MembershipRecord{}, f.lookupErr
+	}
+	if subjectID != f.membership.SubjectID || tenantID != f.membership.TenantID || companyID != f.membership.CompanyID {
+		return auth.MembershipRecord{}, errors.New("membership not found")
+	}
+	return f.membership, nil
+}
+
 // fixturePrincipal mints a verified principal through the resolver.
 func fixturePrincipal(t *testing.T) auth.VerifiedApprovalPrincipal {
 	t.Helper()

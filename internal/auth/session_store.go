@@ -33,11 +33,20 @@ type MembershipRecord struct {
 	CompanyActive bool
 }
 
-// SessionStore resolves token hashes to sessions and sessions to memberships.
+// SessionStore resolves token hashes to sessions and sessions to memberships,
+// and memberships by their exact (subject, tenant, company) scope. It is the
+// DB-backed membership authority the OIDC resolver cross-checks claims against.
 // LookupByTokenHash receives the SHA-256 of a bearer credential — never the raw
 // credential. A not-found token or a broken session row is an error that the
 // resolver maps to PRINCIPAL_INVALID.
 type SessionStore interface {
 	LookupByTokenHash(ctx context.Context, tokenHash string) (StoredSession, error)
 	LoadMembership(ctx context.Context, membershipID string) (MembershipRecord, error)
+	// LookupMembershipByScope resolves the membership for the exact
+	// (subject, tenant, company) tuple — the DB-backed cross-check the OIDC
+	// resolver applies to the token's verified `sub` and custom tenant/company
+	// claims. At most one row can exist (schema UNIQUE
+	// subject_id,tenant_id,company_id), so a missing tuple IS the mismatch and
+	// the resolver maps it to PRINCIPAL_INVALID (fail closed, never a guess).
+	LookupMembershipByScope(ctx context.Context, subjectID, tenantID, companyID string) (MembershipRecord, error)
 }
