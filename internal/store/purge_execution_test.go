@@ -35,6 +35,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -1037,5 +1038,137 @@ func TestVerifyObjectBytesPurgedExpectedAbsence(t *testing.T) {
 	}
 	if _, err := iso.Doctor(); err != nil {
 		t.Fatalf("doctor with only a purged object must succeed (documented expected absence): %v", err)
+	}
+}
+
+// TestExecutePurgeWithdrawalInIntentWindowAbortsNoUnlink freezes the phase-2
+// revalidation contract against a withdrawal racing the intent→completion window
+// (design §3.7/§11 — the executeAndCompleteOn step-1 re-read: the request must
+// STILL be 'approved'; a withdraw committed in the window aborts the completion,
+// the interrupted intent is surfaced, and NOTHING is unlinked).
+//
+// The window is reproduced DETERMINISTICALLY through the existing controlled
+// seam, never with sleeps or races:
+//
+//  1. corrupt the bytes → ExecutePurge commits the durable intent (executions row
+//     'intent', purge_intent event + receipt, idempotency key reserved-incomplete)
+//     and aborts the unlink (OBJECT_HASH_MISMATCH) — the crash-BEFORE-unlink
+//     persisted shape with the bytes still present;
+//  2. restore the EXACT original bytes (the window state: bytes intact and
+//     WORM-verifiable) and WITHDRAW the approval — the withdrawal lands in the
+//     intent→completion window (request 'approved' → 'withdrawn', pipeline back
+//     to stored);
+//  3. the same-id retry re-runs the phase-2 revalidation under the bound intent:
+//     the request re-read is no longer 'approved' → INVALID_TRANSITION abort.
+//
+// The test proves the abort leaves the bytes INTACT (the guarded unlink never
+// runs), records NO bytes-purged completion receipt (no purge_executed event /
+// receipt, no completion columns on the executions row, the idempotency key stays
+// incomplete) and SURFACES the interrupted intent instead of hiding it.
+func TestExecutePurgeWithdrawalInIntentWindowAbortsNoUnlink(t *testing.T) {
+	s := newTestStore(t)
+	s.SetReceiptSigner(newParitySigner(s))
+	fx := approvedPurgePipeline(t, s)
+	execID := "00000000-0000-4000-8000-000000001401"
+	ctx := context.Background()
+	original := []byte("purge-target-bytes-0123456789")
+	path := objectBytesPath(t, s, fx.object)
+
+	// Step 1: the durable intent commits, the unlink aborts (corrupt bytes) — the
+	// attempt stays 'intent' with the bytes PRESENT (the crash-before-unlink
+	// window).
+	if err := os.WriteFile(path, []byte("CORRUPTED-BYTES-NOT-THE-ORIGINAL"), 0o600); err != nil {
+		t.Fatalf("corrupt object bytes: %v", err)
+	}
+	if _, err := s.ExecutePurge(ctx, core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           execID,
+	}, recordsPrincipal(t)); err == nil || !strings.Contains(err.Error(), objectErrHashMismatch) {
+		t.Fatalf("intent attempt = %v, want OBJECT_HASH_MISMATCH (durable intent committed, unlink aborted)", err)
+	}
+	if got := executionState(t, s, execID); got != string(core.PurgeExecutionIntent) {
+		t.Fatalf("attempt state after the aborted unlink = %q, want intent", got)
+	}
+
+	// Step 2: restore the EXACT original bytes (intact and verifiable again) and
+	// WITHDRAW the approval — the withdrawal commits inside the intent→completion
+	// window.
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("restore object bytes: %v", err)
+	}
+	if err := s.VerifyObjectBytes(ctx, fx.objectID); err != nil {
+		t.Fatalf("restored bytes must re-hash to the immutable object id: %v", err)
+	}
+	withdrawn, err := s.WithdrawPurge(ctx, core.WithdrawPurgeCommand{
+		RequestID:    fx.request.RequestID,
+		Reason:       "human cleanup racing the execution window",
+		RequestIDKey: "req-withdraw-intent-window",
+	}, recordsPrincipal(t))
+	if err != nil {
+		t.Fatalf("withdraw in the intent window: %v", err)
+	}
+	if withdrawn.Request.Status != core.PurgeRequestStatusWithdrawn {
+		t.Fatalf("withdrawn request status = %s, want withdrawn", withdrawn.Request.Status)
+	}
+
+	// Step 3: the same-id retry converges the interrupted intent under its bound
+	// authorization — the phase-2 revalidation RE-READS the request and aborts:
+	// it is no longer 'approved'. The unlink NEVER runs.
+	_, err = s.ExecutePurge(ctx, core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           execID,
+	}, recordsPrincipal(t))
+	if err == nil || !strings.Contains(err.Error(), auth.CodeInvalidTransition) {
+		t.Fatalf("same-id retry after a window withdrawal = %v, want INVALID_TRANSITION (the phase-2 revalidation aborts)", err)
+	}
+
+	// The interrupted intent is SURFACED, never hidden: the attempt stays 'intent'
+	// and carries NO completion columns.
+	if got := executionState(t, s, execID); got != string(core.PurgeExecutionIntent) {
+		t.Fatalf("attempt state after the aborted revalidation = %q, want intent (surfaced interrupted)", got)
+	}
+	var completedAt, completedBy, completionReceiptID any
+	if err := s.db.QueryRow(`SELECT completed_at, completed_by, completion_receipt_id FROM evidence_purge_executions WHERE execution_id = ?`, execID).Scan(&completedAt, &completedBy, &completionReceiptID); err != nil {
+		t.Fatalf("read execution completion columns: %v", err)
+	}
+	if completedAt != nil || completedBy != nil || completionReceiptID != nil {
+		t.Fatalf("an aborted completion must record NO completion columns, got (%v, %v, %v)", completedAt, completedBy, completionReceiptID)
+	}
+
+	// No bytes-purged completion receipt, event or request flip was ever written:
+	// the idempotency key stays reserved-incomplete (the completion never claimed)
+	// and the object chain has NO purge_executed artifact.
+	var storedEntityID sql.NullString
+	if err := s.db.QueryRow(`SELECT entity_id FROM evidence_purge_idempotency_keys WHERE tenant_id = ? AND request_id = ?`, fx.scope.OrganizationID, execID).Scan(&storedEntityID); err != nil {
+		t.Fatalf("read execution idempotency key: %v", err)
+	}
+	if storedEntityID.Valid {
+		t.Fatal("an aborted completion must leave the execution idempotency key incomplete (entity_id NULL)")
+	}
+	var executedEvents, executedReceipts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM evidence_lifecycle_events WHERE object_id = ? AND action = 'purge_executed'`, fx.objectID).Scan(&executedEvents); err != nil {
+		t.Fatalf("count executed events: %v", err)
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM receipts WHERE subject_id = ? AND action = 'purge_executed'`, fx.objectID).Scan(&executedReceipts); err != nil {
+		t.Fatalf("count executed receipts: %v", err)
+	}
+	if executedEvents != 0 || executedReceipts != 0 {
+		t.Fatalf("an aborted completion must record NO bytes-purged receipt: (%d events, %d receipts)", executedEvents, executedReceipts)
+	}
+
+	// The bytes are INTACT: the physical unlink never ran, the bytes re-hash to
+	// the immutable content address and the request stays withdrawn (a fresh
+	// execution id on the withdrawn pipeline is INVALID_TRANSITION too).
+	if err := s.VerifyObjectBytes(ctx, fx.objectID); err != nil {
+		t.Fatalf("the bytes must be intact after the aborted revalidation: %v", err)
+	}
+	if _, err := s.ExecutePurge(ctx, core.ExecutePurgeCommand{
+		RequestID:             fx.request.RequestID,
+		ExpectedLifecycleHash: fx.approvedHash,
+		ExecutionID:           "00000000-0000-4000-8000-000000001402",
+	}, recordsPrincipal(t)); err == nil || !strings.Contains(err.Error(), auth.CodeInvalidTransition) {
+		t.Fatalf("a fresh execution id on the withdrawn pipeline = %v, want INVALID_TRANSITION", err)
 	}
 }

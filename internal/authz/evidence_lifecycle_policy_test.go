@@ -40,6 +40,16 @@ func (f *lifecycleFixedSessionStore) LoadMembership(context.Context, string) (au
 	return f.membership, nil
 }
 
+// LookupMembershipByScope satisfies the auth.SessionStore contract. These
+// lifecycle-policy tests never exercise the OIDC path, so the stub returns the
+// configured membership for any (subject, tenant, company) tuple.
+func (f *lifecycleFixedSessionStore) LookupMembershipByScope(context.Context, string, string, string) (auth.MembershipRecord, error) {
+	if f.lookupErr != nil {
+		return auth.MembershipRecord{}, f.lookupErr
+	}
+	return f.membership, nil
+}
+
 // lifecycleFixtureStore builds a session store that mints a principal with the
 // given membership attributes (subject-1 / tenant-1 / acme by default).
 func lifecycleFixtureStore(tenantID, companyID string, roles []auth.AccountingRole, assurance auth.AssuranceLevel) auth.SessionStore {
