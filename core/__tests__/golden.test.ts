@@ -186,7 +186,8 @@ interface GoldenCase {
 		| "sod-policy"
 		| "review-checks"
 		| "judgment"
-		| "receipt";
+		| "receipt"
+		| "reconstructibility";
 	description?: string;
 	input: {
 		id: string;

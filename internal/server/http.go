@@ -295,6 +295,14 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /accounting/rules/{topic}", h.requireToken(h.handleRuleShow))
 	mux.HandleFunc("GET /accounting/rules/{topic}/history", h.requireToken(h.handleRuleHistory))
 	mux.HandleFunc("GET /accounting/rules/{topic}/impact", h.authenticate(h.handleRuleImpact))
+	// G-10 reconstructibility metric (v1-readiness, design D-1): a deterministic
+	// READ-ONLY observation of ONE exact company scope + period. The route uses a
+	// DEDICATED exact-scope parser — ALL FOUR query fields are required
+	// (?organizationId=&companyId=&ruc=&period=) and the generic companyId := ruc
+	// fallback is NEVER applied, so an apparently precise baseline can never query
+	// an inferred company identity. Shared token guard only (no principal — the
+	// read never authorizes, approves, posts or reopens anything).
+	mux.HandleFunc("GET /accounting/reconstructibility", h.requireToken(h.handleReconstructibility))
 	// Monthly close surfaces (v0.5.0 close foundation, design §6): creation is a
 	// NORMAL SAVE by an agent with a provenance-only source claim (shared token
 	// guard; the APPROVAL is the authenticated controller act); reopening is the

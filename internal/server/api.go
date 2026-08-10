@@ -338,6 +338,22 @@ func (a *API) ReviewQueue(ctx context.Context, query core.ReviewQueueQuery) (cor
 	return a.Store.ListReviewQueue(ctx, query)
 }
 
+// Reconstructibility computes the deterministic, read-only reconstructibility
+// baseline for ONE exact company scope + period (design D-1/D-3): the CANONICAL
+// server method every transport (CLI, MCP, HTTP) delegates to — none of them
+// touches the store reads directly. The result is an OBSERVATION (IR-3): no
+// transaction is started, no row is written, nothing is authorized, approved,
+// posted or reopened. The store must implement the narrow verification read
+// seam (the production *store.SQLiteStore does); a store that cannot verify is
+// an unavailable report, never a partial or fabricated metric.
+func (a *API) Reconstructibility(ctx context.Context, scope core.Scope) (ReconstructibilityResult, error) {
+	verifier, ok := a.Store.(VerificationStore)
+	if !ok {
+		return ReconstructibilityResult{}, fmt.Errorf("%w: store does not implement the verification read seam", ErrReconstructibilityUnavailable)
+	}
+	return Reconstructibility(ctx, a.Store, memoryVerifierAdapter{store: verifier}, scope)
+}
+
 // RuleShow returns the CURRENT rule revision (chain head) of a (topicKey,
 // exact Scope) — v0.6.0 rule surfaces (design §6), read-only.
 func (a *API) RuleShow(topicKey string, scope core.Scope) (core.AccountingMemory, error) {

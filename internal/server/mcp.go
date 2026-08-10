@@ -612,6 +612,21 @@ func ToolCatalog() []map[string]any {
 				"scope":    stringSchema(`JSON exact company scope (optional; absent = chain derived from the pinned versions, RULE_CHAIN_AMBIGUOUS on multiple distinct chains)`),
 			}, "topic"),
 		},
+		// ── accounting_reconstructibility (v1-readiness G-10, design D-1): a
+		// deterministic READ-ONLY observation of ONE exact company scope + period —
+		// the FZ-1 material-decision denominator, the FZ-2 reconstructible numerator
+		// and the six closed non-reconstructibility reason groups. It never
+		// authorizes, approves, posts, files or reopens anything; it only reports.
+		// The scope is REQUIRED and strict-decoded: kind=company with non-empty
+		// companyId, a valid 11-digit ruc and a valid YYYYMM period; unknown
+		// arguments and unknown scope fields fail closed.
+		{
+			"name":        "accounting_reconstructibility",
+			"description": "Compute the G-10 reconstructibility baseline of ONE exact company scope + period (v1-readiness design D-1): a deterministic, READ-ONLY observation of the FZ-1 material-decision denominator, the FZ-2 reconstructible numerator and the six closed non-reconstructibility reason groups (not_approved, receipt_failed, missing_evidence, evidence_missing_object, rule_unresolved, rule_version_failed). The percentage is integer math, never float; a zero denominator is data, not an error. It never authorizes or approves anything — it only reports the observation.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope": stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required; unknown fields rejected)`),
+			}, "scope"),
+		},
 		// ── accounting_close_* (v0.5.0 close foundation, design §6): creation is
 		// a NORMAL SAVE by an agent with a provenance-only source claim (the tool
 		// stamps the agent source — tool arguments never carry identity); the
@@ -2089,6 +2104,35 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		return textContent(mustJSON(result)), nil
 
+		// ── reconstructibility tool (v1-readiness G-10, design D-1): a READ-ONLY
+		// observation of ONE exact company scope + period. The tool arguments are
+		// STRICT-decoded (an unknown argument fails closed — caller-declared
+		// authority is never silently ignored) and the scope object itself rejects
+		// unknown fields. Domain failures keep the JSON-RPC transport successful and
+		// open with the stable G-10 code.
+	case "accounting_reconstructibility":
+		var args struct {
+			Scope string `json:"scope"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeStrictScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		if err := validateReconstructibilityAdapterScope(scope); err != nil {
+			return errTextContent(err), nil
+		}
+		result, err := m.api.Reconstructibility(context.Background(), scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
 		// ── close tools (v0.5.0 close foundation, design §6): creation is a NORMAL
 	// SAVE by an agent (the server stamps the agent source — provenance, never
 	// authority); reopening is the authenticated controller act and fails closed
@@ -2668,6 +2712,23 @@ func decodeScope(raw string) (core.Scope, error) {
 	var scope core.Scope
 	if err := json.Unmarshal([]byte(raw), &scope); err != nil {
 		return core.Scope{}, fmt.Errorf("INVALID_SCOPE: %v", err)
+	}
+	return scope, nil
+}
+
+// decodeStrictScope parses a JSON scope string REJECTING unknown fields — the
+// reconstructibility scope is exact by construction (design D-1: unknown tool
+// arguments AND unknown scope fields fail closed; an extra scope field is
+// ambiguous and must never be silently dropped into a partially-applied scope).
+func decodeStrictScope(raw string) (core.Scope, error) {
+	if strings.TrimSpace(raw) == "" {
+		return core.Scope{}, errors.New("INVALID_RECONSTRUCTIBILITY_SCOPE: scope is required")
+	}
+	var scope core.Scope
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&scope); err != nil {
+		return core.Scope{}, fmt.Errorf("INVALID_RECONSTRUCTIBILITY_SCOPE: %v", err)
 	}
 	return scope, nil
 }

@@ -84,6 +84,8 @@ func run(args []string) int {
 		return cmdReview(args[1:])
 	case "rule":
 		return cmdRule(args[1:])
+	case "reconstructibility":
+		return cmdReconstructibility(args[1:])
 	case "auth":
 		return cmdAuth(args[1:])
 	case "keys":
@@ -3973,6 +3975,7 @@ Usage:
   drenyra-engram close show <memory-id> [--db <path>]
   drenyra-engram close reopen <ruc> --period YYYYMM --expected-close <id> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram timeline <ruc> --topic <topicKey> [--period <YYYYMM>] [--db <path>]
+  drenyra-engram reconstructibility <ruc> --period <YYYYMM> [--company-id <id>] [--organization <id>] [--db <path>] [--objects <dir>]   (v1-readiness G-10 read-only metric)
   drenyra-engram mcp [--db <path>]              MCP stdio server (agents)
   drenyra-engram serve [--addr <host:port>] [--token <secret>] [--db <path>]
   drenyra-engram sync --from <src-db> --to <dst-db> [--actor <name>]
@@ -3983,8 +3986,10 @@ Usage:
 
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
-  --objects <dir>  WORM evidence object root for object store/get, doctor and verify object (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
+  --objects <dir>  WORM evidence object root for object store/get, doctor, verify object and reconstructibility (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
+  --company-id <id>  company id override for reconstructibility (default: the RUC — the established CLI derivation)
+  --organization <id>  organization id override for reconstructibility (default: the fixed CLI organization)
   --period <YYYYMM> fiscal period; omitted scopes only match period-less observations
   --any            match ANY query token (default: match ALL)
   --expected-envelope <hash> envelope hash the reviewer actually saw (approve, REQUIRED)
