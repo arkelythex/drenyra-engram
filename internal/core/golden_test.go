@@ -64,6 +64,14 @@ type goldenCase struct {
 	Resolution   string          `json:"resolution,omitempty"`
 	DecidedAt    string          `json:"decidedAt,omitempty"`
 	SupersededAt string          `json:"supersededAt,omitempty"`
+
+	// v0.9.0 review-workspace policy vectors: SODCases (contract "sod-policy")
+	// carries the proposer/reviewer pairs the pure SoD clause evaluates;
+	// ReviewChecksCases (contract "review-checks") carries the materiality +
+	// declared-checks triples the review-checks clause evaluates. Both run from
+	// TypeScript against the SAME vector files.
+	SODCases          []goldenSODCase          `json:"sodCases,omitempty"`
+	ReviewChecksCases []goldenReviewChecksCase `json:"reviewChecksCases,omitempty"`
 }
 
 type goldenInput struct {
@@ -100,6 +108,29 @@ type goldenPrincipal struct {
 	AuthenticationMethod auth.AuthenticationMethod `json:"authenticationMethod"`
 	AssuranceLevel       auth.AssuranceLevel       `json:"assuranceLevel"`
 	AuthenticatedAt      string                    `json:"authenticatedAt"`
+}
+
+// goldenSODCase is ONE proposer/reviewer pair of the v0.9.0 separation-of-duties
+// clause vector (contract "sod-policy"): the pure clause evaluates whether the
+// reviewer IS the proposer — the decision is only legal when they differ.
+// Violation is the pinned outcome Go and TS must agree on.
+type goldenSODCase struct {
+	Proposer  string `json:"proposer"`
+	Reviewer  string `json:"reviewer"`
+	Violation bool   `json:"violation"`
+}
+
+// goldenReviewChecksCase is ONE materiality + declared-checks triple of the
+// v0.9.0 review-checks clause vector (contract "review-checks"): Required is the
+// pinned demand of the declared level (material/critical) and ErrorCode the
+// pinned fail-closed outcome of validateReviewChecks ("REVIEW_CHECKS_REQUIRED"
+// when the two checks were not both declared; empty when the clause passes).
+type goldenReviewChecksCase struct {
+	MaterialityLevel  *core.MaterialityLevel `json:"materialityLevel"`
+	EvidenceInspected bool                   `json:"evidenceInspected"`
+	RuleInspected     bool                   `json:"ruleInspected"`
+	Required          bool                   `json:"required"`
+	ErrorCode         string                 `json:"errorCode"`
 }
 
 // goldenMemory is the canonical memory shape of a v0.4.0 vector. Timestamps are
@@ -214,6 +245,10 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runApprovalEnvelopeGolden(t, tc)
 			case "principal-snapshot":
 				runPrincipalSnapshotGolden(t, tc)
+			case "sod-policy":
+				runSODPolicyGolden(t, tc)
+			case "review-checks":
+				runReviewChecksGolden(t, tc)
 			case "judgment":
 				runJudgmentGolden(t, tc)
 			case "receipt":
@@ -431,6 +466,56 @@ func runPrincipalSnapshotGolden(t *testing.T, tc goldenCase) {
 		}
 	}
 	t.Logf("SNAPSHOT %s canonicalRoles=%v", tc.Name, got)
+}
+
+// runSODPolicyGolden runs the PURE v0.9.0 separation-of-duties clause
+// (authz.SODViolation) on every proposer/reviewer pair of the vector — the
+// same vector file must yield the identical violation triples from TypeScript
+// (authz/approval-policy.ts sodViolation). A reviewer that equals the
+// proposer is ALWAYS a violation (fail-closed); an empty proposer never is.
+func runSODPolicyGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if len(tc.SODCases) == 0 {
+		t.Fatalf("%s: sod-policy vector requires sodCases", tc.Name)
+	}
+	for i, c := range tc.SODCases {
+		got := authz.SODViolation(c.Proposer, c.Reviewer)
+		if got != c.Violation {
+			t.Errorf("%s: sodCases[%d] proposer=%q reviewer=%q violation = %v, want %v",
+				tc.Name, i, c.Proposer, c.Reviewer, got, c.Violation)
+		}
+	}
+	t.Logf("SOD %s cases=%d", tc.Name, len(tc.SODCases))
+}
+
+// runReviewChecksGolden runs the PURE v0.9.0 review-checks clause
+// (authz.ReviewChecksRequired + authz.ValidateReviewChecks) on every triple of
+// the vector — the same vector file must yield the identical outcomes from
+// TypeScript (authz/approval-policy.ts reviewChecksRequired +
+// validateReviewChecks). Material/critical demand BOTH checks;
+// REVIEW_CHECKS_REQUIRED fails closed otherwise; normal/NULL never trips it.
+func runReviewChecksGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if len(tc.ReviewChecksCases) == 0 {
+		t.Fatalf("%s: review-checks vector requires reviewChecksCases", tc.Name)
+	}
+	for i, c := range tc.ReviewChecksCases {
+		if got := authz.ReviewChecksRequired(c.MaterialityLevel); got != c.Required {
+			t.Errorf("%s: reviewChecksCases[%d] required = %v, want %v", tc.Name, i, got, c.Required)
+		}
+		err := authz.ValidateReviewChecks(c.MaterialityLevel, core.ReviewChecks{
+			EvidenceInspected: c.EvidenceInspected,
+			RuleInspected:     c.RuleInspected,
+		})
+		if c.ErrorCode == "" {
+			if err != nil {
+				t.Errorf("%s: reviewChecksCases[%d] must pass, got %v", tc.Name, i, err)
+			}
+		} else if auth.Code(err) != c.ErrorCode {
+			t.Errorf("%s: reviewChecksCases[%d] errorCode = %q, want %q", tc.Name, i, auth.Code(err), c.ErrorCode)
+		}
+	}
+	t.Logf("REVIEW_CHECKS %s cases=%d", tc.Name, len(tc.ReviewChecksCases))
 }
 
 // ──────────────────────────────────────────────

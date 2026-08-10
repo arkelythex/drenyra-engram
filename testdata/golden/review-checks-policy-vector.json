@@ -1,0 +1,51 @@
+{
+  "name": "review-checks-policy-vector",
+  "contract": "review-checks",
+  "description": "The v0.9.0 anti-rubber-stamp review-checks clause (design §5/§6, contracts/approval.md): a HIGH-RISK approval (declared materialityLevel material|critical) requires BOTH review checks declared true (evidenceInspected AND ruleInspected) — REVIEW_CHECKS_REQUIRED otherwise (fail-closed inside the transaction); normal/NULL never trips the clause (the checks are ignored). The SAME vector file runs from Go (authz.ReviewChecksRequired + authz.ValidateReviewChecks) and TypeScript (authz/approval-policy.ts reviewChecksRequired + validateReviewChecks) and must yield identical outcomes.",
+  "reviewChecksCases": [
+    {
+      "materialityLevel": "material",
+      "evidenceInspected": true,
+      "ruleInspected": true,
+      "required": true,
+      "errorCode": ""
+    },
+    {
+      "materialityLevel": "material",
+      "evidenceInspected": true,
+      "ruleInspected": false,
+      "required": true,
+      "errorCode": "REVIEW_CHECKS_REQUIRED"
+    },
+    {
+      "materialityLevel": "critical",
+      "evidenceInspected": false,
+      "ruleInspected": false,
+      "required": true,
+      "errorCode": "REVIEW_CHECKS_REQUIRED"
+    },
+    {
+      "materialityLevel": "critical",
+      "evidenceInspected": true,
+      "ruleInspected": true,
+      "required": true,
+      "errorCode": ""
+    },
+    {
+      "materialityLevel": "normal",
+      "evidenceInspected": false,
+      "ruleInspected": false,
+      "required": false,
+      "errorCode": ""
+    },
+    {
+      "materialityLevel": null,
+      "evidenceInspected": false,
+      "ruleInspected": false,
+      "required": false,
+      "errorCode": ""
+    }
+  ],
+  "input": {},
+  "expected": {}
+}

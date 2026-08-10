@@ -196,7 +196,8 @@ func TestPrincipalProvenanceMapsVerifiedClaim(t *testing.T) {
 // TestApproveMemoryCommandCarriesNoPrincipalFields is the compile-level
 // contract (ADR-003): the command shape is EXACTLY the four syntax fields. If a
 // principal field ever sneaks in, this reflection check fails — transport
-// payloads can never carry authority.
+// payloads can never carry authority. ReviewChecks is reviewer acknowledgement
+// (anti-rubber-stamp, review-workspace v0.9), never authority.
 func TestApproveMemoryCommandCarriesNoPrincipalFields(t *testing.T) {
 	typ := reflect.TypeOf(core.ApproveMemoryCommand{})
 	got := make([]string, 0, typ.NumField())
@@ -204,7 +205,7 @@ func TestApproveMemoryCommandCarriesNoPrincipalFields(t *testing.T) {
 		got = append(got, typ.Field(i).Name)
 	}
 	sort.Strings(got)
-	want := []string{"ExpectedEnvelopeHash", "MemoryID", "Reason", "RequestID"}
+	want := []string{"ExpectedEnvelopeHash", "MemoryID", "Reason", "RequestID", "ReviewChecks"}
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command fields = %v, want exactly %v — principal fields are forbidden in the payload (ADR-003)", got, want)

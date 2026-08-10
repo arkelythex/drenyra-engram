@@ -22,6 +22,7 @@ import type {
 	MaterialityLevel,
 	VerifiedApprovalPrincipal,
 } from "../core/types.js";
+import { ApprovalError } from "../core/types.js";
 
 /** The frozen policy version, stamped on every decision. */
 export const APPROVAL_POLICY_VERSION = "approval-policy/v0.4.0";
@@ -93,7 +94,10 @@ function requiredRole(
 	base: AccountingRole,
 	level: MaterialityLevel | undefined,
 ): AccountingRole {
-	if (level === "critical" && (base === "accountant" || base === "senior_accountant")) {
+	if (
+		level === "critical" &&
+		(base === "accountant" || base === "senior_accountant")
+	) {
 		return "controller";
 	}
 	if (level === "material" && base === "accountant") {
@@ -107,8 +111,14 @@ function requiredRole(
  * matched explicitly — a controller NEVER implies tax_reviewer or
  * authorized_tax_professional, and vice versa.
  */
-function satisfies(roles: readonly AccountingRole[], required: AccountingRole): boolean {
-	if (required === "tax_reviewer" || required === "authorized_tax_professional") {
+function satisfies(
+	roles: readonly AccountingRole[],
+	required: AccountingRole,
+): boolean {
+	if (
+		required === "tax_reviewer" ||
+		required === "authorized_tax_professional"
+	) {
 		return roles.includes(required);
 	}
 	const rr = LADDER_RANK[required];
@@ -167,4 +177,57 @@ export function authorizeApproval(
 		policyVersion: APPROVAL_POLICY_VERSION,
 		reasonCode: REASON_AUTHORIZED,
 	};
+}
+
+// ──────────────────────────────────────────────
+// v0.9.0 review-workspace clauses (design §5/§6) — pure, fail-closed
+// ──────────────────────────────────────────────
+
+/**
+ * Reports whether the authenticated reviewer IS the pending revision's
+ * proposer — the separation-of-duties clause (design §5/§6.5.5): the decision
+ * is only legal when the principal's subject id DIFFERS from the pending
+ * revision's recordedBy. A non-empty proposer that equals the reviewer is a
+ * violation (fail-closed inside the transaction); an empty proposer (a source
+ * without an actor id) never equals an authenticated reviewer. Mirrors
+ * authz.SODViolation.
+ */
+export function sodViolation(
+	proposerRecordedBy: string,
+	reviewerSubjectId: string,
+): boolean {
+	return proposerRecordedBy !== "" && proposerRecordedBy === reviewerSubjectId;
+}
+
+/**
+ * Reports whether the declared materiality level demands the two review
+ * checks (design §5/§6): material and critical require evidenceInspected &&
+ * ruleInspected; normal/NULL never do. Mirrors authz.ReviewChecksRequired.
+ */
+export function reviewChecksRequired(
+	level: MaterialityLevel | undefined,
+): boolean {
+	return level === "material" || level === "critical";
+}
+
+/**
+ * Fails closed on the anti-rubber-stamp clause: when the declared materiality
+ * level demands the two review checks, BOTH must be true
+ * (REVIEW_CHECKS_REQUIRED otherwise). When no check is demanded, the checks
+ * are ignored (a normal approval never trips this clause). Mirrors
+ * authz.ValidateReviewChecks.
+ */
+export function validateReviewChecks(
+	level: MaterialityLevel | undefined,
+	checks: { evidenceInspected: boolean; ruleInspected: boolean },
+): void {
+	if (
+		reviewChecksRequired(level) &&
+		!(checks.evidenceInspected && checks.ruleInspected)
+	) {
+		throw new ApprovalError(
+			"REVIEW_CHECKS_REQUIRED",
+			"material/critical approvals require both review checks (evidenceInspected and ruleInspected)",
+		);
+	}
 }

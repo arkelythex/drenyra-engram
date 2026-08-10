@@ -147,6 +147,10 @@ type HTTPServer struct {
 	// approvalStore is the atomic approval surface the authenticated route
 	// delegates to (one BEGIN IMMEDIATE store operation).
 	approvalStore ApprovalStore
+	// reviewStore is the review-workspace surface the review routes delegate to
+	// (v0.9.0): scope-first queue/detail reads and the authenticated reject/return
+	// decisions (one BEGIN IMMEDIATE store operation per decision).
+	reviewStore ReviewStore
 	// judgmentStore is the atomic judgment surface the adjudication routes
 	// delegate to (one BEGIN IMMEDIATE store operation per transition —
 	// propose/confirm/reject/withdraw, v0.4.0 Step 2).
@@ -194,6 +198,9 @@ func NewHTTPServerWithDefaultScope(api *API, token, defaultScopeJSON string) (*H
 	}
 	if approval, ok := api.Store.(ApprovalStore); ok {
 		h.approvalStore = approval
+	}
+	if review, ok := api.Store.(ReviewStore); ok {
+		h.reviewStore = review
 	}
 	if judgments, ok := api.Store.(JudgmentStore); ok {
 		h.judgmentStore = judgments
@@ -245,6 +252,18 @@ func (h *HTTPServer) Handler() http.Handler {
 	// ONLY from the Authorization credential; the strict body can never supply
 	// authority (actor/actorKind/subjectId/roles are REJECTED, never ignored).
 	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.authenticate(h.handleApprovalApprove))
+	// Review workspace (v0.9.0 — docs/architecture/review-workspace-v0.9.md):
+	// queue and detail are SCOPE-FIRST READS (the exact scope tuple comes from the
+	// query parameters — ?ruc= + ?organizationId= + ?period= — the same derivation
+	// as the other accounting GET routes; no authenticated session needed, reads
+	// never authorize). Reject/return are the AUTHENTICATED controller acts: the
+	// principal is derived ONLY from the Authorization credential; the strict
+	// bodies carry {expectedEnvelopeHash, reason} and can never supply authority;
+	// the Idempotency-Key header is the (tenant, requestId) reservation key.
+	mux.HandleFunc("GET /accounting/review/queue", h.requireToken(h.handleReviewQueue))
+	mux.HandleFunc("GET /accounting/review/{memoryId}", h.requireToken(h.handleReviewDetail))
+	mux.HandleFunc("POST /accounting/memories/{memoryId}/reject", h.authenticate(h.handleReviewReject))
+	mux.HandleFunc("POST /accounting/memories/{memoryId}/return", h.authenticate(h.handleReviewReturn))
 	// Authenticated adjudication (v0.4.0 Step 2 — adjudicable conflicts):
 	// proposal and withdrawal bodies carry a provenance-only source
 	// (agent|system — NEVER authority); confirm and reject derive the principal
@@ -265,6 +284,17 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/confirm", h.authenticate(h.handleReconciliationConfirm))
 	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/reject", h.authenticate(h.handleReconciliationReject))
 	mux.HandleFunc("POST /accounting/reconciliations/{reconciliationId}/withdraw", h.requireToken(h.handleReconciliationWithdraw))
+	// Fiscal policy rule surfaces (v0.6.0, design §6): show/history are SCOPE-FIRST
+	// READS (?ruc= + ?period= — the same derivation as the other accounting GET
+	// routes; the shared token guard only, no principal needed). Impact is the
+	// AUTHENTICATED regulatory-change read: the tenant comes from the credential
+	// (never from the query), the exact scope is optional (?ruc= + ?period=
+	// pins the chain; absent = chain derived from the pinned versions,
+	// RULE_CHAIN_AMBIGUOUS on multiple distinct chains). Topic keys may contain
+	// "/" — clients percent-encode {topic}.
+	mux.HandleFunc("GET /accounting/rules/{topic}", h.requireToken(h.handleRuleShow))
+	mux.HandleFunc("GET /accounting/rules/{topic}/history", h.requireToken(h.handleRuleHistory))
+	mux.HandleFunc("GET /accounting/rules/{topic}/impact", h.authenticate(h.handleRuleImpact))
 	// Monthly close surfaces (v0.5.0 close foundation, design §6): creation is a
 	// NORMAL SAVE by an agent with a provenance-only source claim (shared token
 	// guard; the APPROVAL is the authenticated controller act); reopening is the
@@ -651,13 +681,15 @@ func approvalErrorStatus(code string) (int, bool) {
 	case auth.CodeMembershipInactive, auth.CodeTenantScopeMismatch, auth.CodeCompanyScopeDenied,
 		auth.CodeRoleNotAuthorized, auth.CodeAssuranceTooLow, auth.CodeMaterialityLimitExceeded:
 		return http.StatusForbidden, true
-	case auth.CodeReasonRequired:
+	case auth.CodeReasonRequired, auth.CodeReviewChecksRequired:
 		return http.StatusBadRequest, true
 	case auth.CodeMemoryNotFound:
 		return http.StatusNotFound, true
 	case auth.CodeInvalidTransition, auth.CodeEnvelopeMismatch, auth.CodeAlreadyDecided, auth.CodeIdempotencyConflict,
 		auth.CodePeriodClosed, auth.CodePeriodAlreadyClosed:
 		return http.StatusConflict, true
+	case auth.CodeSODViolation:
+		return http.StatusForbidden, true
 	}
 	return 0, false
 }

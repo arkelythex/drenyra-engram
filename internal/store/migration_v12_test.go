@@ -63,8 +63,8 @@ func TestFreshStoreBootstrapsV12Executions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 12 {
-		t.Fatalf("schema_version = %d, want 12 (the chain continues v2→v3→…→v10→v11→v12)", version)
+	if version != 14 {
+		t.Fatalf("schema_version = %d, want 14 (the chain continues v2→v3→…→v11→v12→v13→v14)", version)
 	}
 
 	// The whole v3…v11 surface survives the chain (additive migrations never
@@ -346,7 +346,7 @@ func TestV11StoreMigratesToV12AdditivelyPreservingRows(t *testing.T) {
 		t.Fatalf("read schema_version: %v", err)
 	}
 	if version != "12" {
-		t.Fatalf("schema_version = %q, want 12", version)
+		t.Fatalf("schema_version = %q, want 12 (the direct v11→v12 migration stops at 12; the full chain reaches v14 via Open)", version)
 	}
 
 	// The seeded receipt survived byte-preserved (no backfill, no re-hash).

@@ -160,7 +160,27 @@ import (
 // auditable) and the receipts singleton index with purge_intent excluded
 // (retries legitimately emit ONE purge_intent receipt per attempt) —
 // docs/architecture/evidence-lifecycle-v0.8.md §2/§3.7/§4/§11.
-const schemaVersion = 12
+//
+// schema_version=13 (v0.9.0 review workspace — docs/architecture/
+// review-workspace-v0.9.md §2/§5/§6): the v12→v13 migration adds the immutable
+// memory_decision_events decision ledger (authenticated reject/return), the
+// tenant-scoped review_idempotency_keys ledger, the immutable
+// review_velocity_events monitoring ledger and REBUILDS the receipts table
+// with the action CHECK extended by memory_returned (SQLite cannot alter a
+// CHECK, so the table is copied and swapped inside the migration transaction,
+// byte-preserving every v12 row). approval_events keeps its frozen v0.4.0
+// layout — the review decisions use their own ledger, so no parent-table
+// rebuild is needed and the frozen idempotency_keys approval FK stays intact.
+//
+// schema_version=14 (v0.6.0 structured rule links — docs/architecture/
+// fiscal-policy-memory-v0.6.md §2.2/§3): the v13→v14 migration adds the two
+// structured-link columns to rule_links (version — the immutable rule-memory
+// id of ONE chain revision — and effective_at — the consuming decision time;
+// NULL means legacy/unversioned) and the reverse lookup index
+// idx_rule_links_ref(ref, version, effective_at, memory_id). No existing row
+// is backfilled or re-hashed; the fail-closed migration validates the columns
+// and the index ABSENT before mutation.
+const schemaVersion = 14
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -218,6 +238,21 @@ type Store interface {
 	// AddRuleLink attaches a rule/policy reference to a memory AFTER write
 	// (rule_links table). A duplicate (memoryID, ref) is a no-op.
 	AddRuleLink(memoryID, ref, actor string) error
+	// AddRuleLinkVersion pins ONE structured rule link (v0.6.0, design §2.2)
+	// to a memory AFTER write: the atomic metadata insert + envelope refresh
+	// ONLY when the bare ref itself is new, with the closed-period gate, target
+	// validation (the version must exist, be KindRule, topicKey == ref, same
+	// tenant) and the conflict discipline — an identical link is a no-op; a
+	// different version/date for the same (memoryID, ref) pair fails
+	// RULE_LINK_VERSION_CONFLICT (metadata is never updated in place).
+	AddRuleLinkVersion(memoryID string, link core.RuleLink, actor string) error
+	// RuleLinksByRef is the REVERSE read (v0.6.0, design §5): every consuming
+	// observation of the rule ref, TENANT-VISIBLE only, deterministic order
+	// (consuming effectiveAt, memory id, ref). companyID narrows to ONE exact
+	// company when the caller pinned the chain with a scope selector ("" = the
+	// whole tenant). Structured pins AND legacy bare refs (rule_refs_json) are
+	// included; legacy rows carry empty LinkedVersion.
+	RuleLinksByRef(ctx context.Context, organizationID, companyID, ref string) ([]core.RuleLinkConsuming, error)
 	// RuleRefs returns the full rule list for a memory: stored refs + linked
 	// refs, deduped, stable order.
 	RuleRefs(memoryID string) ([]string, error)
@@ -404,6 +439,31 @@ type Store interface {
 	// ONLY (bytes: "purged" + the purge_executed completion receipt hash);
 	// object bytes are never read or carried.
 	ExportEvidenceLifecycle(ctx context.Context, criteria core.EvidenceExportCriteria) (core.EvidenceExportBundle, error)
+	// ListReviewQueue returns the pending_review queue of an EXACT company scope
+	// (v0.9.0 review workspace — docs/architecture/review-workspace-v0.9.md §3):
+	// deterministic ordering (materialityLevel rank DESC → recordedAt ASC →
+	// rowid ASC), bounded pagination (default 50, max 200), pending_review only.
+	ListReviewQueue(ctx context.Context, query core.ReviewQueueQuery) (core.ReviewQueuePage, error)
+	// ReviewDetail composes the review of ONE pending revision, scope-guarded
+	// (v0.9.0, design §4): the pending revision, the structured content diff vs
+	// its chain predecessor, the evidence refs with WORM availability, the
+	// best-effort rule refs with vigencia, the open proposed judgments touching
+	// the memory and the review metadata with the boundary notice. Fails closed
+	// unless the memory is pending_review and the caller's exact scope equals the
+	// stored scope.
+	ReviewDetail(ctx context.Context, memoryID string, scope core.Scope) (core.ReviewDetail, error)
+	// RejectMemory is the AUTHENTICATED reject (v0.9.0, design §5): one BEGIN
+	// IMMEDIATE transaction with (tenant, requestId) idempotency on the review
+	// ledger, exact-scope/status/hash guards, SoD (reviewer ≠ proposer, fail
+	// closed), the reason policy, the immutable memory_decision_events row and
+	// the memory_rejected receipt (payload v0.10.0: reason + reviewed H1).
+	RejectMemory(ctx context.Context, cmd core.RejectMemoryCommand, principal auth.VerifiedApprovalPrincipal) (core.RejectMemoryResult, error)
+	// ReturnMemory is the AUTHENTICATED return (v0.9.0, design §5): pending_review
+	// → returned (NON-terminal) with a REQUIRED reason, the same idempotency/
+	// hash/SoD discipline as RejectMemory, the immutable decision event and the
+	// memory_returned receipt. An agent Save on the returned memory creates a NEW
+	// revision that re-enters pending_review.
+	ReturnMemory(ctx context.Context, cmd core.ReturnMemoryCommand, principal auth.VerifiedApprovalPrincipal) (core.ReturnMemoryResult, error)
 	Close() error
 }
 
@@ -506,8 +566,8 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 
 	// Fail closed on an unknown layout (provenance.md migration policy). A v1
 	// store is migrated additively in ONE transaction, then the v2→v3, v3→v4,
-	// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11 and v11→v12
-	// migrations each run in their own single transaction before use.
+	// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, v10→v11, v11→v12, v12→v13
+	// and v13→v14 migrations each run in their own single transaction before use.
 	version, err := readSchemaVersion(db)
 	if err != nil {
 		_ = db.Close()
@@ -585,6 +645,20 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 	}
 	if version == 11 {
 		if err := migrateV11ToV12(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 12
+	}
+	if version == 12 {
+		if err := migrateV12ToV13(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 13
+	}
+	if version == 13 {
+		if err := migrateV13ToV14(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -2477,6 +2551,22 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 	if err := core.AssertValidValidity(input.Validity); err != nil {
 		return core.WriteResult{}, err
 	}
+	if err := core.AssertValidPolicyRule(input.Kind, input.PolicyRule); err != nil {
+		return core.WriteResult{}, err
+	}
+	// Structured rule links (v0.6.0, design §2.2): validate + dedupe the
+	// transport-only list UP FRONT (fail fast, before the transaction), then
+	// derive/dedupe the bare ruleRefs from ruleLinks[].ref so the canonical
+	// envelope hashes (which hash ONLY the bare refs) already carry them when
+	// the memory is built.
+	ruleLinks, err := core.AssertValidRuleLinks(input.RuleLinks)
+	if err != nil {
+		return core.WriteResult{}, err
+	}
+	input.RuleLinks = ruleLinks
+	if len(ruleLinks) > 0 {
+		input.RuleRefs = core.DeriveRuleRefs(input.RuleRefs, ruleLinks)
+	}
 
 	// Status and RecordedAt are derived by the engine (approval gate + clock),
 	// never caller-supplied (core.SaveInput contract).
@@ -2637,6 +2727,31 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		}
 	}
 
+	// Structured rule links (v0.6.0, design §2.2): validate EVERY target inside
+	// the SAME transaction — the version must exist, be KindRule, have
+	// topicKey == ref and belong to a chain visible from the consuming memory's
+	// tenant boundary — then insert the structured rows (memory_id, ref,
+	// version, effective_at, actor, timestamp). effective_at must equal the
+	// consuming memory's EffectiveAt (design §1 decision-time contract). The
+	// rows are validated ABSENT conflicts up front (AssertValidRuleLinks
+	// deduped the input), so each insert lands exactly once; no new receipt is
+	// emitted (rule links are not covered by the closed action set) and the
+	// bare refs already participate in the envelope via the derived RuleRefs.
+	for _, link := range input.RuleLinks {
+		if link.EffectiveAt != memory.EffectiveAt {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("RULE_LINK_EFFECTIVE_AT_MISMATCH: link for ref %q pins effective_at %s but the consuming memory's effectiveAt is %s (decision time must be snapshotted exactly)", link.Ref, link.EffectiveAt, memory.EffectiveAt)
+		}
+		if err := s.assertRuleLinkTarget(ctx, tx, memory, link); err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO rule_links (memory_id, ref, version, effective_at, actor, timestamp) SELECT ?, ?, ?, ?, ?, ?`,
+			id, link.Ref, link.Version, link.EffectiveAt, input.Source.ActorID, recordedAt,
+		); err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: insert structured rule link: %w", err)
+		}
+	}
+
 	// Atomic receipt emission (v0.4.0 Step 3): inside the SAME transaction, before
 	// COMMIT, with the captured recordedAt — never a fresh time call. A signing
 	// failure returns an error and rolls the whole save back (no act, no receipt).
@@ -2667,6 +2782,16 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		PolicyVersion:         kernelPolicyVersion,
 	}, recordedAt); err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: emit recorded receipt: %w", err)
+	}
+
+	// v0.9.0 review workspace (docs/architecture/review-workspace-v0.9.md §3):
+	// the persisted observations.envelope_hash is a DERIVED cache; Save must
+	// populate it inside the same transaction so the review queue can surface
+	// the exact envelope a reviewer must sign against. Approval always
+	// recomputes H1 fresh inside its own locked transaction, so this cache is
+	// advisory only — a stale cache can never pass the hash guard.
+	if err := refreshEnvelopeCache(ctx, tx, id); err != nil {
+		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: refresh envelope cache after save: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2998,6 +3123,7 @@ func sourceFromJSON(sourceJSON, actor, timestamp, source, session string) core.S
 func (s *SQLiteStore) withLinks(memory core.AccountingMemory) core.AccountingMemory {
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, s.linkRefs(`evidence_links`, memory.Identity.ID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, s.linkRefs(`rule_links`, memory.Identity.ID))
+	memory.RuleLinks = s.ruleLinksByID(memory.Identity.ID)
 	return memory
 }
 
@@ -3064,6 +3190,7 @@ func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q Queryer, id str
 	}
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memory.Identity.ID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memory.Identity.ID))
+	memory.RuleLinks = ruleLinksQuery(ctx, q, memory.Identity.ID)
 	return memory, true
 }
 
@@ -3086,6 +3213,33 @@ func linkRefsQuery(ctx context.Context, q Queryer, table, memoryID string) []str
 	return refs
 }
 
+// ruleLinksQuery returns the STRUCTURED rule-link rows of a memory (design
+// §2.2 read surface): only rows WITH version metadata surface as links — a
+// legacy unversioned row stays a bare ref and never appears here. Scoped to the
+// given connection, insertion order.
+func ruleLinksQuery(ctx context.Context, q Queryer, memoryID string) []core.RuleLink {
+	rows, err := q.QueryContext(ctx,
+		`SELECT ref, version, effective_at FROM rule_links WHERE memory_id = ? AND version IS NOT NULL AND effective_at IS NOT NULL ORDER BY rowid`,
+		memoryID,
+	)
+	if err != nil {
+		return []core.RuleLink{}
+	}
+	defer func() { _ = rows.Close() }()
+	links := make([]core.RuleLink, 0)
+	for rows.Next() {
+		var ref, version, effectiveAt string
+		if err := rows.Scan(&ref, &version, &effectiveAt); err != nil {
+			return []core.RuleLink{}
+		}
+		links = append(links, core.RuleLink{Ref: ref, Version: version, EffectiveAt: effectiveAt})
+	}
+	if links == nil {
+		links = []core.RuleLink{}
+	}
+	return links
+}
+
 // refreshEnvelopeCache recomputes the DERIVED envelope cache of memoryID from
 // the CURRENT row plus the CURRENT link rows (never from the stored hash) and
 // persists it on the given connection. The persisted observations.envelope_hash
@@ -3098,6 +3252,7 @@ func refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error
 	}
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memoryID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memoryID))
+	memory.RuleLinks = ruleLinksQuery(ctx, q, memoryID)
 	hash := core.ComputeEnvelopeHash(memory)
 	if _, err := q.ExecContext(ctx, `UPDATE observations SET envelope_hash = ? WHERE id = ?`, hash, memoryID); err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache update: %w", err)
@@ -3385,6 +3540,19 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		return core.ApprovalResult{}, auth.New(decision.ReasonCode, "authorization policy denied the approval")
 	}
 
+	// 7b. v0.9.0 review-workspace clauses (design §5/§6): the approver must
+	// differ from the pending revision's proposer (SOD_VIOLATION, fail-closed
+	// INSIDE the transaction) and a material/critical approval requires both
+	// review checks (REVIEW_CHECKS_REQUIRED — the anti-rubber-stamp gate). Both
+	// clauses are ADDITIONAL fail-closed gates beside the frozen v0.4.0 policy;
+	// the frozen policy matrix itself is untouched (approval-policy/v0.4.0).
+	if authz.SODViolation(memory.Source.ActorID, principal.SubjectID()) {
+		return core.ApprovalResult{}, auth.New(auth.CodeSODViolation, "the reviewer cannot approve their own proposal (separation of duties)")
+	}
+	if err := authz.ValidateReviewChecks(memory.MaterialityLevel, cmd.ReviewChecks); err != nil {
+		return core.ApprovalResult{}, err
+	}
+
 	// 8. H2 is computed from the same snapshot with status=approved and must
 	// differ from H1 (status participates in the envelope hash). The guarded
 	// UPDATE requires EXACTLY one pending_review row — the write lock makes a
@@ -3447,6 +3615,17 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		cmd.MemoryID, string(core.StatusPendingReview), string(core.StatusApproved), principal.SubjectID(), string(core.ActorKindHuman), now,
 	); err != nil {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: record approval transition: %w", err)
+	}
+
+	// 9a. Anti-rubber-stamp observable events (v0.9.0, design §6): derive the
+	// per-principal rolling counters from the immutable ledgers and insert an
+	// immutable review_velocity_alert row when a threshold is freshly crossed
+	// (>30 approvals per 15 minutes, or ≥3 consecutive reject/return without an
+	// intervening approval). NOT a receipt and NOT a blocking control — a
+	// velocity signal only; a failure rolls the whole approval back (the
+	// approval never commits without its alert rows).
+	if err := s.maybeRecordReviewVelocityAlerts(ctx, conn, memory.Scope.OrganizationID, snapshot.SubjectID, "approved", now); err != nil {
+		return core.ApprovalResult{}, err
 	}
 
 	// 9b. Closure projection (v0.5.0 close foundation): approving a VALID monthly
@@ -5480,6 +5659,144 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 	return nil
 }
 
+// assertRuleLinkTarget validates the structured-link target INSIDE the
+// caller's transaction (design §2.2): the version must exist, be KindRule,
+// have Identity.TopicKey == ref and belong to a chain visible from the
+// consuming memory's tenant boundary (cross-tenant links are forbidden). The
+// check is logical (no SQL FK — pre-v14 refs are not rule IDs and imported
+// chains may arrive in dependency order; service verification enforces the
+// reference).
+func (s *SQLiteStore) assertRuleLinkTarget(ctx context.Context, q Queryer, consuming core.AccountingMemory, link core.RuleLink) error {
+	var topicKey, kind, scopeKind, orgID string
+	err := q.QueryRowContext(ctx,
+		`SELECT topic_key, kind, scope_kind, organization_id FROM observations WHERE id = ?`,
+		link.Version,
+	).Scan(&topicKey, &kind, &scopeKind, &orgID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return fmt.Errorf("RULE_LINK_TARGET_NOT_FOUND: rule version %q (ref %q) does not exist", link.Version, link.Ref)
+	case err != nil:
+		return fmt.Errorf("persistence error: read rule link target: %w", err)
+	}
+	if kind != string(core.KindRule) {
+		return fmt.Errorf("RULE_LINK_TARGET_NOT_A_RULE: rule version %q is kind %q, expected %q", link.Version, kind, core.KindRule)
+	}
+	if topicKey != link.Ref {
+		return fmt.Errorf("RULE_LINK_TARGET_TOPIC_MISMATCH: rule version %q has topicKey %q but the link ref is %q", link.Version, topicKey, link.Ref)
+	}
+	if orgID != consuming.Scope.OrganizationID {
+		return fmt.Errorf("RULE_LINK_TARGET_TENANT_MISMATCH: rule version %q belongs to tenant %q, not visible from tenant %q (cross-tenant rule links are forbidden)", link.Version, orgID, consuming.Scope.OrganizationID)
+	}
+	return nil
+}
+
+// AddRuleLinkVersion pins ONE structured rule link (v0.6.0, design §2.2) to a
+// memory AFTER write — the post-save API. Same discipline as addLink: one
+// BEGIN IMMEDIATE transaction (closed-period gate, full-memory re-read,
+// target validation, the atomic metadata insert and the envelope-cache
+// refresh ONLY when the bare ref itself is new). Conflict discipline:
+// (memory_id, ref) stays unique — an IDENTICAL structured link is a no-op;
+// a different version/date for the same pair fails
+// RULE_LINK_VERSION_CONFLICT (metadata is never updated in place; a legacy
+// unversioned row is a different version and cannot be upgraded). No receipt
+// is emitted (rule links are not covered by the closed action set).
+func (s *SQLiteStore) AddRuleLinkVersion(memoryID string, link core.RuleLink, actor string) error {
+	if err := core.AssertValidRuleLink(link); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	memory, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+	if !ok {
+		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+	}
+	// Close write gate (v0.5.0): links inside a CLOSED exact company period
+	// fail with PERIOD_CLOSED — links are post-write mutations of the period's
+	// immutable state.
+	if err := s.assertPeriodWritable(ctx, conn, memory.Scope, "link rule_links"); err != nil {
+		return err
+	}
+	// Decision-time contract (design §1): the pinned effective_at must equal
+	// the consuming memory's EffectiveAt.
+	if link.EffectiveAt != memory.EffectiveAt {
+		return fmt.Errorf("RULE_LINK_EFFECTIVE_AT_MISMATCH: link for ref %q pins effective_at %s but the consuming memory's effectiveAt is %s (decision time must be snapshotted exactly)", link.Ref, link.EffectiveAt, memory.EffectiveAt)
+	}
+	if err := s.assertRuleLinkTarget(ctx, conn, memory, link); err != nil {
+		return err
+	}
+
+	// (memory_id, ref) is unique: an identical row is a no-op; a different
+	// version/date (or a legacy unversioned row) fails the conflict.
+	var existingVersion, existingEffectiveAt sql.NullString
+	err = conn.QueryRowContext(ctx,
+		`SELECT version, effective_at FROM rule_links WHERE memory_id = ? AND ref = ?`,
+		memoryID, link.Ref,
+	).Scan(&existingVersion, &existingEffectiveAt)
+	switch {
+	case err == nil:
+		if existingVersion.Valid && existingVersion.String == link.Version &&
+			existingEffectiveAt.Valid && existingEffectiveAt.String == link.EffectiveAt {
+			// Identical structured link: a no-op that stays a no-op (no
+			// mutation, no envelope refresh, no receipt).
+			if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+				return fmt.Errorf("persistence error: commit link: %w", err)
+			}
+			committed = true
+			return nil
+		}
+		return fmt.Errorf("RULE_LINK_VERSION_CONFLICT: ref %q is already pinned to %s at %s for memory %s and cannot be re-pinned to %s at %s (metadata is never updated in place)", link.Ref, existingVersion.String, existingEffectiveAt.String, memoryID, link.Version, link.EffectiveAt)
+	case errors.Is(err, sql.ErrNoRows):
+		// Fresh (memory_id, ref) — insert below.
+	default:
+		return fmt.Errorf("persistence error: read existing rule link: %w", err)
+	}
+
+	// The bare ref is NEW for this memory (no row and not in the merged
+	// RuleRefs) → the canonical refs change → refresh the envelope cache in
+	// the SAME transaction. When the ref already lives in the stored
+	// rule_refs_json, the bare ref is NOT new and the envelope is unchanged.
+	refAlreadyPresent := false
+	for _, existingRef := range memory.RuleRefs {
+		if existingRef == link.Ref {
+			refAlreadyPresent = true
+			break
+		}
+	}
+	now := nowISO() // ONE captured timestamp for the link row
+	if _, err := conn.ExecContext(ctx,
+		`INSERT OR IGNORE INTO rule_links (memory_id, ref, version, effective_at, actor, timestamp) SELECT ?, ?, ?, ?, ?, ?`,
+		memoryID, link.Ref, link.Version, link.EffectiveAt, actor, now,
+	); err != nil {
+		return fmt.Errorf("persistence error: add structured rule link: %w", err)
+	}
+	if !refAlreadyPresent {
+		if err := refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
+			return err
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("persistence error: commit link: %w", err)
+	}
+	committed = true
+	return nil
+}
+
 // EvidenceRefs returns the full evidence list for a memory: stored refs + linked
 // refs, deduped, stable order (stored first, links in insertion order).
 func (s *SQLiteStore) EvidenceRefs(memoryID string) ([]string, error) {
@@ -5876,7 +6193,7 @@ func (s *SQLiteStore) SigningKeyForVerify(ctx context.Context, keyID string) (Si
 // (subject, action, issued_at) because receipts carry no event-id column;
 // ZERO matches return found=false and MULTIPLE matches are rejected as
 // ambiguity — fail closed (corruption is never a successful skip).
-func (s *SQLiteStore) ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string) (core.ActProvenance, bool, error) {
+func (s *SQLiteStore) ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string, evidenceRef string) (core.ActProvenance, bool, error) {
 	switch action {
 	case core.ReceiptActionMemoryApproved:
 		return s.approvalEventProvenance(ctx, subjectID, issuedAt)
@@ -5889,7 +6206,7 @@ func (s *SQLiteStore) ReceiptActProvenance(ctx context.Context, subjectType core
 	case core.ReceiptActionMemoryRejected, core.ReceiptActionMemoryVoided, core.ReceiptActionMemorySuperseded:
 		return s.transitionLogProvenance(ctx, subjectID, strings.TrimPrefix(string(action), "memory_"), issuedAt)
 	case core.ReceiptActionEvidenceLinked:
-		return s.evidenceLinkProvenance(ctx, subjectID, issuedAt)
+		return s.evidenceLinkProvenance(ctx, subjectID, issuedAt, evidenceRef)
 	case core.ReceiptActionObjectStored:
 		return s.objectStoredProvenance(ctx, subjectID, issuedAt)
 	default:
@@ -6089,9 +6406,14 @@ func (s *SQLiteStore) transitionLogProvenance(ctx context.Context, memoryID, toS
 
 // evidenceLinkProvenance maps an evidence_links row to the claimed-act
 // snapshot an evidence_linked receipt must match (attribution continuity).
-func (s *SQLiteStore) evidenceLinkProvenance(ctx context.Context, memoryID, issuedAt string) (core.ActProvenance, bool, error) {
+// The evidence_links PK is (memory_id, ref): the receipt payload carries the
+// exact ref, so provenance resolves by (memory_id, timestamp, ref). Two links
+// in the same second to DIFFERENT refs are then unambiguous (v0.9.0 fixture —
+// the killer demo links XML+CDR together). Without the ref, same-second links
+// stay ambiguous and fail closed (corruption is evidence, never a skip).
+func (s *SQLiteStore) evidenceLinkProvenance(ctx context.Context, memoryID, issuedAt, evidenceRef string) (core.ActProvenance, bool, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT actor, timestamp FROM evidence_links WHERE memory_id = ? AND timestamp = ?`, memoryID, issuedAt)
+		`SELECT actor, timestamp FROM evidence_links WHERE memory_id = ? AND timestamp = ? AND ref = ?`, memoryID, issuedAt, evidenceRef)
 	if err != nil {
 		return core.ActProvenance{}, false, err
 	}
@@ -6152,6 +6474,78 @@ func (s *SQLiteStore) RuleLinkRefs(ctx context.Context, memoryID string) ([]stri
 	return s.linkRefsByID(ctx, `rule_links`, memoryID)
 }
 
+// RuleLinksByRef is the REVERSE read (design §5): every consuming observation
+// of the given rule ref, TENANT-VISIBLE only (organization_id equality —
+// cross-tenant results are forbidden, never a post-filter). The optional
+// companyID narrows to ONE exact company when the caller pinned the chain with
+// a scope selector ("" = the whole tenant). TWO sources are UNIONed: (1)
+// structured rule_links rows (pinned versions) and (2) LEGACY bare refs that
+// live only in observations.rule_refs_json (no rule_links row — the design's
+// "version IS NULL" legacy case, materialized via json_each). A memory whose
+// structured link covers the ref is NOT duplicated by the legacy branch
+// (NOT EXISTS). Deterministic order: consuming effectiveAt, memory id, ref.
+func (s *SQLiteStore) RuleLinksByRef(ctx context.Context, organizationID, companyID, ref string) ([]core.RuleLinkConsuming, error) {
+	var rows *sql.Rows
+	var err error
+	if companyID == "" {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT memory_id, ref, linked_version, link_effective_at, consuming_topic_key,
+			       consuming_kind, consuming_status, decision_time,
+			       consuming_validity_start, consuming_validity_end
+			FROM (
+				SELECT rl.memory_id, rl.ref, COALESCE(rl.version, '') AS linked_version, COALESCE(rl.effective_at, '') AS link_effective_at,
+				       o.topic_key AS consuming_topic_key, o.kind AS consuming_kind, o.status AS consuming_status,
+				       o.effective_at AS decision_time, COALESCE(o.validity_effective_at, '') AS consuming_validity_start,
+				       COALESCE(o.expires_at, '') AS consuming_validity_end
+				FROM rule_links rl JOIN observations o ON o.id = rl.memory_id
+				WHERE rl.ref = ? AND o.organization_id = ?
+				UNION
+				SELECT o.id, ?, '', '', o.topic_key, o.kind, o.status, o.effective_at,
+				       COALESCE(o.validity_effective_at, ''), COALESCE(o.expires_at, '')
+				FROM observations o, json_each(o.rule_refs_json) je
+				WHERE je.value = ? AND o.organization_id = ?
+				  AND NOT EXISTS (SELECT 1 FROM rule_links rl2 WHERE rl2.memory_id = o.id AND rl2.ref = ?)
+			) ORDER BY decision_time, memory_id, ref`, ref, organizationID, ref, ref, organizationID, ref)
+	} else {
+		rows, err = s.db.QueryContext(ctx, `
+			SELECT memory_id, ref, linked_version, link_effective_at, consuming_topic_key,
+			       consuming_kind, consuming_status, decision_time,
+			       consuming_validity_start, consuming_validity_end
+			FROM (
+				SELECT rl.memory_id, rl.ref, COALESCE(rl.version, '') AS linked_version, COALESCE(rl.effective_at, '') AS link_effective_at,
+				       o.topic_key AS consuming_topic_key, o.kind AS consuming_kind, o.status AS consuming_status,
+				       o.effective_at AS decision_time, COALESCE(o.validity_effective_at, '') AS consuming_validity_start,
+				       COALESCE(o.expires_at, '') AS consuming_validity_end
+				FROM rule_links rl JOIN observations o ON o.id = rl.memory_id
+				WHERE rl.ref = ? AND o.organization_id = ? AND o.company_id = ?
+				UNION
+				SELECT o.id, ?, '', '', o.topic_key, o.kind, o.status, o.effective_at,
+				       COALESCE(o.validity_effective_at, ''), COALESCE(o.expires_at, '')
+				FROM observations o, json_each(o.rule_refs_json) je
+				WHERE je.value = ? AND o.organization_id = ? AND o.company_id = ?
+				  AND NOT EXISTS (SELECT 1 FROM rule_links rl2 WHERE rl2.memory_id = o.id AND rl2.ref = ?)
+			) ORDER BY decision_time, memory_id, ref`, ref, organizationID, companyID, ref, ref, organizationID, companyID, ref)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []core.RuleLinkConsuming{}
+	for rows.Next() {
+		var c core.RuleLinkConsuming
+		if err := rows.Scan(&c.MemoryID, &c.Ref, &c.LinkedVersion, &c.LinkEffectiveAt,
+			&c.ConsumingTopicKey, &c.ConsumingKind, &c.ConsumingStatus, &c.DecisionTime,
+			&c.ConsumingValidityStart, &c.ConsumingValidityEnd); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) linkRefsByID(ctx context.Context, table, memoryID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT ref FROM `+table+` WHERE memory_id = ? ORDER BY rowid`, memoryID)
 	if err != nil {
@@ -6170,6 +6564,30 @@ func (s *SQLiteStore) linkRefsByID(ctx context.Context, table, memoryID string) 
 		return nil, err
 	}
 	return out, nil
+}
+
+// ruleLinksByID returns the STRUCTURED rule links of a memory through the
+// pooled connection (read surface — design §2.2; the transactional read
+// paths use ruleLinksQuery scoped to their own tx). Only rows WITH version
+// metadata surface as links; legacy unversioned rows stay bare refs.
+func (s *SQLiteStore) ruleLinksByID(memoryID string) []core.RuleLink {
+	rows, err := s.db.Query(`SELECT ref, version, effective_at FROM rule_links WHERE memory_id = ? AND version IS NOT NULL AND effective_at IS NOT NULL ORDER BY rowid`, memoryID)
+	if err != nil {
+		return []core.RuleLink{}
+	}
+	defer func() { _ = rows.Close() }()
+	links := make([]core.RuleLink, 0)
+	for rows.Next() {
+		var ref, version, effectiveAt string
+		if err := rows.Scan(&ref, &version, &effectiveAt); err != nil {
+			return []core.RuleLink{}
+		}
+		links = append(links, core.RuleLink{Ref: ref, Version: version, EffectiveAt: effectiveAt})
+	}
+	if links == nil {
+		links = []core.RuleLink{}
+	}
+	return links
 }
 
 // ──────────────────────────────────────────────
@@ -6349,4 +6767,52 @@ func newUUID() (string, error) {
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+// RuleLinkVersions returns the STRUCTURED rule links of one memory (v0.6.0,
+// design §4.2 verification input): the pinned ref/version/effectiveAt triples.
+// Legacy bare refs (no structured row) are NOT in this set — the verifier
+// emits a skipped trace for them.
+func (s *SQLiteStore) RuleLinkVersions(memoryID string) ([]core.RuleLink, error) {
+	return s.ruleLinksByID(memoryID), nil
+}
+
+// RuleChain returns the FULL (topicKey, exact Scope) chain, ordered by
+// revision ascending — the verification input for rule-version resolution
+// (design §4.1 step 2: chain membership).
+func (s *SQLiteStore) RuleChain(topicKey string, scope core.Scope) ([]core.AccountingMemory, error) {
+	return s.FindChain(topicKey, scope)
+}
+
+// TransitionsFor returns the ordered lifecycle transitions of ONE subject —
+// the status-as-of reconstruction input (design §4.1 step 7: a rule already
+// rejected/voided/superseded at the decision instant is invalid).
+func (s *SQLiteStore) TransitionsFor(subjectID string) ([]core.StatusTransitionRecord, error) {
+	rows, err := s.db.Query(`SELECT observation_id, from_status, to_status, actor, actor_kind, timestamp
+		FROM transition_log WHERE observation_id = ? ORDER BY rowid`, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []core.StatusTransitionRecord{}
+	for rows.Next() {
+		var (
+			observationID, from, to, actor, actorKind, timestamp string
+		)
+		if err := rows.Scan(&observationID, &from, &to, &actor, &actorKind, &timestamp); err != nil {
+			return nil, err
+		}
+		out = append(out, core.StatusTransitionRecord{
+			MemoryID:  observationID,
+			From:      core.MemoryStatus(from),
+			To:        core.MemoryStatus(to),
+			Actor:     actor,
+			ActorKind: core.ActorKind(actorKind),
+			Timestamp: timestamp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

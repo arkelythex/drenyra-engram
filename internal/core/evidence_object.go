@@ -101,6 +101,15 @@ const objectRelPathDepth = 2
 // digits (the SHA-256 digest shape).
 var objectIDPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// IsObjectID reports whether s has the content-address SHAPE (64 lowercase
+// hex digits) — the classifier the review workspace uses to distinguish
+// object-backed evidence refs (present/absent) from legacy/not-a-ref refs
+// (docs/architecture/review-workspace-v0.9.md §4.3). It validates syntax
+// only; presence is a store lookup.
+func IsObjectID(s string) bool {
+	return objectIDPattern.MatchString(s)
+}
+
 // ErrObjectBytesPurgedExpected is the documented EXPECTED-ABSENCE sentinel of the
 // object verifier/doctor surfaces: an object whose WORM bytes are missing is NOT
 // corruption when a receipt-covered purge authorization (a valid

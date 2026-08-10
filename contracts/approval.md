@@ -146,11 +146,31 @@ Role dominance applies ONLY within the accounting ladder
 (accountant < senior_accountant < controller); tax roles are explicit and never
 implied. Minimum assurance `standard`; `sunat_filing` additionally `strong`.
 
-Check order (first frozen code wins): tenant → company scope → membership
-active → role → assurance → materiality. Reason codes:
-`AUTHORIZED | TENANT_SCOPE_MISMATCH | COMPANY_SCOPE_DENIED |
-MEMBERSHIP_INACTIVE | ROLE_NOT_AUTHORIZED | ASSURANCE_TOO_LOW |
-MATERIALITY_LIMIT_EXCEEDED`.
+    Check order (first frozen code wins): tenant → company scope → membership
+    active → role → assurance → materiality. Reason codes:
+    `AUTHORIZED | TENANT_SCOPE_MISMATCH | COMPANY_SCOPE_DENIED |
+    MEMBERSHIP_INACTIVE | ROLE_NOT_AUTHORIZED | ASSURANCE_TOO_LOW |
+    MATERIALITY_LIMIT_EXCEEDED`.
+
+    ### v0.9.0 review-workspace clauses (additive, fail closed)
+
+    - **SoD (separation of duties):** the authenticated reviewer MUST differ from
+      the pending revision's proposer (`recordedBy`); equality → `SOD_VIOLATION`,
+      enforced INSIDE the decision transaction for approve, reject and return.
+    - **Review checks (anti-rubber-stamp):** an approval whose declared
+      materialityLevel is `material` or `critical` REQUIRES both review checks
+      (`evidenceInspected` and `ruleInspected` true on the command); otherwise
+      `REVIEW_CHECKS_REQUIRED`. A `normal`/unset level never trips this clause.
+      Reason: a high-risk memory must show the reviewer inspected the evidence
+      and the applicable rule — the checks are reviewer acknowledgement, never
+      authority (ADR-003 payload boundary unchanged).
+    - **Reject reason policy:** `reject` requires a reason when materialityLevel
+      is `material`/`critical` OR fiscalEffect ∈ {closing, declaration,
+      sunat_filing}; `return` ALWAYS requires a reason (it is a correction
+      request). Empty reason on a required class → `REASON_REQUIRED`.
+    - **Idempotency:** approve, reject and return are idempotent by
+      (tenant, requestId) — replay returns the original decision without a new
+      receipt.
 
 ## Error codes (transport-independent)
 

@@ -152,7 +152,7 @@ func TestReceiptActProvenanceResolvedFromApprovalEvent(t *testing.T) {
 	s, id, receipts := approveFixture(t)
 
 	ctx := context.Background()
-	provenance, ok, err := s.ReceiptActProvenance(ctx, core.SubjectTypeMemory, id, core.ReceiptActionMemoryApproved, receipts[1].IssuedAt)
+	provenance, ok, err := s.ReceiptActProvenance(ctx, core.SubjectTypeMemory, id, core.ReceiptActionMemoryApproved, receipts[1].IssuedAt, "")
 	if err != nil {
 		t.Fatalf("ReceiptActProvenance: %v", err)
 	}

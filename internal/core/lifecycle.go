@@ -9,14 +9,19 @@
 //	save (fiscalEffect != none)  ─────────────► pending_review    (GATE)
 //	pending_review ──approve(human)──► approved
 //	pending_review ──reject(human)───► rejected
+//	pending_review ──return(human)──► returned      (NON-terminal, v0.9.0)
+//	returned ──agent Save (new revision)──► pending_review   (new revision)
 //	active | pending_review | approved ──void(human|system)──► voided
-//	active | pending_review | approved ──supersede(save)──► superseded
+//	active | pending_review | approved | returned ──supersede(save)──► superseded
 //
 // GATE semantics: a memory with fiscal effect can only reach `approved` through
 // a HUMAN actor (source.ActorKind == human). Agents and systems may CREATE a
 // pending_review memory (they record; they never approve). Voiding admits human
 // or system actors (systemic correction), never agents. rejected, superseded and
-// voided are terminal.
+// voided are terminal. returned is NON-terminal: the reviewer sends the
+// proposal back for correction and an agent Save on the returned memory creates
+// a NEW revision that re-enters pending_review — the returned revision itself
+// never reopens.
 //
 // The AI assists; the system validates; the professional reviews; the evidence
 // remains. Memory informs decisions — it never authorizes them
@@ -66,17 +71,28 @@ func CanReject(status MemoryStatus) bool {
 	return status == StatusPendingReview
 }
 
+// CanReturn reports whether a memory in this status can be RETURNED to its
+// proposer for correction (v0.9.0 review workspace — pending_review only).
+func CanReturn(status MemoryStatus) bool {
+	return status == StatusPendingReview
+}
+
 // IsLegalV2Transition reports whether (from → to) is a legal v2 lifecycle
 // transition pair, independent of any stored memory. It is the adjacency table
 // the audit-trail import and the sync replay validate against: the v2 machine
-// has NO linear chain (approve/reject only from pending_review; void/supersede
-// from active|pending_review|approved; terminal states never reopen), so a
+// has NO linear chain (approve/reject/return only from pending_review;
+// void/supersede from active|pending_review|approved; a returned memory only
+// leaves via a NEW revision's supersede; terminal states never reopen), so a
 // crafted record such as active→approved or approved→rejected is rejected here
 // (never jumps states or fabricates provenance).
 func IsLegalV2Transition(from, to MemoryStatus) bool {
 	switch from {
 	case StatusPendingReview:
-		return to == StatusApproved || to == StatusRejected || to == StatusVoided || to == StatusSuperseded
+		return to == StatusApproved || to == StatusRejected || to == StatusReturned || to == StatusVoided || to == StatusSuperseded
+	case StatusReturned:
+		// A returned revision is superseded by the agent's correction save (a NEW
+		// revision that re-enters pending_review); it never reopens by itself.
+		return to == StatusSuperseded
 	case StatusActive:
 		return to == StatusVoided || to == StatusSuperseded
 	case StatusApproved:
@@ -139,6 +155,27 @@ func Reject(m *AccountingMemory, actor Source) error {
 	return nil
 }
 
+// Return transitions a pending_review memory to returned (NON-terminal — the
+// proposer/agent corrects via a NEW revision that re-enters pending_review).
+// REQUIRES a human actor.
+//
+// Deprecated-style low-level guard: the v0.9.0 review workspace decides
+// through the AUTHENTICATED path (server.ReturnMemory →
+// store.SQLiteStore.ReturnMemory), which verifies the principal, recomputes the
+// envelope hash, enforces SoD and persists the immutable return event + receipt
+// atomically. This function remains ONLY for the shared lifecycle machine and
+// legacy consumers; the new review transports never call it.
+func Return(m *AccountingMemory, actor Source) error {
+	if !CanReturn(m.Status) {
+		return fmt.Errorf("%w: %s → returned is not legal from status %q", ErrInvalidTransition, m.Identity.ID, m.Status)
+	}
+	if err := AssertHumanApproval(actor); err != nil {
+		return err
+	}
+	m.Status = StatusReturned
+	return nil
+}
+
 // Void transitions an active | pending_review | approved memory to voided
 // (terminal, no successor). Admits human or system actors (systemic
 // correction); NEVER an agent — an autonomous agent cannot annul professional
@@ -155,10 +192,14 @@ func Void(m *AccountingMemory, actor Source) error {
 }
 
 // SupersedePrev marks a previously current memory superseded and routes readers
-// to successorID. Only active | pending_review | approved memories can be
-// superseded; terminal states never re-open.
+// to successorID. Only active | pending_review | approved | returned memories
+// can be superseded (a RETURNED revision is superseded by the agent's
+// correction save — v0.9.0 review workspace); terminal states never re-open.
 func SupersedePrev(prev *AccountingMemory, successorID string) error {
-	if !CanVoid(prev.Status) && prev.Status != StatusActive && prev.Status != StatusPendingReview && prev.Status != StatusApproved {
+	switch prev.Status {
+	case StatusActive, StatusPendingReview, StatusApproved, StatusReturned:
+		// legal — proceed
+	default:
 		return fmt.Errorf("%w: %s → superseded is not legal from status %q", ErrInvalidTransition, prev.Identity.ID, prev.Status)
 	}
 	prev.Status = StatusSuperseded

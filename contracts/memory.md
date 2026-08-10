@@ -66,23 +66,58 @@ A plain search sees an invoice. Drenyra-Engram sees a **late event affecting a
 previous closed period** — `effectiveAt` stays in July, `observedAt` in
 August, and the period summary surfaces it as such.
 
-## Rules
+    ## Rules
 
-1. **Structured content.** Free-form blobs are discouraged;
-   `What/Why/Where/Learned` is the canonical shape, extensible per kind.
-2. **Stable topic keys.** Evolving knowledge (a decision revisited across
-   sessions) upserts under one `topicKey`; the history remains via immutable
-   revisions and relations.
-3. **Immutable history.** A memory is never edited in place after write; a
-   correction is a new revision linked via `supersedes`. Evidence and rule
-   references grow ONLY through link records — the memory itself never mutates.
-4. **Scope is mandatory.** A memory without company/RUC/period context is only
-   allowed for truly institutional (cross-scope) knowledge and must be marked
-   as such (see [scope](scope.md)).
-5. **The gate is mandatory.** A memory with fiscal effect is `pending_review`
-   until a HUMAN approves it; the gate fails closed with `GATE_REQUIRES_HUMAN`.
-6. **Vigencia is honored at read time.** Expired memories surface as stale,
-   never as current fact.
+    1. **Structured content.** Free-form blobs are discouraged;
+       `What/Why/Where/Learned` is the canonical shape, extensible per kind.
+    2. **Stable topic keys.** Evolving knowledge (a decision revisited across
+       sessions) upserts under one `topicKey`; the history remains via immutable
+       revisions and relations.
+    3. **Immutable history.** A memory is never edited in place after write; a
+       correction is a new revision linked via `supersedes`. Evidence and rule
+       references grow ONLY through link records — the memory itself never mutates.
+    4. **Scope is mandatory.** A memory without company/RUC/period context is only
+       allowed for truly institutional (cross-scope) knowledge and must be marked
+       as such (see [scope](scope.md)).
+    5. **The gate is mandatory.** A memory with fiscal effect is `pending_review`
+       until a HUMAN approves it; the gate fails closed with `GATE_REQUIRES_HUMAN`.
+    6. **Vigencia is honored at read time.** Expired memories surface as stale,
+       never as current fact.
+
+    ### Structured rule links (v0.6.0, design §2.2)
+
+    A rule remains an `AccountingMemory` with `kind=rule`; the `(topicKey, exact
+    Scope)` revision chain is the rule-version chain (see
+    docs/architecture/fiscal-policy-memory-v0.6.md). Beyond the bare
+    `ruleRefs: string[]`, a memory may carry STRUCTURED links that pin the exact
+    rule revision the decision used:
+
+    ```json
+    {
+      "ref": "policy/indirect-tax/late-document",
+      "version": "<immutable rule memory id>",
+      "effectiveAt": "2026-07-31T12:00:00Z"
+    }
+    ```
+
+    - `ref` is the rule chain's stable `topicKey`; `version` identifies EXACTLY
+      one `KindRule` row in that chain (an immutable revision, never the mutable
+      latest); `effectiveAt` is the consuming decision's accounting time and must
+      equal the memory's `EffectiveAt`.
+    - `(memory_id, ref)` remains unique. An identical structured link is a no-op;
+      a different version/date for the same pair fails `RULE_LINK_VERSION_CONFLICT`;
+      metadata is never updated in place.
+    - A link requires non-empty `ref` and `version` plus RFC3339 `effectiveAt`;
+      the target must exist, be `KindRule`, have `Identity.TopicKey == ref`, and
+      belong to a chain visible from the consuming memory's tenant boundary.
+    - `SaveInput.ruleLinks[]` is transport-only: the store derives/dedupes the
+      bare `ruleRefs` from `ruleLinks[].ref` before hashing and inserts memory +
+      structured rows in ONE transaction. `AddRuleLinkVersion` is the post-save
+      API; it keeps the closed-period gate and refreshes the envelope cache only
+      when the bare ref itself is new.
+    - Legacy `ruleRefs` without link metadata remain valid references (their
+      temporal layer is `skipped`); structured metadata does NOT contribute to
+      the envelope — only the bare refs do (canonicalRefs unchanged).
 
 ## Frozen semantics (v0.2)
 

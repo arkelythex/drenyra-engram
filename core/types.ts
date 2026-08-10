@@ -87,7 +87,8 @@ export type MemoryStatus =
 	| "approved"
 	| "rejected"
 	| "superseded"
-	| "voided";
+	| "voided"
+	| "returned"; // v0.9.0 review workspace — NON-terminal
 
 export const MEMORY_STATUSES: readonly MemoryStatus[] = [
 	"active",
@@ -96,6 +97,7 @@ export const MEMORY_STATUSES: readonly MemoryStatus[] = [
 	"rejected",
 	"superseded",
 	"voided",
+	"returned",
 ];
 
 /** Fiscal impact classifier; non-none triggers the human-approval gate. */
@@ -291,7 +293,14 @@ export type ApprovalErrorCode =
 	| "ROLE_DENIED"
 	| "APPROVER_IS_REQUESTER"
 	| "DUAL_APPROVAL_REQUIRED"
-	| "SAME_PRINCIPAL_SECOND_APPROVAL";
+	| "SAME_PRINCIPAL_SECOND_APPROVAL"
+	// v0.9.0 review-workspace clauses (design §5/§6): SOD_VIOLATION fails the
+	// decision closed when the authenticated reviewer IS the proposer;
+	// REVIEW_CHECKS_REQUIRED fails a material/critical approval closed when the
+	// two review checks were not both declared. Mirrors auth.CodeSODViolation /
+	// auth.CodeReviewChecksRequired.
+	| "SOD_VIOLATION"
+	| "REVIEW_CHECKS_REQUIRED";
 
 export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"AUTHENTICATION_REQUIRED",
@@ -325,6 +334,8 @@ export const APPROVAL_ERROR_CODES: readonly ApprovalErrorCode[] = [
 	"APPROVER_IS_REQUESTER",
 	"DUAL_APPROVAL_REQUIRED",
 	"SAME_PRINCIPAL_SECOND_APPROVAL",
+	"SOD_VIOLATION",
+	"REVIEW_CHECKS_REQUIRED",
 ];
 
 /**
@@ -433,6 +444,194 @@ export class ApprovalError extends Error {
 }
 
 // ──────────────────────────────────────────────
+// v0.9.0 review workspace (docs/architecture/review-workspace-v0.9.md)
+// ──────────────────────────────────────────────
+
+/**
+ * The two anti-rubber-stamp checks a human reviewer declares for a
+ * HIGH-RISK approval (design §5/§6): the evidence was inspected and the
+ * rules were inspected. A material/critical approval requires BOTH true →
+ * REVIEW_CHECKS_REQUIRED otherwise (fail-closed inside the transaction).
+ * Mirrors core.ReviewChecks.
+ */
+export interface ReviewChecks {
+	evidenceInspected: boolean;
+	ruleInspected: boolean;
+}
+
+/**
+ * The authenticated reject command (v0.9.0, design §5). Deliberately carries
+ * NO principal fields (ADR-003). Mirrors core.RejectMemoryCommand.
+ */
+export interface RejectMemoryCommand {
+	memoryId: string;
+	/** The envelope hash the reviewer actually saw; a mismatch fails with
+	 * ENVELOPE_MISMATCH. */
+	expectedEnvelopeHash: string;
+	/** Human rejection reason (REQUIRED for material/critical or
+	 * closing/declaration/sunat_filing; optional otherwise; always persisted). */
+	reason: string;
+	/** Idempotency key scoped to (tenant, requestId). */
+	requestId: string;
+}
+
+/** Outcome of an atomic rejection (pending_review → rejected, terminal). */
+export interface RejectMemoryResult {
+	memoryId: string;
+	decisionEventId: string;
+	previousStatus: "pending_review";
+	currentStatus: "rejected";
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	reason: string;
+	principalSubjectId: string;
+	membershipId: string;
+	policyVersion: string;
+	decidedAt: string;
+	idempotentReplay: boolean;
+}
+
+/**
+ * The authenticated RETURN command (v0.9.0, design §5): the reason is
+ * REQUIRED (a return is a correction request — the reason tells the agent
+ * what to fix). Mirrors core.ReturnMemoryCommand.
+ */
+export interface ReturnMemoryCommand {
+	memoryId: string;
+	expectedEnvelopeHash: string;
+	reason: string;
+	requestId: string;
+}
+
+/**
+ * Outcome of an atomic return: pending_review → returned (NON-terminal — an
+ * agent Save on the returned memory creates a NEW revision that re-enters
+ * pending_review; the returned revision itself never reopens). Mirrors
+ * core.ReturnMemoryResult.
+ */
+export interface ReturnMemoryResult {
+	memoryId: string;
+	decisionEventId: string;
+	previousStatus: "pending_review";
+	currentStatus: "returned";
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	reason: string;
+	principalSubjectId: string;
+	membershipId: string;
+	policyVersion: string;
+	decidedAt: string;
+	idempotentReplay: boolean;
+}
+
+/**
+ * Immutable audit record of an authenticated reject/return (v0.9.0) — the
+ * memory_decision_events ledger mirror: action "rejected"|"returned" always
+ * leaves pending_review and lands in the matching status;
+ * authorizationReasonCode "REJECTED"|"RETURNED" matches the action. The
+ * snapshot carries canonical (sorted, deduplicated) roles. Mirrors
+ * core.MemoryDecisionEvent.
+ */
+export interface MemoryDecisionEvent {
+	id: string;
+	requestId: string;
+	memoryId: string;
+	tenantId: string;
+	companyId: string;
+	fiscalPeriodId?: string;
+	action: "rejected" | "returned";
+	fromStatus: "pending_review";
+	toStatus: "rejected" | "returned";
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	reason: string;
+	principalSnapshot: PrincipalSnapshot;
+	policyVersion: string;
+	authorizationReasonCode: "REJECTED" | "RETURNED";
+	createdAt: string;
+}
+
+/** Pagination of the pending_review queue (design §3): limit bounded
+ * (default 50, max 200), offset defaults to 0. Mirrors core.ReviewQueueQuery. */
+export interface ReviewQueueQuery {
+	scope: MemoryScope;
+	limit?: number;
+	offset?: number;
+}
+
+/** ONE pending_review queue item (design §3). materialityCents is the
+ * declared monetary threshold in WHOLE BigInt cents (0 when unset) — never a
+ * float. envelopeHash is the CURRENT envelope the reviewer must sign against;
+ * recordedBy is the proposer (SoD requires the reviewer to differ from it). */
+export interface ReviewQueueItem {
+	memoryId: string;
+	kind: MemoryKind;
+	fiscalEffect: FiscalEffect;
+	materialityLevel?: MaterialityLevel;
+	materialityCents: bigint;
+	status: MemoryStatus;
+	envelopeHash: string;
+	recordedBy: string;
+	recordedAt: string;
+	evidenceRefCount: number;
+	ruleRefCount: number;
+	openJudgmentCount: number;
+}
+
+/** The paginated queue result (items + echoed limit/offset). */
+export interface ReviewQueuePage {
+	items: ReviewQueueItem[];
+	limit: number;
+	offset: number;
+}
+
+/**
+ * The composed review of ONE pending revision (design §4): the full pending
+ * revision, the structured content diff vs its chain predecessor, the
+ * evidence state with WORM availability, the best-effort rule state, the
+ * open proposed judgments and the decision-relevant review metadata with the
+ * boundary notice. Mirrors core.ReviewDetail.
+ */
+export interface ReviewDetail {
+	memory: AccountingMemory;
+	diff: { changes: Array<{ field: string; before: string; after: string }> };
+	evidence: Array<{
+		ref: string;
+		availability: "present" | "absent" | "not-a-ref";
+		objectId?: string;
+		sizeBytes?: bigint;
+		contentType?: string;
+	}>;
+	rules: Array<{
+		ref: string;
+		resolved: boolean;
+		memoryId?: string;
+		status?: MemoryStatus;
+		effectiveAt?: string;
+		expiresAt?: string;
+	}>;
+	openJudgments: Array<{
+		judgmentId: string;
+		relation: MemoryRelation;
+		fromId: string;
+		toId: string;
+		proposerId: string;
+		proposedAt: string;
+	}>;
+	reviewMetadata: {
+		envelopeHashToSign: string;
+		recordedBy: string;
+		recordedAt: string;
+		observedAt?: string;
+		fiscalEffect: FiscalEffect;
+		materialityLevel?: MaterialityLevel;
+		materialityCents: bigint;
+		priorApprovedRevision?: string;
+	};
+	boundaryNotice: string;
+}
+
+// ──────────────────────────────────────────────
 // Content / source / validity
 // ──────────────────────────────────────────────
 
@@ -529,6 +728,13 @@ export interface AccountingMemory {
 	evidenceRefs?: string[];
 	/** Policy/rule paths applied; grows via links. */
 	ruleRefs?: string[];
+	/**
+	 * Structured rule links (v0.6.0, design §2.2) — the READ SURFACE: one
+	 * entry per structured rule_links row (version metadata present). Legacy
+	 * unversioned refs stay bare in ruleRefs and never appear here. Structured
+	 * metadata does NOT participate in the hashes — the bare refs do.
+	 */
+	ruleLinks?: RuleLink[];
 	/** Optional 0..1 probability (never money). */
 	confidence?: number;
 	/** Optional monetary threshold in int64 cents (never float). */
@@ -576,12 +782,123 @@ export interface SaveMemoryInput {
 	source: MemorySource;
 	validity?: MemoryValidity;
 	ruleRefs?: string[];
+	/**
+	 * Structured rule links (v0.6.0, design §2.2) — TRANSPORT-ONLY on save:
+	 * the store derives/deduplicates the bare ruleRefs from ruleLinks[].ref
+	 * before hashing and inserts the memory AND the structured rows atomically.
+	 * Structured metadata never contributes to the envelope/hashes.
+	 */
+	ruleLinks?: RuleLink[];
 	confidence?: number;
 	materiality?: bigint;
 	/** Declared materiality classification (normal | material | critical); NULL is
 	 * treated as normal by the approval policy. Mirrors core.SaveInput. */
 	materialityLevel?: MaterialityLevel;
 	receiptId?: string;
+}
+
+/**
+ * ONE structured rule link (v0.6.0, design §2.2): a bare rule ref pinned to
+ * exactly ONE immutable rule-memory revision. `ref` is the rule chain's
+ * stable topicKey; `version` is the immutable rule-memory ID of one chain
+ * revision (NOT the mutable latest revision); `effectiveAt` is the consuming
+ * decision's accounting time and MUST equal the consuming memory's
+ * effectiveAt. Mirrors core.RuleLink.
+ */
+export interface RuleLink {
+	ref: string;
+	version: string;
+	effectiveAt: string;
+}
+
+/** Defensive copy of a structured-link list. */
+export function cloneRuleLinks(
+	links: RuleLink[] | undefined,
+): RuleLink[] | undefined {
+	if (links === undefined) return undefined;
+	return links.map((link) => ({ ...link }));
+}
+
+/**
+ * Fail-closed structured-link validation (design §2.2): non-empty ref and
+ * version plus an RFC3339 effectiveAt. Throws INVALID_RULE_LINK otherwise.
+ */
+export function assertValidRuleLink(link: RuleLink): void {
+	if (typeof link.ref !== "string" || link.ref.trim().length === 0) {
+		throw new Error("INVALID_RULE_LINK: ref must be a non-empty string");
+	}
+	if (typeof link.version !== "string" || link.version.trim().length === 0) {
+		throw new Error(
+			`INVALID_RULE_LINK: version must be a non-empty string (the immutable rule-memory id) for ref "${link.ref}"`,
+		);
+	}
+	if (
+		typeof link.effectiveAt !== "string" ||
+		Number.isNaN(Date.parse(link.effectiveAt))
+	) {
+		throw new Error(
+			`INVALID_RULE_LINK: effectiveAt must be RFC3339, got "${link.effectiveAt}" for ref "${link.ref}"`,
+		);
+	}
+}
+
+/**
+ * Validates a structured-link list and returns the deduplicated canonical
+ * set: identical (ref, version, effectiveAt) triples collapse (no-op); two
+ * DIFFERENT links for the same ref fail RULE_LINK_VERSION_CONFLICT
+ * (metadata is never updated in place). Mirrors core.AssertValidRuleLinks.
+ */
+export function assertValidRuleLinks(
+	links: RuleLink[] | undefined,
+): RuleLink[] {
+	if (links === undefined) return [];
+	const seen = new Map<string, RuleLink>();
+	const out: RuleLink[] = [];
+	for (const link of links) {
+		assertValidRuleLink(link);
+		const prev = seen.get(link.ref);
+		if (prev !== undefined) {
+			if (
+				prev.version !== link.version ||
+				prev.effectiveAt !== link.effectiveAt
+			) {
+				throw new Error(
+					`RULE_LINK_VERSION_CONFLICT: ref "${link.ref}" is pinned to ${prev.version} at ${prev.effectiveAt} and cannot be re-pinned to ${link.version} at ${link.effectiveAt} (metadata is never updated in place)`,
+				);
+			}
+			// Identical link for the same ref: no-op, keep the first occurrence.
+			continue;
+		}
+		seen.set(link.ref, link);
+		out.push(link);
+	}
+	return out;
+}
+
+/**
+ * Derives the deduplicated bare ruleRefs from a structured-link list (design
+ * §2.2): the store merges ruleLinks[].ref into the existing refs BEFORE
+ * hashing, because the canonical envelope hashes ONLY the bare refs.
+ */
+export function deriveRuleRefs(
+	existing: string[] | undefined,
+	links: RuleLink[] | undefined,
+): string[] | undefined {
+	if (links === undefined || links.length === 0) return existing;
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const ref of existing ?? []) {
+		if (ref.length === 0) continue;
+		if (seen.has(ref)) continue;
+		seen.add(ref);
+		out.push(ref);
+	}
+	for (const link of links) {
+		if (seen.has(link.ref)) continue;
+		seen.add(link.ref);
+		out.push(link.ref);
+	}
+	return out;
 }
 
 /** A recorded relation between two memories. */
@@ -653,6 +970,9 @@ export function cloneMemory(memory: AccountingMemory): AccountingMemory {
 		...(memory.ruleRefs === undefined
 			? {}
 			: { ruleRefs: [...memory.ruleRefs] }),
+		...(memory.ruleLinks === undefined
+			? {}
+			: { ruleLinks: cloneRuleLinks(memory.ruleLinks) }),
 		...(memory.confidence === undefined
 			? {}
 			: { confidence: memory.confidence }),
@@ -1583,6 +1903,7 @@ export const RECEIPT_ACTIONS = [
 	"memory_recorded",
 	"memory_approved",
 	"memory_rejected",
+	"memory_returned", // v0.9.0 review workspace (design §2/§5)
 	"memory_voided",
 	"relation_confirmed",
 	"relation_rejected",
@@ -1663,6 +1984,20 @@ export const RECEIPT_PAYLOAD_VERSION_V08 = "receipt-payload/v0.8.0";
  * core.ReceiptPayloadVersionV09.
  */
 export const RECEIPT_PAYLOAD_VERSION_V09 = "receipt-payload/v0.9.0";
+
+/**
+ * Payload version stamped on the v0.9.0 REVIEW WORKSPACE decision receipts
+ * (docs/architecture/review-workspace-v0.9.md §2/§5): the authenticated
+ * memory_rejected payload (extended with the human reason and the reviewed
+ * envelope hash H1 — mirrors approve signing H1+H2) and the new
+ * memory_returned act (same coverage: reviewed H1, resulting H2, reason and
+ * the complete verified principal snapshot). Canonicalization is
+ * version-agnostic (the reason/reviewedEnvelopeHash fields already exist in
+ * the frozen payload SHAPE), so verifiers keep accepting v0.4.0–v0.9.0
+ * payloads unchanged AND accept v0.10.0 payloads without a protocol break.
+ * Mirrors core.ReceiptPayloadVersionV10.
+ */
+export const RECEIPT_PAYLOAD_VERSION_V10 = "receipt-payload/v0.10.0";
 
 /** Frozen receipt signing algorithm (v0.4.0 Step 3). */
 export const RECEIPT_ALGORITHM = "Ed25519";

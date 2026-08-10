@@ -1,0 +1,29 @@
+{
+  "name": "sod-policy-vector",
+  "contract": "sod-policy",
+  "description": "The v0.9.0 review-workspace separation-of-duties clause (design §5/§6.5.5, contracts/approval.md): the decision is only legal when the authenticated reviewer's subject id DIFFERS from the pending revision's recordedBy (proposer). A non-empty proposer that equals the reviewer is a violation (fail-closed inside the transaction); an empty proposer (a source without an actor id) never equals an authenticated reviewer, so it can never be a self-decision. The SAME vector file runs from Go (authz.SODViolation) and TypeScript (authz/approval-policy.ts sodViolation) and must yield identical triples.",
+  "sodCases": [
+    {
+      "proposer": "agent-1",
+      "reviewer": "maria.torres",
+      "violation": false
+    },
+    {
+      "proposer": "maria.torres",
+      "reviewer": "maria.torres",
+      "violation": true
+    },
+    {
+      "proposer": "agent-1",
+      "reviewer": "agent-1",
+      "violation": true
+    },
+    {
+      "proposer": "",
+      "reviewer": "maria.torres",
+      "violation": false
+    }
+  ],
+  "input": {},
+  "expected": {}
+}

@@ -88,6 +88,10 @@ type VerificationReport struct {
 	Receipts              []ReceiptVerification `json:"receipts"`
 	Layers                []VerificationLayer   `json:"layers"`
 	AccountingCorrectness string                `json:"accountingCorrectness"`
+	// RuleVersions (v0.6.0, design §4.2): ONE trace per structured rule link
+	// of a memory subject, absent when the memory has no structured links
+	// (legacy memories keep the report byte-identical).
+	RuleVersions []RuleVersionTrace `json:"ruleVersions,omitempty"`
 }
 
 // Stable layer names — EXACT strings shared with the TypeScript mirror
@@ -108,6 +112,7 @@ const (
 	LayerEvidenceAvailability    = "evidence availability"
 	LayerObjectAvailability      = "object availability"
 	LayerRuleAvailability        = "rule availability"
+	LayerRuleVersionVigencia     = "rule version/vigencia"
 	LayerJudgmentHash            = "judgment hash"
 )
 

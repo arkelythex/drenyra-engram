@@ -20,6 +20,8 @@ save (fiscalEffect == none)   ──► active             (informative, current
 save (fiscalEffect != none)   ──► pending_review     (GATE: human approval)
 pending_review ──approve(human)──► approved
 pending_review ──reject(human)───► rejected           (terminal)
+pending_review ──return(human)──► returned            (non-terminal, v0.9.0)
+returned ──save(agent)──► pending_review               (new revision, gate re-armed)
 active | pending_review | approved ──void(human|system)──► voided   (terminal)
 active | pending_review | approved ──supersede──► superseded          (terminal)
 ```
@@ -30,6 +32,7 @@ active | pending_review | approved ──supersede──► superseded          
 | `pending_review` | Memory with fiscal effect, waiting for explicit HUMAN approval          |
 | `approved`       | Approved by a human professional (the gate is closed)                   |
 | `rejected`       | Rejected by a human professional — terminal, history stays visible      |
+| `returned`       | Sent back for correction by a human professional (v0.9.0 review workspace) — NON-terminal: an agent Save on the returned memory creates a NEW revision that re-enters `pending_review` |
 | `superseded`     | Replaced by a newer revision of the same (topicKey, scope) chain        |
 | `voided`         | Annulled without a successor (correction) — terminal                    |
 
@@ -47,6 +50,9 @@ La IA asiste.  La memoria orienta.  El profesional revisa.  La evidencia permane
 
 Voiding admits human or system actors (systemic correction), never agents.
 `rejected`, `superseded` and `voided` are terminal — they never reopen.
+`returned` (v0.9.0) is NON-terminal: it is the professional's correction
+request, and the only way forward is a NEW agent revision that re-enters
+`pending_review` (the gate re-arms).
 
 ## Transitions
 
@@ -54,6 +60,7 @@ Voiding admits human or system actors (systemic correction), never agents.
 | ---------- | ------------------------- | -------------------------------------------- |
 | `approve`  | `pending_review`          | actorKind == human (GATE_REQUIRES_HUMAN)     |
 | `reject`   | `pending_review`          | actorKind == human                           |
+| `return`   | `pending_review`          | actorKind == human (v0.9.0 review workspace; reason REQUIRED) |
 | `void`     | `active`, `pending_review`, `approved` | human or system, never agent       |
 | `supersede`| `active`, `pending_review`, `approved` | successor id recorded (relation + supersedes_id) |
 

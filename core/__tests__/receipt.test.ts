@@ -134,10 +134,11 @@ function codeOf(fn: () => void): string | undefined {
 	}
 }
 
-const TWENTY_THREE_ACTIONS: readonly ReceiptAction[] = [
+const TWENTY_FOUR_ACTIONS: readonly ReceiptAction[] = [
 	"memory_recorded",
 	"memory_approved",
 	"memory_rejected",
+	"memory_returned", // v0.9.0 review workspace (design §2/§5)
 	"memory_voided",
 	"relation_confirmed",
 	"relation_rejected",
@@ -172,8 +173,8 @@ describe("receipt protocol mirror (v0.4.0 Step 3)", () => {
 			"reconciliation",
 			"evidence_object",
 		]);
-		expect(RECEIPT_ACTIONS).toEqual([...TWENTY_THREE_ACTIONS]);
-		expect(RECEIPT_ACTIONS.length).toBe(23);
+		expect(RECEIPT_ACTIONS).toEqual([...TWENTY_FOUR_ACTIONS]);
+		expect(RECEIPT_ACTIONS.length).toBe(24);
 		expect(RECEIPT_ALGORITHM).toBe("Ed25519");
 	});
 

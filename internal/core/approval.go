@@ -16,10 +16,11 @@ package core
 
 import "github.com/arkelythex/drenyra-engram/internal/auth"
 
-// ApproveMemoryCommand is the approval command. It carries exactly four fields:
-// the memory to approve, the envelope hash the caller reviewed, the reason, and
-// the idempotency request id. No principal fields (compile-level contract —
-// internal/server verifies the field set stays exactly this).
+// ApproveMemoryCommand is the approval command. It carries the memory to
+// approve, the envelope hash the caller reviewed, the reason, the idempotency
+// request id and the optional v0.9.0 review checks. No principal fields
+// (compile-level contract — internal/server verifies the field set stays
+// exactly this).
 type ApproveMemoryCommand struct {
 	// MemoryID is the pending_review memory to approve.
 	MemoryID string `json:"memoryId"`
@@ -32,6 +33,8 @@ type ApproveMemoryCommand struct {
 	// RequestID is the idempotency key scoped to (tenant, requestId); a replay
 	// with the same id and payload returns the stored result.
 	RequestID string `json:"requestId"`
+	// ReviewChecks (v0.9.0): anti-rubber-stamp checks for material/critical approvals.
+	ReviewChecks ReviewChecks `json:"reviewChecks,omitempty"`
 }
 
 // ApprovalResult is the outcome of an atomic approval. PreviousStatus is always

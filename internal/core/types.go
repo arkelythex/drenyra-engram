@@ -36,6 +36,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -150,6 +151,13 @@ const (
 	StatusApproved MemoryStatus = "approved"
 	// StatusRejected is a memory rejected by a human actor. Terminal.
 	StatusRejected MemoryStatus = "rejected"
+	// StatusReturned is a memory RETURNED to its proposer for correction by a
+	// human reviewer (v0.9.0 review workspace — docs/architecture/
+	// review-workspace-v0.9.md §2). NON-terminal: the only way back into
+	// pending_review is a NEW revision (agent Save on a returned memory creates a
+	// new revision that re-enters pending_review); the returned revision itself
+	// never reopens.
+	StatusReturned MemoryStatus = "returned"
 	// StatusSuperseded is a memory replaced by a newer revision of the same
 	// (topicKey, scope). Terminal; readers route to the successor.
 	StatusSuperseded MemoryStatus = "superseded"
@@ -162,7 +170,7 @@ const (
 func IsValidMemoryStatus(status MemoryStatus) bool {
 	switch status {
 	case StatusActive, StatusPendingReview, StatusApproved,
-		StatusRejected, StatusSuperseded, StatusVoided:
+		StatusRejected, StatusReturned, StatusSuperseded, StatusVoided:
 		return true
 	}
 	return false
@@ -451,6 +459,131 @@ func policyRuleCanonicalContribution(m AccountingMemory) string {
 }
 
 // ──────────────────────────────────────────────
+// RuleLink — v0.6.0 structured rule links (design §2.2)
+// ──────────────────────────────────────────────
+
+// RuleLink is ONE structured rule link (v0.6.0 — docs/architecture/
+// fiscal-policy-memory-v0.6.md §2.2): a bare rule ref pinned to exactly ONE
+// immutable rule-memory revision. Ref is the rule chain's stable topicKey;
+// Version is the immutable rule-memory ID of one chain revision (NOT the
+// mutable latest revision and NOT a display label); EffectiveAt is the
+// consuming decision's accounting time and MUST equal the consuming memory's
+// EffectiveAt. Structured metadata deliberately does NOT contribute to the
+// envelope/content hashes — the bare refs do (canonicalRefs, existing v0.3
+// contract); the (memory_id, ref) pair stays unique and metadata is never
+// updated in place (identical link = no-op, different version/date =
+// RULE_LINK_VERSION_CONFLICT).
+type RuleLink struct {
+	// Ref is the rule chain's stable topicKey (e.g. "policy/indirect-tax/
+	// late-document"). Must equal the linked rule memory's Identity.TopicKey.
+	Ref string `json:"ref"`
+	// Version is the immutable rule-memory ID of exactly one KindRule row in
+	// the chain.
+	Version string `json:"version"`
+	// EffectiveAt is the consuming decision's accounting time (RFC3339).
+	EffectiveAt string `json:"effectiveAt"`
+}
+
+// ruleLinkRFC3339Layouts are the accepted effectiveAt shapes: RFC3339 with or
+// without fractional seconds (the design requires RFC3339; the lenient
+// ParseDateTime fallbacks are deliberately NOT accepted for links).
+var ruleLinkRFC3339Layouts = []string{time.RFC3339Nano, time.RFC3339}
+
+// AssertValidRuleLink fails closed on a malformed structured link: a
+// non-empty trimmed ref and version plus an RFC3339-effectiveAt are required.
+func AssertValidRuleLink(l RuleLink) error {
+	if strings.TrimSpace(l.Ref) == "" {
+		return errors.New("INVALID_RULE_LINK: ref must be a non-empty string")
+	}
+	if strings.TrimSpace(l.Version) == "" {
+		return fmt.Errorf("INVALID_RULE_LINK: version must be a non-empty string (the immutable rule-memory id) for ref %q", l.Ref)
+	}
+	valid := false
+	for _, layout := range ruleLinkRFC3339Layouts {
+		if _, err := time.Parse(layout, l.EffectiveAt); err == nil {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return fmt.Errorf("INVALID_RULE_LINK: effectiveAt must be RFC3339, got %q for ref %q", l.EffectiveAt, l.Ref)
+	}
+	return nil
+}
+
+// AssertValidRuleLinks validates a structured-link list and returns the
+// deduplicated canonical set: every link must be well formed, and the
+// (ref, version, effectiveAt) triples are deduplicated (repeating the
+// IDENTICAL link is a no-op). Two DIFFERENT links for the same ref fail
+// RULE_LINK_VERSION_CONFLICT (metadata is never updated in place).
+func AssertValidRuleLinks(links []RuleLink) ([]RuleLink, error) {
+	seen := make(map[string]RuleLink, len(links))
+	out := make([]RuleLink, 0, len(links))
+	for _, l := range links {
+		if err := AssertValidRuleLink(l); err != nil {
+			return nil, err
+		}
+		key := l.Ref
+		if prev, ok := seen[key]; ok {
+			if prev.Version != l.Version || prev.EffectiveAt != l.EffectiveAt {
+				return nil, fmt.Errorf("RULE_LINK_VERSION_CONFLICT: ref %q is pinned to %s at %s and cannot be re-pinned to %s at %s (metadata is never updated in place)", l.Ref, prev.Version, prev.EffectiveAt, l.Version, l.EffectiveAt)
+			}
+			// Identical link for the same ref: no-op, keep the first occurrence.
+			continue
+		}
+		seen[key] = l
+		out = append(out, l)
+	}
+	if out == nil {
+		out = []RuleLink{}
+	}
+	return out, nil
+}
+
+// DeriveRuleRefs merges the bare rule refs of a structured-link list into an
+// existing ref list, deduplicated (stable order: existing refs first, then the
+// structured refs in input order). The store calls this BEFORE building the
+// memory so the canonical envelope hash (which hashes ONLY the bare refs —
+// design §2.2) already carries every structured ref; the structured metadata
+// itself never contributes to the hashes.
+func DeriveRuleRefs(existing []string, links []RuleLink) []string {
+	seen := make(map[string]struct{}, len(existing)+len(links))
+	out := make([]string, 0, len(existing)+len(links))
+	for _, ref := range existing {
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		out = append(out, ref)
+	}
+	for _, l := range links {
+		if _, ok := seen[l.Ref]; ok {
+			continue
+		}
+		seen[l.Ref] = struct{}{}
+		out = append(out, l.Ref)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out
+}
+
+// CloneRuleLinks returns a defensive copy of a structured-link slice so
+// callers can never mutate stored link metadata through a clone.
+func CloneRuleLinks(links []RuleLink) []RuleLink {
+	if links == nil {
+		return nil
+	}
+	out := make([]RuleLink, len(links))
+	copy(out, links)
+	return out
+}
+
+// ──────────────────────────────────────────────
 // Relations
 // ──────────────────────────────────────────────
 
@@ -565,6 +698,12 @@ type AccountingMemory struct {
 	// (which also carries the vigencia window); nil on every non-rule memory
 	// (contributes the empty string, so pre-v0.6 envelopes are unchanged).
 	PolicyRule *PolicyRule `json:"policyRule,omitempty"`
+	// RuleLinks is the READ SURFACE of the structured rule links of this
+	// memory (v0.6.0, design §2.2): one entry per rule_links row WITH version
+	// metadata (legacy unversioned refs stay bare — they never surface here).
+	// Structured metadata does NOT participate in the hashes; the bare refs
+	// in RuleRefs do (existing canonicalRefs contract).
+	RuleLinks []RuleLink `json:"ruleLinks,omitempty"`
 	// ContentHash is the canonical SHA-256 of the semantic content (see
 	// ComputeContentHash). Computed at write, never editable.
 	ContentHash string `json:"contentHash"`
@@ -632,7 +771,14 @@ type SaveInput struct {
 	// in observations.policy_rule_json (schema v7) and participate in the
 	// content/envelope hashes only when present.
 	PolicyRule *PolicyRule `json:"policyRule,omitempty"`
-	ReceiptID  string      `json:"receiptId,omitempty"`
+	// RuleLinks is the OPTIONAL structured rule-link list (v0.6.0, design
+	// §2.2): TRANSPORT-ONLY on SaveInput. The store derives/deduplicates the
+	// bare RuleRefs from ruleLinks[].ref before hashing and inserts the memory
+	// AND the structured rule_links rows (memory_id, ref, version, effective_at,
+	// actor, timestamp) in the SAME transaction. Structured metadata never
+	// contributes to the envelope/hashes — the bare refs do.
+	RuleLinks []RuleLink `json:"ruleLinks,omitempty"`
+	ReceiptID string     `json:"receiptId,omitempty"`
 }
 
 // WriteOutcome is the save (upsert) outcome. Conflict and Unknown are the
@@ -783,6 +929,7 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 	}
 	cloned.EvidenceRefs = append([]string(nil), m.EvidenceRefs...)
 	cloned.RuleRefs = append([]string(nil), m.RuleRefs...)
+	cloned.RuleLinks = CloneRuleLinks(m.RuleLinks)
 	return cloned
 }
 

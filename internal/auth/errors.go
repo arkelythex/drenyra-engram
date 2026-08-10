@@ -105,6 +105,17 @@ const (
 	CodeHoldActive = "HOLD_ACTIVE"
 )
 
+// Frozen error codes (v0.9.0 review workspace — do not rename or reuse;
+// docs/architecture/review-workspace-v0.9.md §5/§6). SOD_VIOLATION is the
+// separation-of-duties clause (approver subjectId ≠ proposer recordedBy, fail
+// closed INSIDE the decision transaction); REVIEW_CHECKS_REQUIRED is the
+// anti-rubber-stamp clause (a material/critical approval requires
+// reviewChecks.evidenceInspected && reviewChecks.ruleInspected).
+const (
+	CodeSODViolation         = "SOD_VIOLATION"
+	CodeReviewChecksRequired = "REVIEW_CHECKS_REQUIRED"
+)
+
 // Error is the typed approval/judgment/reconciliation error: a frozen code
 // plus a human message. Only ENVELOPE_MISMATCH carries
 // ExpectedEnvelopeHash/ActualEnvelopeHash, only JUDGMENT_HASH_MISMATCH and
@@ -264,4 +275,11 @@ var (
 	ErrSamePrincipalSecondApproval = &Error{Code: CodeSamePrincipalSecondApproval, Message: "the second approver must be a distinct principal"}
 	// ── v0.8.0 evidence-lifecycle blocker code (batch 4 — purge pipeline) ──
 	ErrHoldActive = &Error{Code: CodeHoldActive, Message: "an active blocking hold protects the object"}
+	// ── v0.9.0 review workspace codes (docs/architecture/review-workspace-v0.9.md) ──
+	// SOD_VIOLATION fails the decision closed when the authenticated principal IS
+	// the pending revision's proposer (approver ≠ proposer, §5/§6.5.5).
+	// REVIEW_CHECKS_REQUIRED fails a material/critical approval closed when the
+	// two review checks (evidenceInspected, ruleInspected) are not both true.
+	ErrSODViolation         = &Error{Code: CodeSODViolation, Message: "the reviewer cannot decide their own proposal (separation of duties)"}
+	ErrReviewChecksRequired = &Error{Code: CodeReviewChecksRequired, Message: "material/critical approvals require both review checks (evidence inspected and rule inspected)"}
 )

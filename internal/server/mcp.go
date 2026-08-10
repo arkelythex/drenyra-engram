@@ -535,6 +535,83 @@ func ToolCatalog() []map[string]any {
 				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
 			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
 		},
+		// ── accounting_review_* (v0.9.0 review workspace, design §3/§5/§7): queue
+		// and detail are SCOPE-FIRST READS whose exact scope tuple is part of the
+		// arguments (like accounting_context — a caller whose scope differs sees
+		// NOTHING, never the memory); reject/return are the AUTHENTICATED decision
+		// tools (strict shape, NO identity field) and fail closed with
+		// AUTHENTICATION_REQUIRED on this session-less stdio server, exactly like
+		// accounting_approve.
+		{
+			"name":        "accounting_review_queue",
+			"description": "List the pending_review queue of an EXACT company scope (v0.9.0 review workspace, design §3): scope-first, deterministically ordered (materiality rank DESC → recordedAt ASC), bounded pagination (limit default 50, max 200). Items carry the CURRENT envelope hash the reviewer must sign against, the proposer and the evidence/rule/open-judgment counts.",
+			"inputSchema": objectSchema(map[string]any{
+				"scope":  stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
+				"limit":  intSchema("page size (default 50, max 200)"),
+				"offset": intSchema("page offset (default 0)"),
+			}, "scope"),
+		},
+		{
+			"name":        "accounting_review_detail",
+			"description": "Compose the review of ONE pending revision (v0.9.0 review workspace, design §4), scope-guarded: the full pending revision, the structured content diff vs its chain predecessor, the evidence state with WORM availability, the best-effort rule state, the open proposed judgments, the review metadata (H1 to sign, proposer, risk class) and the boundary notice. Reads never authorize.",
+			"inputSchema": objectSchema(map[string]any{
+				"memoryId": stringSchema("memory id (required)"),
+				"scope":    stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
+			}, "memoryId", "scope"),
+		},
+		{
+			"name":        "accounting_review_reject",
+			"description": "Reject a pending_review memory (v0.9.0 review workspace, design §5): pending_review → rejected (terminal), authenticated + idempotent by (tenant, requestId) + hash-guarded, with the human reason in the decision event and the memory_rejected receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"memoryId":             stringSchema("memory id"),
+				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":               stringSchema("human rejection reason (required for material/critical or closing/declaration/sunat_filing; optional otherwise; always persisted)"),
+				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+		},
+		{
+			"name":        "accounting_review_return",
+			"description": "Return a pending_review memory to its proposer for correction (v0.9.0 review workspace, design §5): pending_review → returned (NON-terminal — an agent Save on the returned memory creates a NEW revision that re-enters pending_review). Authenticated + idempotent + hash-guarded; the reason is REQUIRED (a correction request — the reason tells the agent what to fix) and lands in the decision event and the memory_returned receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
+			"inputSchema": objectSchema(map[string]any{
+				"memoryId":             stringSchema("memory id"),
+				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":               stringSchema("correction request reason (REQUIRED)"),
+				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+		},
+		// ── accounting_rule_* (v0.6.0 fiscal policy memory, design §6): show and
+		// history are SCOPE-FIRST READS (the exact scope tuple is part of the
+		// arguments — a caller whose scope differs sees NOTHING). Impact is the
+		// regulatory-change reconstruction: with an exact scope the tenant is
+		// derived from the scope (read-only, no session needed); WITHOUT a scope
+		// the tenant must come from an authenticated session binding — the current
+		// stdio server has none, so that path fails closed with
+		// AUTHENTICATION_REQUIRED (tool arguments never supply identity).
+		{
+			"name":        "accounting_rule_show",
+			"description": "Show the CURRENT rule revision (chain head) of a (topicKey, exact Scope) — v0.6.0 fiscal policy memory (design §6), read-only. Rules are kind=rule memories; the (topicKey, Scope) revision chain IS the rule-version chain.",
+			"inputSchema": objectSchema(map[string]any{
+				"topic": stringSchema("rule chain topic key (required; may contain /)"),
+				"scope": stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
+			}, "topic", "scope"),
+		},
+		{
+			"name":        "accounting_rule_history",
+			"description": "Return the FULL rule chain of a (topicKey, exact Scope), ordered by revision ascending — v0.6.0 fiscal policy memory (design §6), read-only. Every revision is included (superseded revisions stay visible and historically valid).",
+			"inputSchema": objectSchema(map[string]any{
+				"topic": stringSchema("rule chain topic key (required; may contain /)"),
+				"scope": stringSchema(`JSON exact company scope (required)`),
+			}, "topic", "scope"),
+		},
+		{
+			"name":        "accounting_rule_impact",
+			"description": "Reconstruct regulatory-change impact (v0.6.0, design §5): every consuming memory of the rule chain, classified against the SELECTED changed revision's vigencia window (overlap: the consuming interval vs [effectiveAt, expiresAt)). Read-only. With an exact scope the tenant comes from the scope; without one it needs an authenticated session binding (the stdio server has none — that path fails closed with AUTHENTICATION_REQUIRED).",
+			"inputSchema": objectSchema(map[string]any{
+				"topic":    stringSchema("rule chain topic key (required; may contain /)"),
+				"revision": intSchema("1-based revision to compute impact against (default: chain head)"),
+				"scope":    stringSchema(`JSON exact company scope (optional; absent = chain derived from the pinned versions, RULE_CHAIN_AMBIGUOUS on multiple distinct chains)`),
+			}, "topic"),
+		},
 		// ── accounting_close_* (v0.5.0 close foundation, design §6): creation is
 		// a NORMAL SAVE by an agent with a provenance-only source claim (the tool
 		// stamps the agent source — tool arguments never carry identity); the
@@ -1824,7 +1901,195 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
 			"accounting_approve requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
 
-	// ── close tools (v0.5.0 close foundation, design §6): creation is a NORMAL
+	// ── review workspace tools (v0.9.0, design §3/§4/§5/§7): queue and detail
+	// are SCOPE-FIRST READS (the exact scope tuple is part of the arguments, so
+	// a caller whose scope differs sees NOTHING — never the memory); reject and
+	// return are the AUTHENTICATED decision tools and fail closed with
+	// AUTHENTICATION_REQUIRED on this session-less stdio server (exactly like
+	// accounting_approve — tool arguments never supply identity).
+	case "accounting_review_queue":
+		var args struct {
+			Scope  string `json:"scope"`
+			Limit  int    `json:"limit"`
+			Offset int    `json:"offset"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		page, err := m.api.ReviewQueue(context.Background(), core.ReviewQueueQuery{
+			Scope:  scope,
+			Limit:  args.Limit,
+			Offset: args.Offset,
+		})
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(page)), nil
+
+	case "accounting_review_detail":
+		var args struct {
+			MemoryID string `json:"memory_id"`
+			Scope    string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("memory_id", args.MemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		detail, err := m.api.ReviewDetail(context.Background(), args.MemoryID, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(detail)), nil
+
+	case "accounting_review_reject":
+		var args struct {
+			MemoryID             string `json:"memory_id"`
+			ExpectedEnvelopeHash string `json:"expected_envelope_hash"`
+			Reason               string `json:"reason"`
+			RequestID            string `json:"request_id"`
+		}
+		// Strict shape (design §6): ANY unknown field — including any caller-
+		// supplied authority (actorId/actorKind/subjectId/roles) — is a malformed
+		// argument shape (JSON-RPC -32602), never silently ignored.
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("memory_id", args.MemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_envelope_hash", args.ExpectedEnvelopeHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_review_reject requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	case "accounting_review_return":
+		var args struct {
+			MemoryID             string `json:"memory_id"`
+			ExpectedEnvelopeHash string `json:"expected_envelope_hash"`
+			Reason               string `json:"reason"`
+			RequestID            string `json:"request_id"`
+		}
+		if err := decodeArgumentsStrict(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("memory_id", args.MemoryID); err != nil {
+			return nil, err
+		}
+		if err := requireParams("expected_envelope_hash", args.ExpectedEnvelopeHash); err != nil {
+			return nil, err
+		}
+		if err := requireParams("reason", args.Reason); err != nil {
+			return nil, err
+		}
+		if err := requireParams("request_id", args.RequestID); err != nil {
+			return nil, err
+		}
+		return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+			"accounting_review_return requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+
+	// ── rule tools (v0.6.0 fiscal policy memory, design §6): show/history are
+	// scope-first reads (exact scope in the arguments — cross-scope callers see
+	// NOTHING). Impact derives the tenant from the exact scope when supplied;
+	// without a scope it needs a session binding (fails closed on this
+	// session-less stdio server — tool arguments never supply identity).
+	case "accounting_rule_show":
+		var args struct {
+			Topic string `json:"topic"`
+			Scope string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topic", args.Topic); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		mem, err := m.api.RuleShow(args.Topic, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(mem)), nil
+
+	case "accounting_rule_history":
+		var args struct {
+			Topic string `json:"topic"`
+			Scope string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topic", args.Topic); err != nil {
+			return nil, err
+		}
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		chain, err := m.api.RuleHistory(args.Topic, scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(chain)), nil
+
+	case "accounting_rule_impact":
+		var args struct {
+			Topic    string `json:"topic"`
+			Revision int    `json:"revision"`
+			Scope    string `json:"scope"`
+		}
+		if err := decodeArguments(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if err := requireParams("topic", args.Topic); err != nil {
+			return nil, err
+		}
+		if args.Scope == "" {
+			return errTextContent(auth.New(auth.CodeAuthenticationRequired,
+				"accounting_rule_impact without an exact scope requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		result, err := m.api.RuleImpact(context.Background(), scope.OrganizationID, args.Topic, &scope, args.Revision)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		return textContent(mustJSON(result)), nil
+
+		// ── close tools (v0.5.0 close foundation, design §6): creation is a NORMAL
 	// SAVE by an agent (the server stamps the agent source — provenance, never
 	// authority); reopening is the authenticated controller act and fails closed
 	// with AUTHENTICATION_REQUIRED on this session-less stdio server (exactly

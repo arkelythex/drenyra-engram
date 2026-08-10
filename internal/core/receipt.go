@@ -70,8 +70,18 @@ const (
 	// and the complete verified principal snapshot.
 	ReceiptActionMemoryApproved ReceiptAction = "memory_approved"
 	// ReceiptActionMemoryRejected covers a rejection transition (hashes before
-	// and after).
+	// and after). The v0.9.0 review workspace authenticates the rejection (design
+	// §5): the payload is EXTENDED with the human reason and the reviewed envelope
+	// hash H1 plus the complete verified principal snapshot, stamped with
+	// ReceiptPayloadVersionV10 (new payload version).
 	ReceiptActionMemoryRejected ReceiptAction = "memory_rejected"
+	// ReceiptActionMemoryReturned covers a RETURN transition — the new v0.9.0
+	// review-workspace act (docs/architecture/review-workspace-v0.9.md §2/§5):
+	// pending_review → returned (NON-terminal; the agent Save on the returned
+	// memory creates a NEW revision that re-enters pending_review). Same payload
+	// coverage as the authenticated reject (reviewed H1, resulting H2, reason and
+	// the complete verified principal snapshot), stamped ReceiptPayloadVersionV10.
+	ReceiptActionMemoryReturned ReceiptAction = "memory_returned"
 	// ReceiptActionMemoryVoided covers a void transition (hashes before and
 	// after).
 	ReceiptActionMemoryVoided ReceiptAction = "memory_voided"
@@ -157,13 +167,14 @@ const (
 	ReceiptActionHoldLifted ReceiptAction = "hold_lifted"
 )
 
-// IsValidReceiptAction reports whether a is one of the twenty-three closed actions
-// (thirteen v0.4–v0.7 acts, the eight v0.8 evidence-lifecycle acts and the two
-// v0.8 object-level hold acts).
+// IsValidReceiptAction reports whether a is one of the twenty-four closed actions
+// (the fourteen v0.4–v0.7 acts, the eight v0.8 evidence-lifecycle acts, the two
+// v0.8 object-level hold acts and the v0.9.0 review-workspace memory_returned
+// act).
 func IsValidReceiptAction(a ReceiptAction) bool {
 	switch a {
 	case ReceiptActionMemoryRecorded, ReceiptActionMemoryApproved,
-		ReceiptActionMemoryRejected, ReceiptActionMemoryVoided,
+		ReceiptActionMemoryRejected, ReceiptActionMemoryReturned, ReceiptActionMemoryVoided,
 		ReceiptActionRelationConfirmed, ReceiptActionRelationRejected,
 		ReceiptActionEvidenceLinked, ReceiptActionMemorySuperseded,
 		ReceiptActionMemoryClosed, ReceiptActionMemoryReopened,
@@ -228,6 +239,19 @@ const ReceiptPayloadVersionV08 = "receipt-payload/v0.8.0"
 // append the fields in fixed order after issuedAt. The Go↔TS mirrors implement
 // the same conditional bytes.
 const ReceiptPayloadVersionV09 = "receipt-payload/v0.9.0"
+
+// ReceiptPayloadVersionV10 is the payload version stamped on the v0.9.0 REVIEW
+// WORKSPACE decision receipts (docs/architecture/review-workspace-v0.9.md §2/§5):
+// the authenticated memory_rejected payload (extended with the human reason and
+// the reviewed envelope hash H1 — mirrors approve signing H1+H2) and the new
+// memory_returned act (same coverage: reviewed H1, resulting H2, reason and the
+// complete verified principal snapshot). Canonicalization is version-agnostic
+// (the reason/reviewedEnvelopeHash fields already exist in the frozen payload
+// SHAPE — the extension fills fields the legacy claimed-act reject left empty),
+// so verifiers keep accepting v0.4.0–v0.9.0 payloads unchanged AND accept
+// v0.10.0 payloads without a protocol break (design §5 — the versioned protocol
+// decision). Existing receipts never re-version.
+const ReceiptPayloadVersionV10 = "receipt-payload/v0.10.0"
 
 // ReceiptAlgorithm is the frozen signing algorithm.
 const ReceiptAlgorithm = "Ed25519"

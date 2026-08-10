@@ -199,3 +199,43 @@ func contains(scopes []string, target string) bool {
 	}
 	return false
 }
+
+// ──────────────────────────────────────────────
+// v0.9.0 review-workspace clauses (design §5/§6) — pure, fail-closed
+// ──────────────────────────────────────────────
+
+// SODViolation reports whether the authenticated reviewer IS the pending
+// revision's proposer — the separation-of-duties clause (design §5/§6.5.5):
+// the decision is only legal when the principal's subject id DIFFERS from the
+// pending revision's recordedBy. A non-empty proposer that equals the
+// reviewer is a violation (fail-closed inside the transaction); an empty
+// proposer (a source without an actor id) never equals an authenticated
+// reviewer, so it can never be a self-decision.
+func SODViolation(proposerRecordedBy, reviewerSubjectID string) bool {
+	return proposerRecordedBy != "" && proposerRecordedBy == reviewerSubjectID
+}
+
+// ReviewChecksRequired reports whether the declared materiality level demands
+// the two review checks (design §5/§6): material and critical require
+// evidenceInspected && ruleInspected; normal/NULL never do.
+func ReviewChecksRequired(level *core.MaterialityLevel) bool {
+	if level != nil {
+		switch *level {
+		case core.MaterialityMaterial, core.MaterialityCritical:
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateReviewChecks fails closed on the anti-rubber-stamp clause: when the
+// declared materiality level demands the two review checks, BOTH must be true
+// (REVIEW_CHECKS_REQUIRED otherwise). When no check is demanded, the checks
+// are ignored (a normal approval never trips this clause).
+func ValidateReviewChecks(level *core.MaterialityLevel, checks core.ReviewChecks) error {
+	if ReviewChecksRequired(level) && !(checks.EvidenceInspected && checks.RuleInspected) {
+		return auth.New(auth.CodeReviewChecksRequired,
+			"material/critical approvals require both review checks (evidenceInspected and ruleInspected)")
+	}
+	return nil
+}

@@ -11,12 +11,17 @@
  *   save (fiscalEffect != none)  → pending_review     (GATE: human approval)
  *   pending_review ──approve(human)──► approved
  *   pending_review ──reject(human)───► rejected       (terminal)
+ *   pending_review ──return(human)──► returned       (NON-terminal, v0.9.0)
+ *   returned ──agent Save (new revision)──► pending_review   (new revision)
  *   active|pending_review|approved ──void(human|system)──► voided (terminal)
- *   active|pending_review|approved ──supersede──► superseded   (terminal)
+ *   active|pending_review|approved|returned ──supersede──► superseded (terminal)
  *
  * GATE semantics: a memory with fiscal effect can only reach `approved` through
  * a HUMAN actor (source.actorKind == human). Agents and systems record; they
  * never approve. `rejected`, `superseded` and `voided` are terminal.
+ * `returned` is NON-terminal: the reviewer sends the proposal back for
+ * correction and an agent Save on the returned memory creates a NEW revision
+ * that re-enters pending_review — the returned revision itself never reopens.
  *
  * "La IA asiste; el sistema valida; el profesional revisa; la evidencia
  * permanece." Memory informs decisions — it never authorizes business actions.
@@ -70,6 +75,16 @@ export function canApprove(status: MemoryStatus): boolean {
 
 /** Only a pending_review memory can be rejected. */
 export function canReject(status: MemoryStatus): boolean {
+	return status === "pending_review";
+}
+
+/**
+ * Only a pending_review memory can be RETURNED to its proposer for correction
+ * (v0.9.0 review workspace — pending_review only; the return is NON-terminal:
+ * an agent Save on the returned memory creates a NEW revision that re-enters
+ * pending_review). Mirrors core.CanReturn.
+ */
+export function canReturn(status: MemoryStatus): boolean {
 	return status === "pending_review";
 }
 
@@ -142,19 +157,52 @@ export function voidMemory(
 
 /**
  * Mark a previously current memory superseded, routing readers to successorId.
- * Only active | pending_review | approved memories can be superseded. Returns
- * the superseded state (immutable mirror of core.SupersedePrev mutation).
+ * Only active | pending_review | approved | returned memories can be superseded
+ * (a RETURNED revision is superseded by the agent's correction save — v0.9.0
+ * review workspace); terminal states never re-open. Returns the superseded
+ * state (immutable mirror of core.SupersedePrev mutation).
  */
 export function supersedePrev(
 	memory: AccountingMemory,
 	successorId: string,
 ): AccountingMemory {
-	if (!canVoid(memory.status)) {
+	if (!canSupersede(memory.status)) {
 		throw new Error(
 			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → superseded is not legal from status "${memory.status}"`,
 		);
 	}
 	return { ...memory, status: "superseded", supersedesId: successorId };
+}
+
+/** active | pending_review | approved | returned can be superseded. Mirrors
+ * core.CanSupersede (the v2 supersede guard, which admits returned since the
+ * v0.9.0 review workspace correction loop). */
+export function canSupersede(status: MemoryStatus): boolean {
+	return (
+		status === "active" ||
+		status === "pending_review" ||
+		status === "approved" ||
+		status === "returned"
+	);
+}
+
+/**
+ * Return a pending_review memory to its proposer for correction (NON-terminal —
+ * the proposer/agent corrects via a NEW revision that re-enters pending_review).
+ * REQUIRES a human actor; fails closed with GATE_REQUIRES_HUMAN otherwise.
+ * Mirrors core.Return (the shared lifecycle machine; the v0.9.0 review
+ * workspace decides through the authenticated store path).
+ */
+export function returnMemory(
+	memory: AccountingMemory,
+	meta: TransitionMeta,
+): void {
+	if (!canReturn(memory.status)) {
+		throw new Error(
+			`${INVALID_TRANSITION_ERROR}: ${memory.identity.id} → returned is not legal from status "${memory.status}"`,
+		);
+	}
+	assertHumanApproval(meta.actorKind);
 }
 
 /**

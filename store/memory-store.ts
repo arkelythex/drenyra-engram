@@ -28,8 +28,11 @@ import {
 	ApprovalError,
 	RECEIPT_PAYLOAD_VERSION,
 	RECEIPT_PAYLOAD_VERSION_V07,
+	RECEIPT_PAYLOAD_VERSION_V10,
 	assertValidContent,
 	assertValidMemory,
+	assertValidRuleLink,
+	assertValidRuleLinks,
 	assertValidScope,
 	assertValidSource,
 	assertValidValidity,
@@ -37,6 +40,7 @@ import {
 	computeContentHash,
 	computeEnvelopeHash,
 	computeIdentityHash,
+	deriveRuleRefs,
 	computeJudgmentHash,
 	isProposableRelation,
 	scopeEquals,
@@ -51,6 +55,8 @@ import {
 	type ConfirmJudgmentResult,
 	type EvidenceObject,
 	type JudgmentEvent,
+	type MaterialityLevel,
+	type MemoryDecisionEvent,
 	type MemoryRelation,
 	type MemoryRelationRecord,
 	type MemoryScope,
@@ -67,6 +73,14 @@ import {
 	type ReceiptSubjectType,
 	type RejectJudgmentCommand,
 	type RejectJudgmentResult,
+	type RejectMemoryCommand,
+	type RejectMemoryResult,
+	type ReturnMemoryCommand,
+	type ReturnMemoryResult,
+	type ReviewDetail,
+	type ReviewQueuePage,
+	type ReviewQueueQuery,
+	type RuleLink,
 	type SaveMemoryInput,
 	type SignedReceipt,
 	type StatusTransitionRecord,
@@ -80,7 +94,7 @@ import {
 	initialStatus,
 } from "../lifecycle/transitions.js";
 import { principalSnapshot } from "../auth/principal.js";
-import { authorizeApproval } from "../authz/approval-policy.js";
+import { authorizeApproval, sodViolation } from "../authz/approval-policy.js";
 import {
 	authorizeJudgment,
 	type JudgmentAuthorizationDecision,
@@ -210,6 +224,50 @@ export interface MemoryStore {
 		principal: VerifiedApprovalPrincipal,
 		policy?: ApprovalPolicyFn,
 	): Promise<ApprovalResult>;
+	/** Immutable authenticated approval events (v0.4.0 Step 1). */
+	approvalEvents(): ApprovalEvent[];
+	/**
+	 * The pending_review queue of an EXACT company scope (v0.9.0 review
+	 * workspace, design §3): scope-first (structural filter, never a
+	 * post-filter), deterministically ordered (materiality rank DESC →
+	 * recordedAt ASC → insertion) with bounded pagination (limit default 50,
+	 * max 200). Items carry the CURRENT envelope hash the reviewer must sign
+	 * against and the proposer. Mirrors store.ListReviewQueue.
+	 */
+	listReviewQueue(query: ReviewQueueQuery): ReviewQueuePage;
+	/**
+	 * The composed review of ONE pending revision, scope-guarded (design §4):
+	 * the full pending revision, the structured content diff vs its chain
+	 * predecessor, the evidence state with WORM availability, the best-effort
+	 * rule state, the open proposed judgments and the decision-relevant review
+	 * metadata with the boundary notice. Mirrors store.ReviewDetail.
+	 */
+	reviewDetail(memoryId: string, scope: MemoryScope): ReviewDetail;
+	/**
+	 * Atomic authenticated reject (v0.9.0, design §5): pending_review →
+	 * rejected (terminal). Mirrors store.RejectMemory: idempotency
+	 * reservation → locked re-read → scope/status checks → fresh H1 vs
+	 * expected → SoD (reviewer ≠ proposer, fail-closed) → reason policy →
+	 * guarded status flip + H2 → immutable decision event → memory_rejected
+	 * receipt (payload v0.10.0).
+	 */
+	rejectMemory(
+		command: RejectMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+	): Promise<RejectMemoryResult>;
+	/**
+	 * Atomic authenticated return (v0.9.0, design §5): pending_review →
+	 * returned (NON-terminal — an agent Save on the returned memory creates a
+	 * NEW revision that re-enters pending_review). Reason REQUIRED. Mirrors
+	 * store.ReturnMemory (same discipline as reject; memory_returned receipt,
+	 * payload v0.10.0).
+	 */
+	returnMemory(
+		command: ReturnMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+	): Promise<ReturnMemoryResult>;
+	/** Immutable authenticated decision events (v0.9.0 — reject/return). */
+	decisionEvents(): MemoryDecisionEvent[];
 	relations(): MemoryRelationRecord[];
 	transitionLog(): StatusTransitionRecord[];
 	/** Immutable authenticated approval events (v0.4.0 Step 1). */
@@ -222,6 +280,16 @@ export interface MemoryStore {
 	/** Attaches a rule/policy reference AFTER write; a duplicate is a no-op.
 	 * Rule links are NOT covered by the closed receipt action set. */
 	addRuleLink(memoryId: string, ref: string, actor: string): void;
+	/**
+	 * Pins ONE structured rule link AFTER write (v0.6.0, design §2.2 — mirror
+	 * of store.AddRuleLinkVersion): closed-period gate, target validation
+	 * (the version must exist, be kind=rule, topicKey === ref, same tenant)
+	 * and the conflict discipline — an identical link is a no-op; a different
+	 * version/date for the same (memoryId, ref) pair fails
+	 * RULE_LINK_VERSION_CONFLICT (metadata is never updated in place). The
+	 * envelope refreshes ONLY when the bare ref itself is new.
+	 */
+	addRuleLinkVersion(memoryId: string, link: RuleLink, actor: string): void;
 	/** Captures ONE evidence object WORM-style (v0.7.0): the identity is the
 	 * SHA-256 hex of the bytes; a content-addressed duplicate is a NO-OP
 	 * (created=false, no receipt). Mirrors store.SQLiteStore.StoreObject. */
@@ -241,6 +309,15 @@ export class InMemoryMemoryStore implements MemoryStore {
 	private readonly chains = new Map<string, AccountingMemory[]>();
 	private readonly byId = new Map<string, AccountingMemory>();
 	private readonly relationRecords: MemoryRelationRecord[] = [];
+	// ── v0.6.0 structured rule links (mirror of the rule_links table's
+	// versioned rows: memory_id, ref, version, effective_at, actor, timestamp;
+	// legacy unversioned rows never appear — they stay bare refs). ──
+	private readonly ruleLinkRecords: {
+		memoryId: string;
+		link: RuleLink;
+		actor: string;
+		timestamp: string;
+	}[] = [];
 	private readonly statusTransitions: StatusTransitionRecord[] = [];
 	private readonly approvalEventRecords: ApprovalEvent[] = [];
 	// ── v0.4.0 Step 3 immutable receipts (mirror of the receipts table: no
@@ -260,6 +337,22 @@ export class InMemoryMemoryStore implements MemoryStore {
 			principalSubjectId: string;
 			membershipId: string;
 			result?: ApprovalResult;
+			completedAt?: string;
+		}
+	>();
+	// ── v0.9.0 review workspace (mirror of memory_decision_events +
+	// review_idempotency_keys: the DECISION events live on their own immutable
+	// ledger and the review decisions reserve (tenant, requestId) on their OWN
+	// ledger — approvals keep the approval ledger, so the same request id never
+	// collides across ledgers). ──
+	private readonly decisionEventRecords: MemoryDecisionEvent[] = [];
+	private readonly reviewIdempotency = new Map<
+		string,
+		{
+			commandHash: string;
+			principalSubjectId: string;
+			membershipId: string;
+			result?: DecisionResultShape;
 			completedAt?: string;
 		}
 	>();
@@ -312,6 +405,50 @@ export class InMemoryMemoryStore implements MemoryStore {
 		const recordedAt = new Date().toISOString();
 		const effectiveAt = input.effectiveAt ?? recordedAt;
 
+		// Structured rule links (v0.6.0, design §2.2): validate + dedupe the
+		// transport-only list UP FRONT (fail fast, before any mutation), then
+		// derive/dedupe the bare ruleRefs from ruleLinks[].ref so the canonical
+		// envelope hashes (which hash ONLY the bare refs) already carry them
+		// before computeEnvelopeHash runs. Every target is validated: the
+		// version must exist, be kind=rule, topicKey === ref and belong to a
+		// chain visible from the consuming memory's tenant boundary; the pinned
+		// effectiveAt must equal the consuming memory's effectiveAt (design §1
+		// decision-time contract).
+		const ruleLinks = assertValidRuleLinks(input.ruleLinks);
+		const derivedRuleRefs = deriveRuleRefs(input.ruleRefs, ruleLinks);
+		const memoryTenant =
+			input.scope.kind === "company" ? input.scope.organizationId : "";
+		for (const link of ruleLinks) {
+			if (link.effectiveAt !== effectiveAt) {
+				throw new Error(
+					`RULE_LINK_EFFECTIVE_AT_MISMATCH: link for ref "${link.ref}" pins effective_at ${link.effectiveAt} but the consuming memory's effectiveAt is ${effectiveAt} (decision time must be snapshotted exactly)`,
+				);
+			}
+			const target = this.byId.get(link.version);
+			if (target === undefined) {
+				throw new Error(
+					`RULE_LINK_TARGET_NOT_FOUND: rule version "${link.version}" (ref "${link.ref}") does not exist`,
+				);
+			}
+			if (target.kind !== "rule") {
+				throw new Error(
+					`RULE_LINK_TARGET_NOT_A_RULE: rule version "${link.version}" is kind ${target.kind}, expected rule`,
+				);
+			}
+			if (target.identity.topicKey !== link.ref) {
+				throw new Error(
+					`RULE_LINK_TARGET_TOPIC_MISMATCH: rule version "${link.version}" has topicKey "${target.identity.topicKey}" but the link ref is "${link.ref}"`,
+				);
+			}
+			const targetTenant =
+				target.scope.kind === "company" ? target.scope.organizationId : "";
+			if (targetTenant !== memoryTenant) {
+				throw new Error(
+					`RULE_LINK_TARGET_TENANT_MISMATCH: rule version "${link.version}" is not visible from the consuming memory's tenant boundary`,
+				);
+			}
+		}
+
 		const memory: AccountingMemory = {
 			identity: { id: randomUUID(), topicKey: input.topicKey },
 			title: input.title,
@@ -339,7 +476,10 @@ export class InMemoryMemoryStore implements MemoryStore {
 					}),
 			...(input.ruleRefs === undefined
 				? {}
-				: { ruleRefs: [...input.ruleRefs] }),
+				: { ruleRefs: [...(derivedRuleRefs ?? [])] }),
+			...(ruleLinks.length === 0
+				? {}
+				: { ruleLinks: ruleLinks.map((link) => ({ ...link })) }),
 			...(input.confidence === undefined
 				? {}
 				: { confidence: input.confidence }),
@@ -396,6 +536,17 @@ export class InMemoryMemoryStore implements MemoryStore {
 			chain.push(memory);
 			this.memories.push(memory);
 			this.byId.set(memory.identity.id, memory);
+			// Structured rule links (v0.6.0, design §2.2): the versioned rows are
+			// recorded in the SAME critical section as the memory insert (mirror
+			// of the rule_links table's actor/timestamp provenance columns).
+			for (const link of ruleLinks) {
+				this.ruleLinkRecords.push({
+					memoryId: memory.identity.id,
+					link: { ...link },
+					actor: input.source.actorId ?? "",
+					timestamp: recordedAt,
+				});
+			}
 			// Atomic receipt emission (v0.4.0 Step 3): inside the SAME critical
 			// section, with the captured recordedAt — never a fresh time call. If
 			// auto-supersession changed the prior observation, memory_superseded
@@ -614,6 +765,84 @@ export class InMemoryMemoryStore implements MemoryStore {
 	}
 
 	/**
+	 * Pins ONE structured rule link AFTER write (v0.6.0, design §2.2 — mirror of
+	 * SQLiteStore.AddRuleLinkVersion). Same discipline as addLink: memory
+	 * lookup, closed-period gate, target validation (version must exist, be
+	 * kind=rule, topicKey === ref, same tenant), decision-time equality
+	 * (effectiveAt must equal the consuming memory's effectiveAt) and the
+	 * conflict discipline — an identical link is a no-op (no mutation, no
+	 * envelope refresh); a different version/date for the same (memoryId, ref)
+	 * pair fails RULE_LINK_VERSION_CONFLICT (metadata is never updated in
+	 * place; a legacy unversioned row is a different version and cannot be
+	 * upgraded). The envelope refreshes ONLY when the bare ref itself is new.
+	 * No receipt is emitted (rule links are not covered by the closed action
+	 * set).
+	 */
+	addRuleLinkVersion(memoryId: string, link: RuleLink, actor: string): void {
+		assertValidRuleLink(link);
+		const memory = this.byId.get(memoryId);
+		if (memory === undefined) {
+			throw new Error(`OBSERVATION_NOT_FOUND: ${memoryId}`);
+		}
+		if (link.effectiveAt !== memory.effectiveAt) {
+			throw new Error(
+				`RULE_LINK_EFFECTIVE_AT_MISMATCH: link for ref "${link.ref}" pins effective_at ${link.effectiveAt} but the consuming memory's effectiveAt is ${memory.effectiveAt} (decision time must be snapshotted exactly)`,
+			);
+		}
+		const target = this.byId.get(link.version);
+		if (target === undefined) {
+			throw new Error(
+				`RULE_LINK_TARGET_NOT_FOUND: rule version "${link.version}" (ref "${link.ref}") does not exist`,
+			);
+		}
+		if (target.kind !== "rule") {
+			throw new Error(
+				`RULE_LINK_TARGET_NOT_A_RULE: rule version "${link.version}" is kind ${target.kind}, expected rule`,
+			);
+		}
+		if (target.identity.topicKey !== link.ref) {
+			throw new Error(
+				`RULE_LINK_TARGET_TOPIC_MISMATCH: rule version "${link.version}" has topicKey "${target.identity.topicKey}" but the link ref is "${link.ref}"`,
+			);
+		}
+		if (
+			(target.scope.kind === "company" ? target.scope.organizationId : "") !==
+			(memory.scope.kind === "company" ? memory.scope.organizationId : "")
+		) {
+			throw new Error(
+				`RULE_LINK_TARGET_TENANT_MISMATCH: rule version "${link.version}" is not visible from the consuming memory's tenant boundary`,
+			);
+		}
+		const existing = (memory.ruleLinks ?? []).find(
+			(entry) => entry.ref === link.ref,
+		);
+		if (existing !== undefined) {
+			if (
+				existing.version === link.version &&
+				existing.effectiveAt === link.effectiveAt
+			) {
+				// Identical structured link: a no-op that stays a no-op.
+				return;
+			}
+			throw new Error(
+				`RULE_LINK_VERSION_CONFLICT: ref "${link.ref}" is already pinned to ${existing.version} at ${existing.effectiveAt} for memory ${memoryId} and cannot be re-pinned to ${link.version} at ${link.effectiveAt} (metadata is never updated in place)`,
+			);
+		}
+		const bareRefNew = !(memory.ruleRefs ?? []).includes(link.ref);
+		memory.ruleLinks = [...(memory.ruleLinks ?? []), { ...link }];
+		this.ruleLinkRecords.push({
+			memoryId,
+			link: { ...link },
+			actor,
+			timestamp: new Date().toISOString(),
+		});
+		if (bareRefNew) {
+			memory.ruleRefs = [...(memory.ruleRefs ?? []), link.ref];
+			memory.envelopeHash = envelopeHashSync(memory);
+		}
+	}
+
+	/**
 	 * Captures ONE evidence object WORM-style (v0.7.0, mirror of
 	 * SQLiteStore.StoreObject). The identity is the SHA-256 hex of the bytes.
 	 * Duplicate handling is scope-aware: see storeObject's conflict branch.
@@ -791,9 +1020,13 @@ export class InMemoryMemoryStore implements MemoryStore {
 				| "reason"
 			>
 		> = {},
+		// v0.9.0 review workspace: the authenticated reject/return receipts stamp
+		// RECEIPT_PAYLOAD_VERSION_V10 (the extended payload version with reason +
+		// reviewed H1). Every other act keeps the default v0.4.0 version.
+		version: string = RECEIPT_PAYLOAD_VERSION,
 	): ReceiptPayload {
 		return {
-			version: RECEIPT_PAYLOAD_VERSION,
+			version,
 			subjectType,
 			subjectId,
 			action,
@@ -1114,6 +1347,567 @@ export class InMemoryMemoryStore implements MemoryStore {
 			}
 			throw error;
 		}
+	}
+
+	// ──────────────────────────────────────────────
+	// v0.9.0 review workspace — queue / detail / decisions
+	// ──────────────────────────────────────────────
+
+	/** Every stored immutable decision event (reject/return), insertion order. */
+	decisionEvents(): MemoryDecisionEvent[] {
+		return [...this.decisionEventRecords];
+	}
+
+	/**
+	 * The pending_review queue of an EXACT company scope (design §3): scope-first
+	 * (structural filter, never a post-filter), deterministically ordered
+	 * (materiality rank DESC → recordedAt ASC → insertion), bounded pagination
+	 * (limit default 50, max 200, min 1; offset default 0). Status is closed to
+	 * pending_review. Mirrors store.ListReviewQueue.
+	 */
+	listReviewQueue(query: ReviewQueueQuery): ReviewQueuePage {
+		const scope = query.scope;
+		const limit =
+			query.limit === undefined || query.limit === 0
+				? 50
+				: Math.min(Math.max(query.limit, 1), 200);
+		const offset = query.offset ?? 0;
+		const matching = [...this.byId.values()].filter(
+			(m) => m.status === "pending_review" && scopeEquals(m.scope, scope),
+		);
+		// Deterministic order: materiality rank DESC → recordedAt ASC → insertion.
+		matching.sort((a, b) => {
+			const rankDiff =
+				materialityRank(b.materialityLevel) -
+				materialityRank(a.materialityLevel);
+			if (rankDiff !== 0) return rankDiff;
+			if (a.recordedAt !== b.recordedAt) {
+				return a.recordedAt < b.recordedAt ? -1 : 1;
+			}
+			return 0;
+		});
+		const items = matching.slice(offset, offset + limit).map((m) => ({
+			memoryId: m.identity.id,
+			kind: m.kind,
+			fiscalEffect: m.fiscalEffect,
+			...(m.materialityLevel === undefined
+				? {}
+				: { materialityLevel: m.materialityLevel }),
+			materialityCents: m.materiality ?? 0n,
+			status: m.status,
+			envelopeHash: envelopeHashSync(m),
+			recordedBy: m.source.actorId ?? "",
+			recordedAt: m.recordedAt,
+			evidenceRefCount: (m.evidenceRefs ?? []).length,
+			ruleRefCount: (m.ruleRefs ?? []).length,
+			openJudgmentCount: this.openJudgmentsTouching(m.identity.id).length,
+		}));
+		return { items, limit, offset };
+	}
+
+	/**
+	 * The composed review of ONE pending revision, scope-guarded (design §4): the
+	 * full pending revision, the structured content diff vs its chain
+	 * predecessor, the evidence state with WORM availability, the best-effort
+	 * rule state, the open proposed judgments and the decision-relevant review
+	 * metadata with the boundary notice. Mirrors store.ReviewDetail.
+	 */
+	reviewDetail(memoryId: string, scope: MemoryScope): ReviewDetail {
+		const memory = this.byId.get(memoryId);
+		if (memory === undefined) {
+			throw new ApprovalError(
+				"MEMORY_NOT_FOUND",
+				`memory not found: ${memoryId}`,
+			);
+		}
+		if (!scopeEquals(memory.scope, scope)) {
+			throw new ApprovalError(
+				"MEMORY_NOT_FOUND",
+				`memory not found: ${memoryId}`,
+			);
+		}
+		if (memory.status !== "pending_review") {
+			throw new ApprovalError(
+				"INVALID_TRANSITION",
+				`review detail requires a pending_review memory, got status "${memory.status}"`,
+			);
+		}
+
+		// Structured content diff vs the immediate chain predecessor (identity/
+		// content fields only — status, timestamps and recorded-by are provenance).
+		const prev = this.previousChainRevision(memory);
+		const changes: ReviewDetail["diff"]["changes"] = [];
+		if (prev !== undefined) {
+			addFieldChange(changes, "title", prev.title, memory.title);
+			addFieldChange(changes, "kind", prev.kind, memory.kind);
+			addFieldChange(
+				changes,
+				"scope",
+				scopeKey(prev.scope),
+				scopeKey(memory.scope),
+			);
+			addFieldChange(
+				changes,
+				"fiscalEffect",
+				prev.fiscalEffect,
+				memory.fiscalEffect,
+			);
+			addFieldChange(
+				changes,
+				"effectiveAt",
+				prev.effectiveAt,
+				memory.effectiveAt,
+			);
+			addFieldChange(
+				changes,
+				"content.what",
+				prev.content.what,
+				memory.content.what,
+			);
+			addFieldChange(
+				changes,
+				"content.why",
+				prev.content.why,
+				memory.content.why,
+			);
+			addFieldChange(
+				changes,
+				"content.where",
+				prev.content.where,
+				memory.content.where,
+			);
+			addFieldChange(
+				changes,
+				"content.learned",
+				prev.content.learned,
+				memory.content.learned,
+			);
+			addFieldChange(
+				changes,
+				"evidenceRefs",
+				canonicalRefs(prev.evidenceRefs),
+				canonicalRefs(memory.evidenceRefs),
+			);
+			addFieldChange(
+				changes,
+				"ruleRefs",
+				canonicalRefs(prev.ruleRefs),
+				canonicalRefs(memory.ruleRefs),
+			);
+			addFieldChange(
+				changes,
+				"materialityLevel",
+				prev.materialityLevel ?? "",
+				memory.materialityLevel ?? "",
+			);
+		}
+
+		// Evidence state — WORM availability via the object store.
+		const evidence = (memory.evidenceRefs ?? []).map((ref) => {
+			const object = this.objects.get(ref);
+			if (object !== undefined) {
+				return {
+					ref,
+					availability: "present" as const,
+					objectId: object.object.objectId,
+					sizeBytes: BigInt(object.object.size),
+					contentType: object.object.contentType,
+				};
+			}
+			if (isObjectId(ref)) {
+				return { ref, availability: "absent" as const };
+			}
+			return { ref, availability: "not-a-ref" as const };
+		});
+
+		// Best-effort rule state (Phase 6 is NOT required).
+		const rules = (memory.ruleRefs ?? []).map((ref) => {
+			const rule = this.findByTopicKey(ref, memory.scope);
+			if (rule !== undefined && rule.kind === "rule") {
+				return {
+					ref,
+					resolved: true,
+					memoryId: rule.identity.id,
+					status: rule.status,
+					...(rule.validity === undefined
+						? {}
+						: {
+								effectiveAt: rule.validity.effectiveAt,
+								expiresAt: rule.validity.expiresAt,
+							}),
+				};
+			}
+			return { ref, resolved: false };
+		});
+
+		const openJudgments = this.openJudgmentsTouching(memory.identity.id).map(
+			(j) => ({
+				judgmentId: j.id,
+				relation: j.relation,
+				fromId: j.fromId,
+				toId: j.toId,
+				proposerId: j.proposer.actorId ?? "",
+				proposedAt: j.proposedAt,
+			}),
+		);
+
+		// Review metadata — H1 (fresh recompute of the CURRENT pending revision),
+		// proposer, timestamps, risk class and the prior approved revision.
+		const priorApproved = this.priorApprovedChainRevision(memory);
+		return {
+			memory: cloneMemory(memory),
+			diff: { changes },
+			evidence,
+			rules,
+			openJudgments,
+			reviewMetadata: {
+				envelopeHashToSign: envelopeHashSync(memory),
+				recordedBy: memory.source.actorId ?? "",
+				recordedAt: memory.recordedAt,
+				...(memory.observedAt === undefined
+					? {}
+					: { observedAt: memory.observedAt }),
+				fiscalEffect: memory.fiscalEffect,
+				...(memory.materialityLevel === undefined
+					? {}
+					: { materialityLevel: memory.materialityLevel }),
+				materialityCents: memory.materiality ?? 0n,
+				...(priorApproved === undefined
+					? {}
+					: { priorApprovedRevision: priorApproved.identity.id }),
+			},
+			boundaryNotice: REVIEW_BOUNDARY_NOTICE,
+		};
+	}
+
+	/**
+	 * Atomic authenticated reject (design §5): pending_review → rejected
+	 * (terminal). Mirrors store.RejectMemory; the whole decision is one critical
+	 * section (idempotency reservation → locked re-read → scope checks → status
+	 * gate → fresh H1 vs expected → SoD → reason policy → guarded status flip +
+	 * H2 → immutable decision event + transition → memory_rejected receipt
+	 * (payload v0.10.0) → completed reservation).
+	 */
+	async rejectMemory(
+		command: RejectMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+	): Promise<RejectMemoryResult> {
+		const result = await this.decidePendingMemory(
+			command.memoryId,
+			command.expectedEnvelopeHash,
+			command.reason,
+			command.requestId,
+			principal,
+			"rejected",
+		);
+		return { ...result, currentStatus: "rejected" };
+	}
+
+	/**
+	 * Atomic authenticated return (design §5): pending_review → returned
+	 * (NON-terminal — an agent Save on the returned memory creates a NEW
+	 * revision that re-enters pending_review). Reason REQUIRED. Mirrors
+	 * store.ReturnMemory (the shared decision core; memory_returned receipt,
+	 * payload v0.10.0).
+	 */
+	async returnMemory(
+		command: ReturnMemoryCommand,
+		principal: VerifiedApprovalPrincipal,
+	): Promise<ReturnMemoryResult> {
+		const result = await this.decidePendingMemory(
+			command.memoryId,
+			command.expectedEnvelopeHash,
+			command.reason,
+			command.requestId,
+			principal,
+			"returned",
+		);
+		return {
+			memoryId: result.memoryId,
+			decisionEventId: result.decisionEventId,
+			previousStatus: "pending_review",
+			currentStatus: "returned",
+			reviewedEnvelopeHash: result.reviewedEnvelopeHash,
+			resultingEnvelopeHash: result.resultingEnvelopeHash,
+			reason: result.reason,
+			principalSubjectId: result.principalSubjectId,
+			membershipId: result.membershipId,
+			policyVersion: result.policyVersion,
+			decidedAt: result.decidedAt,
+			idempotentReplay: result.idempotentReplay,
+		};
+	}
+
+	/**
+	 * The shared authenticated reject/return core (mirror of the Go
+	 * decidePendingMemory): ONE critical section with the same discipline as the
+	 * approval — no awaits after the decision mutation so a throw rolls back the
+	 * incomplete reservation (the mirror's transaction).
+	 */
+	private async decidePendingMemory(
+		memoryId: string,
+		expectedEnvelopeHash: string,
+		reason: string,
+		requestId: string,
+		principal: VerifiedApprovalPrincipal,
+		kind: "rejected" | "returned",
+	): Promise<DecisionResultShape> {
+		// Syntax guards (defense in depth — the service validates first).
+		if (
+			memoryId.trim().length === 0 ||
+			expectedEnvelopeHash.trim().length === 0 ||
+			requestId.trim().length === 0
+		) {
+			throw new ApprovalError(
+				"MEMORY_NOT_FOUND",
+				"decision command is incomplete (memoryId, expectedEnvelopeHash and requestId are required)",
+			);
+		}
+
+		const now = new Date().toISOString();
+		const commandHash = decisionCommandHash(
+			memoryId,
+			expectedEnvelopeHash,
+			reason,
+		);
+		// Idempotency: one reservation per (tenant, requestId) on the REVIEW
+		// ledger (mirror of review_idempotency_keys — approvals keep their own
+		// ledger, so the same request id never collides across ledgers).
+		const key = `${principal.tenantId}\u0000${requestId}`;
+		const existing = this.reviewIdempotency.get(key);
+		if (existing !== undefined) {
+			if (
+				existing.commandHash !== commandHash ||
+				existing.principalSubjectId !== principal.subjectId ||
+				existing.membershipId !== principal.membershipId
+			) {
+				throw new ApprovalError(
+					"IDEMPOTENCY_CONFLICT",
+					"request id already used with a different command or principal",
+				);
+			}
+			if (existing.completedAt !== undefined && existing.result !== undefined) {
+				const replay: DecisionResultShape = {
+					...existing.result,
+					idempotentReplay: true,
+				};
+				return replay;
+			}
+			throw new ApprovalError(
+				"IDEMPOTENCY_CONFLICT",
+				"request id is reserved by an incomplete decision attempt; use a fresh request id",
+			);
+		}
+		this.reviewIdempotency.set(key, {
+			commandHash,
+			principalSubjectId: principal.subjectId,
+			membershipId: principal.membershipId,
+		});
+
+		try {
+			const memory = this.byId.get(memoryId);
+			if (memory === undefined) {
+				throw new ApprovalError(
+					"MEMORY_NOT_FOUND",
+					`memory not found: ${memoryId}`,
+				);
+			}
+
+			// Scope checks (derived from the row, never caller claims).
+			if (memory.scope.kind !== "company") {
+				throw new ApprovalError(
+					"COMPANY_SCOPE_DENIED",
+					"institutional memories cannot be decided by a company-scoped principal",
+				);
+			}
+			if (principal.tenantId !== memory.scope.organizationId) {
+				throw new ApprovalError(
+					"TENANT_SCOPE_MISMATCH",
+					"principal tenant does not match the memory tenant",
+				);
+			}
+			if (!principal.companyScopes.includes(memory.scope.companyId)) {
+				throw new ApprovalError(
+					"COMPANY_SCOPE_DENIED",
+					"company is outside the principal's scope",
+				);
+			}
+
+			// Status gate: only pending_review can be decided.
+			if (
+				memory.status === "approved" ||
+				memory.status === "rejected" ||
+				memory.status === "returned"
+			) {
+				throw new ApprovalError("ALREADY_DECIDED", "memory is already decided");
+			}
+			if (memory.status !== "pending_review") {
+				throw new ApprovalError(
+					"INVALID_TRANSITION",
+					`${kind} is not legal from status "${memory.status}"`,
+				);
+			}
+
+			// H1 recomputed FRESH from the current row — a mismatch carries ONLY the
+			// two hashes, never content.
+			const h1 = await computeEnvelopeHash(memory);
+			if (expectedEnvelopeHash.trim().toLowerCase() !== h1.toLowerCase()) {
+				throw new ApprovalError(
+					"ENVELOPE_MISMATCH",
+					"memory envelope changed after review; expected hash does not match the current envelope",
+					{ expectedEnvelopeHash, actualEnvelopeHash: h1 },
+				);
+			}
+
+			// SoD fail-closed: the reviewer cannot decide their own proposal.
+			if (sodViolation(memory.source.actorId ?? "", principal.subjectId)) {
+				throw new ApprovalError(
+					"SOD_VIOLATION",
+					"the reviewer cannot decide their own proposal (separation of duties)",
+				);
+			}
+
+			// Reason policy (design §5): REQUIRED for a return ALWAYS; for a reject
+			// when the risk class demands it (material/critical or
+			// closing/declaration/sunat_filing).
+			const requireReason = kind === "returned" || rejectReasonRequired(memory);
+			if (requireReason && reason.trim().length === 0) {
+				throw new ApprovalError(
+					"REASON_REQUIRED",
+					"a reason is required for this decision",
+				);
+			}
+
+			// H2 from the same snapshot with the target status.
+			const decided = cloneMemory(memory);
+			decided.status = kind;
+			const h2 = await computeEnvelopeHash(decided);
+			if (h2 === h1) {
+				throw new ApprovalError(
+					"INVALID_TRANSITION",
+					"resulting envelope equals reviewed envelope — status change did not affect the hash",
+				);
+			}
+
+			// ── Atomic final block: mutate + record + emit + complete. ──
+			const snapshot = principalSnapshot(principal);
+			const event: MemoryDecisionEvent = {
+				id: randomUUID(),
+				requestId,
+				memoryId: memory.identity.id,
+				tenantId: memory.scope.organizationId,
+				companyId: memory.scope.companyId,
+				...(memory.scope.period === undefined || memory.scope.period === ""
+					? {}
+					: { fiscalPeriodId: memory.scope.period }),
+				action: kind,
+				fromStatus: "pending_review",
+				toStatus: kind,
+				reviewedEnvelopeHash: h1,
+				resultingEnvelopeHash: h2,
+				reason,
+				principalSnapshot: snapshot,
+				policyVersion: KERNEL_POLICY_VERSION,
+				authorizationReasonCode: kind === "returned" ? "RETURNED" : "REJECTED",
+				createdAt: now,
+			};
+			memory.status = kind;
+			memory.envelopeHash = h2;
+			this.decisionEventRecords.push(event);
+			this.statusTransitions.push({
+				memoryId: memory.identity.id,
+				from: "pending_review",
+				to: kind,
+				actor: principal.subjectId,
+				actorKind: "human",
+				timestamp: now,
+			});
+			// Atomic receipt emission (payload v0.10.0): the authenticated
+			// reject/return carries the extended payload (reason + reviewed H1 +
+			// resulting H2 + the complete verified principal snapshot).
+			this.emitReceipt(
+				this.basePayload(
+					"memory",
+					memory.identity.id,
+					kind === "returned" ? "memory_returned" : "memory_rejected",
+					receiptScope(memory),
+					verifiedPrincipal(snapshot),
+					KERNEL_POLICY_VERSION,
+					now,
+					{
+						reviewedEnvelopeHash: h1,
+						resultingEnvelopeHash: h2,
+						reason,
+					},
+					RECEIPT_PAYLOAD_VERSION_V10,
+				),
+			);
+			const result: DecisionResultShape = {
+				memoryId: memory.identity.id,
+				decisionEventId: event.id,
+				previousStatus: "pending_review",
+				currentStatus: kind,
+				reviewedEnvelopeHash: h1,
+				resultingEnvelopeHash: h2,
+				reason,
+				principalSubjectId: principal.subjectId,
+				membershipId: principal.membershipId,
+				policyVersion: KERNEL_POLICY_VERSION,
+				decidedAt: now,
+				idempotentReplay: false,
+			};
+			this.reviewIdempotency.set(key, {
+				commandHash,
+				principalSubjectId: principal.subjectId,
+				membershipId: principal.membershipId,
+				result,
+				completedAt: now,
+			});
+			return result;
+		} catch (error) {
+			const current = this.reviewIdempotency.get(key);
+			if (current !== undefined && current.completedAt === undefined) {
+				this.reviewIdempotency.delete(key);
+			}
+			throw error;
+		}
+	}
+
+	/** The immediate predecessor of memory in its (topicKey, exact scope) chain. */
+	private previousChainRevision(
+		memory: AccountingMemory,
+	): AccountingMemory | undefined {
+		const chain = this.chains.get(
+			chainKey(memory.identity.topicKey, memory.scope),
+		);
+		if (chain === undefined) return undefined;
+		const idx = chain.findIndex((m) => m.identity.id === memory.identity.id);
+		return idx > 0 ? chain[idx - 1] : undefined;
+	}
+
+	/** The newest APPROVED revision older than memory in its chain. */
+	private priorApprovedChainRevision(
+		memory: AccountingMemory,
+	): AccountingMemory | undefined {
+		const chain = this.chains.get(
+			chainKey(memory.identity.topicKey, memory.scope),
+		);
+		if (chain === undefined) return undefined;
+		const idx = chain.findIndex((m) => m.identity.id === memory.identity.id);
+		for (let i = idx - 1; i >= 0; i--) {
+			const m = chain[i]!;
+			if (m.status === "approved") return m;
+		}
+		return undefined;
+	}
+
+	/** The PROPOSED judgments with fromId or toId = this memory (design §4.5). */
+	private openJudgmentsTouching(memoryId: string): AccountingJudgment[] {
+		return [...this.judgmentsById.values()].filter(
+			(j) =>
+				j.status === "proposed" &&
+				(j.fromId === memoryId || j.toId === memoryId),
+		);
 	}
 
 	private chain(topicKey: string, scope: MemoryScope): AccountingMemory[] {
@@ -2237,4 +3031,99 @@ function judgmentDecideCommandHash(
  */
 function judgmentWithdrawCommandHash(judgmentId: string): string {
 	return createHash("sha256").update(judgmentId, "utf8").digest("hex");
+}
+
+// ──────────────────────────────────────────────
+// v0.9.0 review workspace — module helpers
+// ──────────────────────────────────────────────
+
+/** The gate G-9 wording echoed in EVERY review detail payload (design §4.7). */
+const REVIEW_BOUNDARY_NOTICE =
+	"signature integrity is not accounting correctness";
+
+/** Exactly 64 lowercase hex digits — the SHA-256 content-address shape (the
+ * WORM object id pattern; mirrors core.IsObjectID). */
+const OBJECT_ID_PATTERN = /^[0-9a-f]{64}$/;
+
+function isObjectId(ref: string): boolean {
+	return OBJECT_ID_PATTERN.test(ref);
+}
+
+/** The SHARED reject/return result shape of the decision core (design §5): the
+ * two result contracts differ ONLY in currentStatus ("rejected" | "returned"),
+ * so the one atomic core produces this shape and the reject/return surfaces map
+ * the final field-by-field. Mirrors the Go decidePendingMemory shared core. */
+interface DecisionResultShape {
+	memoryId: string;
+	decisionEventId: string;
+	previousStatus: "pending_review";
+	currentStatus: "rejected" | "returned";
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	reason: string;
+	principalSubjectId: string;
+	membershipId: string;
+	policyVersion: string;
+	decidedAt: string;
+	idempotentReplay: boolean;
+}
+
+/** Materiality rank for the deterministic queue ordering (critical 3, material
+ * 2, anything else 1 — mirrors the store ORDER BY CASE). */
+function materialityRank(level: MaterialityLevel | undefined): number {
+	if (level === "critical") return 3;
+	if (level === "material") return 2;
+	return 1;
+}
+
+/** The REJECT reason policy (design §5): the risk class DEMANDS a rejection
+ * reason when materiality ≥ material OR fiscalEffect ∈ {closing, declaration,
+ * sunat_filing}. Mirrors core.RejectReasonRequired. */
+function rejectReasonRequired(memory: AccountingMemory): boolean {
+	if (
+		memory.materialityLevel === "material" ||
+		memory.materialityLevel === "critical"
+	) {
+		return true;
+	}
+	return (
+		memory.fiscalEffect === "closing" ||
+		memory.fiscalEffect === "declaration" ||
+		memory.fiscalEffect === "sunat_filing"
+	);
+}
+
+/** Appends ONE field change when the before/after values differ (the diff never
+ * lists unchanged identity/content fields). */
+function addFieldChange(
+	changes: Array<{ field: string; before: string; after: string }>,
+	field: string,
+	before: string,
+	after: string,
+): void {
+	if (before !== after) {
+		changes.push({ field, before, after });
+	}
+}
+
+/** Canonical ref-set rendering (sorted, deduplicated, empty-dropped,
+ * comma-joined) — the same set semantics the envelope hash uses. */
+function canonicalRefs(refs: readonly string[] | undefined): string {
+	const set = [...new Set((refs ?? []).filter((r) => r.trim().length > 0))];
+	set.sort();
+	return set.join(",");
+}
+
+/**
+ * Canonical idempotency command hash of a review decision (mirror of
+ * decisionCommandHash in review_store.go): SHA-256 of
+ * `memoryId \x00 lowercase(expectedEnvelopeHash) \x00 reason`, hex-encoded.
+ */
+function decisionCommandHash(
+	memoryId: string,
+	expectedEnvelopeHash: string,
+	reason: string,
+): string {
+	const canonical = `${memoryId}\u0000${expectedEnvelopeHash.toLowerCase()}\u0000${reason}`;
+	return createHash("sha256").update(canonical, "utf8").digest("hex");
 }

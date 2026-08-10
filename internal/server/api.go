@@ -26,6 +26,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -325,6 +326,64 @@ func (a *API) ExportEvidenceLifecycle(ctx context.Context, criteria core.Evidenc
 }
 
 // ──────────────────────────────────────────────
+// Review workspace (v0.9.0 — docs/architecture/review-workspace-v0.9.md)
+// ──────────────────────────────────────────────
+
+// ReviewQueue returns the pending_review queue of an EXACT company scope
+// (design §3): the API is a thin delegation over the store — scope-first
+// (structural filter, never a post-filter), deterministic ordering and the
+// bounded pagination bounds all live in the store. Read-only; never requires
+// a principal (scope-first, not authenticated).
+func (a *API) ReviewQueue(ctx context.Context, query core.ReviewQueueQuery) (core.ReviewQueuePage, error) {
+	return a.Store.ListReviewQueue(ctx, query)
+}
+
+// RuleShow returns the CURRENT rule revision (chain head) of a (topicKey,
+// exact Scope) — v0.6.0 rule surfaces (design §6), read-only.
+func (a *API) RuleShow(topicKey string, scope core.Scope) (core.AccountingMemory, error) {
+	return RuleShow(context.Background(), a.Store, topicKey, scope)
+}
+
+// RuleHistory returns the FULL rule chain (topicKey, exact Scope), ordered
+// by revision ascending — v0.6.0 rule surfaces (design §6), read-only.
+func (a *API) RuleHistory(topicKey string, scope core.Scope) ([]core.AccountingMemory, error) {
+	return RuleHistory(context.Background(), a.Store, topicKey, scope)
+}
+
+// RuleImpact reconstructs regulatory-change impact (v0.6.0, design §5):
+// every consuming memory of the rule chain, classified against the selected
+// changed revision's vigencia window. Read-only; tenant visibility enforced
+// inside the reverse query.
+func (a *API) RuleImpact(ctx context.Context, organizationID, topicKey string, scope *core.Scope, revision int) (core.RuleImpactResult, error) {
+	return RuleImpact(ctx, a.Store, organizationID, topicKey, scope, revision)
+}
+
+// ReviewDetail composes the review of ONE pending revision, scope-guarded
+// (design §4): the API is a thin delegation over the store — the diff, the
+// evidence/rules state, the open judgments and the review metadata all live
+// in the store. Read-only; scope-first (reads never authorize).
+func (a *API) ReviewDetail(ctx context.Context, memoryID string, scope core.Scope) (core.ReviewDetail, error) {
+	return a.Store.ReviewDetail(ctx, memoryID, scope)
+}
+
+// RejectMemory is the AUTHENTICATED reject (design §5): the API is a thin
+// delegation over the store — idempotency, scope checks, status gate, fresh
+// H1 vs expected, SoD, reason policy, the guarded status flip, the immutable
+// decision event and the memory_rejected receipt all live in the store. The
+// principal is the PRE-VERIFIED caller from the transport middleware
+// (ADR-003 — the payload can never declare identity).
+func (a *API) RejectMemory(ctx context.Context, cmd core.RejectMemoryCommand, principal auth.VerifiedApprovalPrincipal) (core.RejectMemoryResult, error) {
+	return a.Store.RejectMemory(ctx, cmd, principal)
+}
+
+// ReturnMemory is the AUTHENTICATED return (design §5): the API is a thin
+// delegation over the store — the same decision discipline as reject with
+// pending_review → returned (NON-terminal) and the memory_returned receipt.
+func (a *API) ReturnMemory(ctx context.Context, cmd core.ReturnMemoryCommand, principal auth.VerifiedApprovalPrincipal) (core.ReturnMemoryResult, error) {
+	return a.Store.ReturnMemory(ctx, cmd, principal)
+}
+
+// ──────────────────────────────────────────────
 // compare — identity / scope / content deltas + relation verdict
 // ──────────────────────────────────────────────
 
@@ -595,6 +654,27 @@ func (a *API) LinkRules(memoryID string, refs []string, actor string) ([]string,
 		out = append(out, ref)
 	}
 	return out, nil
+}
+
+// LinkRuleVersion pins ONE structured rule link (v0.6.0, design §2.2) to a
+// memory AFTER write: the post-save API wrapper around
+// store.AddRuleLinkVersion (same closed-period gate, target validation and
+// conflict discipline — an identical link is a no-op, a different
+// version/date for the same (memoryID, ref) pair fails
+// RULE_LINK_VERSION_CONFLICT). Structured metadata never contributes to the
+// envelope; the bare refs do.
+func (a *API) LinkRuleVersion(memoryID string, link core.RuleLink, actor string) error {
+	memory, ok := a.Store.FindByID(memoryID)
+	if !ok {
+		return errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if actor == "" {
+		actor = a.DefaultActor
+	}
+	if link.EffectiveAt != memory.EffectiveAt {
+		return fmt.Errorf("RULE_LINK_EFFECTIVE_AT_MISMATCH: link for ref %q pins effective_at %s but the consuming memory's effectiveAt is %s (decision time must be snapshotted exactly)", link.Ref, link.EffectiveAt, memory.EffectiveAt)
+	}
+	return a.Store.AddRuleLinkVersion(memoryID, link, actor)
 }
 
 // ──────────────────────────────────────────────

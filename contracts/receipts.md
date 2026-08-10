@@ -26,6 +26,7 @@ envelope — `AccountingMemory.ReceiptID` is never populated after write.
 memory_recorded      memory_approved     memory_rejected     memory_voided
 relation_confirmed   relation_rejected   evidence_linked     memory_superseded
 object_stored                                                            [v0.7.0]
+memory_returned                                                          [v0.9.0]
 ```
 
 `subjectType` is `memory` or `judgment` (v0.4), plus `reconciliation` (v0.5)
@@ -80,8 +81,11 @@ interface SignedReceipt {
 - `memory_recorded`: new memory + its resulting envelope hash.
 - `memory_approved`: reviewedEnvelopeHash (H1) + resultingEnvelopeHash (H2) +
   reason + complete verified principal snapshot + approval policy version.
-- `memory_rejected` / `memory_voided`: envelope hashes before and after the
-  transition (claimed actor as principalId).
+- `memory_rejected` (v0.9.0): reviewedEnvelopeHash (H1) + resulting envelope
+  hash + reason + complete verified principal snapshot — the AUTHENTICATED
+  reject replaces the legacy actor-only reject for review purposes; payload
+  version `receipt-payload/v0.10.0`. `memory_voided`: envelope hashes before
+  and after the transition (claimed actor as principalId).
 - `relation_confirmed` / `relation_rejected`: judgment subject, proposed +
   resulting judgment hashes, both observation IDs and their current envelope
   hashes, resolution, verified principal snapshot, judgment policy version.
@@ -96,12 +100,17 @@ interface SignedReceipt {
   Emitted atomically inside the object-store transaction and ONLY for a
   genuinely new object — a content-addressed duplicate (identical bytes) is a
   NO-OP and mints no receipt.
+- `memory_returned` (v0.9.0): reviewedEnvelopeHash (H1) + resulting envelope
+  hash (returned status) + reason + complete verified principal snapshot —
+  the authenticated RETURN (pending_review → returned, NON-terminal); payload
+  version `receipt-payload/v0.10.0`.
 
 Non-policy acts use `policyVersion = "kernel/v0.4.0"`. Claimed acts (recorded,
 rejected, voided, superseded, linked, object_stored) use the recorded
 Source/transition/link/store actor as principalId with empty
-membership/roles/authentication. Verified acts (approved, relation_*) use the
-full principal snapshot.
+membership/roles/authentication. Verified acts (approved, relation_*, and the
+v0.9.0 authenticated memory_rejected / memory_returned) use the full principal
+snapshot.
 
 ## Key lifecycle
 

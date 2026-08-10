@@ -137,8 +137,8 @@ func TestFreshStoreBootstrapsV4JudgmentPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 12 {
-		t.Fatalf("schema_version = %d, want 12 (the chain continues v4→v5→v6→v7→v8→v9→v10→v11→v12)", version)
+	if version != 14 {
+		t.Fatalf("schema_version = %d, want 14 (the chain continues v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14)", version)
 	}
 
 	// The v3 layer survives the chain (additive migrations never drop objects).
@@ -206,8 +206,8 @@ func TestV3StoreMigratesToV5AdditivelyPreservingRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version after migration: %v", err)
 	}
-	if version != 12 {
-		t.Fatalf("schema_version after migration = %d, want 12 (the chain continues v4→v5→v6→v7→v8→v9→v10→v11→v12)", version)
+	if version != 14 {
+		t.Fatalf("schema_version after migration = %d, want 14 (the chain continues v4→v5→v6→v7→v8→v9→v10→v11→v12→v13→v14)", version)
 	}
 
 	// Rows survive additively with EXACTLY the envelope bytes written at v3.

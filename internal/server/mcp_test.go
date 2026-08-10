@@ -185,11 +185,13 @@ func TestMCPToolsList(t *testing.T) {
 	if err := json.Unmarshal(response.Result, &result); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(result.Tools) != 50 {
-		// 13 engram_* + 37 accounting_* (current context in v0.5, object storage
+	if len(result.Tools) != 57 {
+		// 13 engram_* + 44 accounting_* (current context in v0.5, object storage
 		// in v0.7, retention policies in v0.8 batch 2, object-level holds in
-		// v0.8 batch 3, and the evidence purge lifecycle + export in v0.8 batch 4).
-		t.Fatalf("tool count = %d, want 50 (13 engram_* + 37 accounting_*)", len(result.Tools))
+		// v0.8 batch 3, the evidence purge lifecycle + export in v0.8 batch 4,
+		// the v0.9.0 review workspace: queue/detail/reject/return, and the
+		// v0.6.0 fiscal-policy rule surfaces: show/history/impact).
+		t.Fatalf("tool count = %d, want 57 (13 engram_* + 44 accounting_*)", len(result.Tools))
 	}
 	for _, tool := range result.Tools {
 		name, _ := tool["name"].(string)

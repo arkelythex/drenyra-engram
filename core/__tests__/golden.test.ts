@@ -38,6 +38,7 @@ import type {
 	VerifiedApprovalPrincipal,
 } from "../types.js";
 import {
+	ApprovalError,
 	computeContentHash,
 	computeEnvelopeHash,
 	computeIdentityHash,
@@ -69,6 +70,11 @@ import {
 	authorizeJudgment,
 	JUDGMENT_POLICY_VERSION,
 } from "../../authz/judgment-policy.js";
+import {
+	reviewChecksRequired,
+	sodViolation,
+	validateReviewChecks,
+} from "../../authz/approval-policy.js";
 
 interface GoldenPrincipal {
 	subjectId: string;
@@ -154,6 +160,8 @@ interface GoldenCase {
 		| "approval-policy"
 		| "approval-envelope"
 		| "principal-snapshot"
+		| "sod-policy"
+		| "review-checks"
 		| "judgment"
 		| "receipt";
 	description?: string;
@@ -190,6 +198,20 @@ interface GoldenCase {
 	supersededAt?: string;
 	/** v0.4.0 Step 3 Ed25519 receipt vector (contract "receipt"). */
 	receipt?: GoldenReceipt;
+	/**
+	 * v0.9.0 review-workspace clauses (design §5/§6): SODCases (contract
+	 * "sod-policy") are the proposer/reviewer pairs the pure SoD clause
+	 * evaluates; reviewChecksCases (contract "review-checks") are the
+	 * materiality + declared-checks triples the review-checks clause evaluates.
+	 */
+	sodCases?: Array<{ proposer: string; reviewer: string; violation: boolean }>;
+	reviewChecksCases?: Array<{
+		materialityLevel: MaterialityLevel | null;
+		evidenceInspected: boolean;
+		ruleInspected: boolean;
+		required: boolean;
+		errorCode: string;
+	}>;
 	expected: {
 		contentHash: string;
 		identityHash: string;
@@ -757,6 +779,49 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 					expect(() =>
 						verifyReceipt(vec.signedReceipt, vec.payload, publicKey),
 					).not.toThrow();
+					break;
+				}
+				case "sod-policy": {
+					if (!tc.sodCases) {
+						throw new Error(`${tc.name}: sod-policy vector requires sodCases`);
+					}
+					for (const [i, c] of tc.sodCases.entries()) {
+						const got = sodViolation(c.proposer, c.reviewer);
+						expect(got, `${tc.name}: sodCases[${i}]`).toBe(c.violation);
+					}
+					break;
+				}
+				case "review-checks": {
+					if (!tc.reviewChecksCases) {
+						throw new Error(
+							`${tc.name}: review-checks vector requires reviewChecksCases`,
+						);
+					}
+					for (const [i, c] of tc.reviewChecksCases.entries()) {
+						expect(
+							reviewChecksRequired(c.materialityLevel ?? undefined),
+							`${tc.name}: reviewChecksCases[${i}] required`,
+						).toBe(c.required);
+						let code: string | undefined;
+						try {
+							validateReviewChecks(c.materialityLevel ?? undefined, {
+								evidenceInspected: c.evidenceInspected,
+								ruleInspected: c.ruleInspected,
+							});
+						} catch (err) {
+							code = err instanceof ApprovalError ? err.code : undefined;
+						}
+						if (c.errorCode === "") {
+							expect(
+								code,
+								`${tc.name}: reviewChecksCases[${i}]`,
+							).toBeUndefined();
+						} else {
+							expect(code, `${tc.name}: reviewChecksCases[${i}]`).toBe(
+								c.errorCode,
+							);
+						}
+					}
 					break;
 				}
 				default: {

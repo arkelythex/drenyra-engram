@@ -64,7 +64,8 @@ Receipt: `payload canonicalization` · `envelope integrity` · `signature` ·
 `signing-key validity` · `tenant/company scope` · `chain link`.
 
 Memory adds: `principal provenance` · `supersession chain` · `evidence
-availability` · `object availability` (v0.7.0) · `rule availability`.
+availability` · `object availability` (v0.7.0) · `rule availability` ·
+`rule version/vigencia` (v0.6.0).
 
 Judgment adds: `principal provenance` · `judgment hash` · `supersession chain`.
 
@@ -112,6 +113,19 @@ Semantics:
 - **Judgment hash**: `ComputeJudgmentHash` of the current row equals the latest
   decision receipt's `resultingJudgmentHash`; the reviewed hash matches the
   immutable event snapshot.
+- **Rule version/vigencia** (v0.6.0): ONE pure trace per STRUCTURED rule
+  link (design §4.2): the pinned revision must exist, be `kind=rule` with
+  `topicKey == ref`, be the SOLE chain revision in force at the decision
+  instant (half-open `[effectiveAt, expiresAt)` — zero matches fail
+  `RULE_NOT_IN_FORCE`, multiple `RULE_VIGENCIA_OVERLAP`, a different sole
+  match `RULE_VERSION_MISMATCH`) and valid at that instant (a rejected/
+  voided/superseded-as-of pin fails `RULE_STATUS_INVALID`). The link's
+  `effectiveAt` must equal the consuming memory's `EffectiveAt`. Legacy
+  bare refs (no structured row) contribute a SKIPPED trace; an invalid
+  structured ref FAILS the layer. Traces ride `report.ruleVersions`
+  (absent when the memory has no structured links — legacy reports stay
+  byte-identical); the report still ends with `Accounting correctness: NOT
+  ASSERTED`.
 
 Only the chain head's resulting envelope hash is compared with current state —
 comparing every historical result would falsely fail after legitimate later

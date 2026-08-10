@@ -33,7 +33,7 @@ type VerificationStore interface {
 	ReceiptByHash(ctx context.Context, receiptHash string) (core.SignedReceipt, error)
 	ReceiptByID(ctx context.Context, id int64) (core.SignedReceipt, error)
 	ReceiptPayloadByHash(ctx context.Context, receiptHash string) (payloadJSON string, storedHash string, rowID int64, err error)
-	ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string) (core.ActProvenance, bool, error)
+	ReceiptActProvenance(ctx context.Context, subjectType core.SubjectType, subjectID string, action core.ReceiptAction, issuedAt string, evidenceRef string) (core.ActProvenance, bool, error)
 	EvidenceLinkRefs(ctx context.Context, memoryID string) ([]string, error)
 	RuleLinkRefs(ctx context.Context, memoryID string) ([]string, error)
 	// ObjectAvailability resolves which declared evidence refs are object-backed
@@ -48,6 +48,17 @@ type VerificationStore interface {
 	VerifyObjectBytes(ctx context.Context, objectID string) error
 	SigningKeyForVerify(ctx context.Context, keyID string) (store.SigningKeyRecord, error)
 	FindByID(id string) (core.AccountingMemory, bool)
+	// RuleLinkVersions returns the STRUCTURED rule links of one memory (v0.6.0,
+	// design §4.2): the pinned ref/version/effectiveAt triples the rule-version
+	// layer resolves. Legacy bare refs are NOT included (skipped traces).
+	RuleLinkVersions(memoryID string) ([]core.RuleLink, error)
+	// RuleChain returns the FULL (topicKey, exact Scope) chain, ordered by
+	// revision ascending — the chain-membership input of rule-version resolution.
+	RuleChain(topicKey string, scope core.Scope) ([]core.AccountingMemory, error)
+	// TransitionsFor returns the ordered lifecycle transitions of ONE subject —
+	// the status-as-of reconstruction input (a rule already rejected/voided/
+	// superseded at the decision instant is invalid).
+	TransitionsFor(subjectID string) ([]core.StatusTransitionRecord, error)
 	GetJudgment(ctx context.Context, id string) (core.AccountingJudgment, bool)
 	SuccessorOf(memoryID string) (core.AccountingMemory, bool)
 	JudgmentSuccessorOf(ctx context.Context, judgmentID string) (core.AccountingJudgment, bool)
@@ -129,8 +140,126 @@ func VerifyMemory(ctx context.Context, st VerificationStore, memoryID string) (c
 		core.ComputeEnvelopeHash(memory), latestCommittedEnvelope(payloads),
 	))
 
+	// 12. rule version/vigencia (v0.6.0, design §4.2) — ONE pure trace per
+	// structured rule link: the pinned revision must be the SOLE revision in
+	// force at the decision instant and valid at that instant. Legacy bare refs
+	// (in RuleRefs, no structured row) contribute a SKIPPED trace. An invalid
+	// structured ref fails the layer; the report still ends with NOT ASSERTED.
+	report.RuleVersions, err = ruleVersionTraces(ctx, st, memory)
+	if err != nil {
+		return core.VerificationReport{}, err
+	}
+	if len(report.RuleVersions) > 0 {
+		layerStatus := core.VerificationPassed
+		for _, tr := range report.RuleVersions {
+			if tr.Outcome != core.RuleVersionResolved && tr.Outcome != core.RuleVersionLegacySkipped {
+				layerStatus = core.VerificationFailed
+				break
+			}
+		}
+		report.Layers = append(report.Layers, core.VerificationLayer{
+			Name:   core.LayerRuleVersionVigencia,
+			Status: layerStatus,
+			Detail: fmt.Sprintf("%d structured links, %d traces", len(structuredRuleLinks(memory)), len(report.RuleVersions)),
+		})
+	}
+
 	core.Finalize(&report)
 	return report, nil
+}
+
+// structuredRuleLinks returns the STRUCTURED rule links of a memory (the
+// v0.6.0 read surface — legacy bare refs are not included).
+func structuredRuleLinks(memory core.AccountingMemory) []core.RuleLink {
+	return memory.RuleLinks
+}
+
+// ruleVersionTraces builds ONE RuleVersionTrace per structured rule link of the
+// memory, plus a SKIPPED trace per legacy bare ref (design §4.2): the pinned
+// revision must exist, be KindRule with topicKey == ref, be the SOLE revision
+// in force at the decision instant and valid at that instant.
+func ruleVersionTraces(ctx context.Context, st VerificationStore, memory core.AccountingMemory) ([]core.RuleVersionTrace, error) {
+	traces := []core.RuleVersionTrace{}
+	structured, err := st.RuleLinkVersions(memory.Identity.ID)
+	if err != nil {
+		return nil, fmt.Errorf("verify memory %s: read structured rule links: %w", memory.Identity.ID, err)
+	}
+	// Legacy bare refs — in RuleRefs, no structured row → skipped traces.
+	structuredRefs := map[string]bool{}
+	for _, l := range structured {
+		structuredRefs[l.Ref] = true
+	}
+	for _, ref := range memory.RuleRefs {
+		if !structuredRefs[ref] {
+			traces = append(traces, core.RuleVersionTrace{
+				Ref:                 ref,
+				DecisionEffectiveAt: memory.EffectiveAt,
+				Outcome:             core.RuleVersionLegacySkipped,
+				Detail:              "legacy unversioned rule ref",
+			})
+		}
+	}
+	for _, link := range structured {
+		trace := core.RuleVersionTrace{
+			Ref:                 link.Ref,
+			LinkedVersion:       link.Version,
+			DecisionEffectiveAt: link.EffectiveAt,
+		}
+		if link.EffectiveAt != memory.EffectiveAt {
+			trace.Outcome = core.RuleVersionTargetInvalid
+			trace.Detail = "link decision time differs from the consuming memory effective time"
+			traces = append(traces, trace)
+			continue
+		}
+		rule, ok := st.FindByID(link.Version)
+		if !ok || rule.Kind != core.KindRule || rule.Identity.TopicKey != link.Ref {
+			trace.Outcome = core.RuleVersionTargetInvalid
+			trace.Detail = "pinned version is not a matching rule revision"
+			traces = append(traces, trace)
+			continue
+		}
+		chain, err := st.RuleChain(link.Ref, rule.Scope)
+		if err != nil {
+			return nil, fmt.Errorf("verify memory %s: rule chain %s: %w", memory.Identity.ID, link.Ref, err)
+		}
+		resolved, rerr := core.ResolveRuleVersionFromChain(chain, link.Version, link.EffectiveAt)
+		if rerr != nil {
+			trace.Outcome = core.RuleVersionCode(rerr)
+			trace.Detail = rerr.Error()
+			traces = append(traces, trace)
+			continue
+		}
+		transitions, err := st.TransitionsFor(link.Version)
+		if err != nil {
+			return nil, fmt.Errorf("verify memory %s: rule transitions %s: %w", memory.Identity.ID, link.Version, err)
+		}
+		status := core.StatusAsOf(core.StatusActive, transitions, link.EffectiveAt)
+		trace.ResolvedVersion = resolved.Identity.ID
+		trace.Revision = ruleRevisionIndex(chain, resolved.Identity.ID)
+		trace.Validity = resolved.Validity
+		if resolved.PolicyRule != nil {
+			trace.Jurisdiction = resolved.PolicyRule.Jurisdiction
+		}
+		trace.StatusAsOf = string(status)
+		if status == core.StatusRejected || status == core.StatusVoided || status == core.StatusSuperseded {
+			trace.Outcome = core.RuleVersionStatusInvalid
+			trace.Detail = "rule not valid at the decision instant (rejected/voided/superseded)"
+		} else {
+			trace.Outcome = core.RuleVersionResolved
+			trace.Detail = "linked rule revision was the sole revision in force"
+		}
+		traces = append(traces, trace)
+	}
+	return traces, nil
+}
+
+func ruleRevisionIndex(chain []core.AccountingMemory, id string) int {
+	for i, m := range chain {
+		if m.Identity.ID == id {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // VerifyJudgment verifies the FULL signed chain of one judgment subject (design
@@ -393,7 +522,7 @@ func verifyReceiptLayers(ctx context.Context, st VerificationStore, subjectType 
 // continuity cannot be established) and an ambiguous resolution also fails it
 // (corruption is evidence, not a skip).
 func provenanceLayer(ctx context.Context, st VerificationStore, subjectType core.SubjectType, subjectID string, payload core.ReceiptPayload) core.VerificationLayer {
-	act, found, err := st.ReceiptActProvenance(ctx, subjectType, subjectID, payload.Action, payload.IssuedAt)
+	act, found, err := st.ReceiptActProvenance(ctx, subjectType, subjectID, payload.Action, payload.IssuedAt, payload.EvidenceRef)
 	if err != nil {
 		return core.VerificationLayer{
 			Name:   core.LayerPrincipalProvenance,
@@ -430,7 +559,7 @@ func judgmentHashLayer(ctx context.Context, st VerificationStore, judgment core.
 			Detail: "no decision receipt for the subject — target not verifiable",
 		}
 	}
-	act, found, err := st.ReceiptActProvenance(ctx, core.SubjectTypeJudgment, judgment.ID, decision.Action, decision.IssuedAt)
+	act, found, err := st.ReceiptActProvenance(ctx, core.SubjectTypeJudgment, judgment.ID, decision.Action, decision.IssuedAt, "")
 	if err != nil {
 		return core.VerificationLayer{
 			Name:   core.LayerJudgmentHash,
