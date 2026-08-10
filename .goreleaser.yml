@@ -1,6 +1,6 @@
 # Goreleaser configuration — drenyra-engram releases.
 #
-# Audit-trail surface (private product policy): every release ships
+# Audit-trail surface (open-source product policy, Apache-2.0): every release ships
 #   - cross-platform static binaries
 #   - SHA-256 checksums (artifact checksum verification)
 #   - SPDX SBOM (software bill of materials for supply-chain review)

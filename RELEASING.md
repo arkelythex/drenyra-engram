@@ -3,7 +3,7 @@
 > **Last updated:** 2026-08-03.
 
 > Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; version/sequence numbers are JSON integers, never floats.
-> **Private product policy:** Drenyra and its ecosystem are **private, commercial**. Repos stay private, images publish to private GHCR, and releases never ship public artifacts. See `docs/architecture/private-product-policy.md` (Drenyra) for the full policy.
+> **Open-source product policy:** Drenyra Engram is released under the **Apache License 2.0**. Source, releases, and container images are public; contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Drenyra Engram is excluded from the Drenyra private-product policy (Drenyra repo).
 
 ## Version policy
 
@@ -32,9 +32,9 @@ Every release ships, for procurement/audit review:
 - **Binaries** — linux/darwin/windows × amd64/arm64, static, `-trimpath`.
 - **checksums.txt** — SHA-256 of every artifact; verify with `sha256sum -c`.
 - **SBOMs** — `*.spdx.json` per binary (syft); the bill of materials answers "what is in this engine?" for compliance review.
-- **SLSA provenance** — *deferred*: GitHub Attestations (`actions/attest-build-provenance`) requires a paid plan for private repos (org `arkelythex` is on the free plan). SBOMs + checksums are the current evidence; enable attestations when the org upgrades. The workflow notes this explicitly.
+- **SLSA provenance** — *deferred*: GitHub Attestations (`actions/attest-build-provenance`) was deferred because it required a paid plan on private repos. The repository is now **public (Apache-2.0)**, where attestations are available on the free plan — enabling them is pending a release-pipeline review (see release.yml). SBOMs + checksums are the current evidence.
 
-These artifacts stay **private** (private repo + private release). They are evidence for clients under NDA, never public downloads.
+These artifacts are **public** GitHub release assets under the Apache-2.0 license — open source, freely downloadable.
 
 ## Release checklist
 

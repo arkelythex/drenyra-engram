@@ -27,4 +27,4 @@ Reports are acknowledged within 5 business days. A fix, workaround, or risk acce
 
 ## Responsible use
 
-This software is proprietary and confidential (see [LICENSE](LICENSE)). Reporting a vulnerability does not grant any right to copy, modify, or distribute the software.
+This software is released under the Apache License 2.0 (see [LICENSE](LICENSE)). Please report vulnerabilities privately as described above; do not open public issues for security defects.

@@ -2,11 +2,12 @@ name: Release
 
 # Automates the Go engine release (RELEASING.md): on every v* tag,
 # builds cross-platform static binaries, attaches SPDX SBOMs and SHA-256
-# checksums. Runs in the private repo; all artifacts stay private.
+# checksums. The repository is public (Apache-2.0); release artifacts
+# are public GitHub assets (open-source distribution).
 # SLSA attestations (actions/attest-build-provenance) are intentionally
-# omitted: GitHub requires a paid plan for that feature on private repos.
-# SBOMs + checksums are the audit evidence; revisit attestations if/when
-# the org moves to a paid plan.
+# omitted: deferred until the release pipeline is reviewed. GitHub
+# Attestations is available on the free plan for public repositories.
+# SBOMs + checksums are the current audit evidence.
 
 on:
   push:
@@ -43,4 +44,3 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
