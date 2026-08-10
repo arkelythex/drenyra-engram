@@ -1,0 +1,191 @@
+{
+  "name": "reconstructibility-eligibility-all-axes",
+  "contract": "reconstructibility",
+  "description": "FZ-1 material-decision eligibility (spec FZ-1, design D-2): every axis varied one at a time — latest revision, every lifecycle status, all fiscal effects (the six frozen vs none/approval), all materiality levels (material/critical vs normal/nil), numeric-materiality-threshold irrelevance, exact scope mismatches (organization/company/RUC/period), institutional scopes, and the frozen non-participation of the kind axis. Go and TS must agree on every outcome (AC-9, NFR-3).",
+  "reconstructibility": {
+    "eligibilityCases": [
+      {
+        "name": "eligible-approved-material-journal-entry",
+        "memory": { "id": "mem-01", "topicKey": "decision/01", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "not-latest-revision-excluded",
+        "memory": { "id": "mem-02", "topicKey": "decision/02", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": false,
+        "expected": false
+      },
+      {
+        "name": "status-active-excluded",
+        "memory": { "id": "mem-03", "topicKey": "decision/03", "kind": "decision", "status": "active", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "status-pending-review-excluded",
+        "memory": { "id": "mem-04", "topicKey": "decision/04", "kind": "decision", "status": "pending_review", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "status-rejected-excluded",
+        "memory": { "id": "mem-05", "topicKey": "decision/05", "kind": "decision", "status": "rejected", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "status-returned-excluded",
+        "memory": { "id": "mem-06", "topicKey": "decision/06", "kind": "decision", "status": "returned", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "status-superseded-excluded",
+        "memory": { "id": "mem-07", "topicKey": "decision/07", "kind": "decision", "status": "superseded", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 2 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "status-voided-excluded",
+        "memory": { "id": "mem-08", "topicKey": "decision/08", "kind": "decision", "status": "voided", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "effect-adjustment-eligible",
+        "memory": { "id": "mem-09", "topicKey": "decision/09", "kind": "decision", "status": "approved", "fiscalEffect": "adjustment", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "effect-reclassification-eligible",
+        "memory": { "id": "mem-10", "topicKey": "decision/10", "kind": "decision", "status": "approved", "fiscalEffect": "reclassification", "materialityLevel": "critical", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "effect-declaration-eligible",
+        "memory": { "id": "mem-11", "topicKey": "decision/11", "kind": "decision", "status": "approved", "fiscalEffect": "declaration", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "effect-closing-eligible",
+        "memory": { "id": "mem-12", "topicKey": "decision/12", "kind": "decision", "status": "approved", "fiscalEffect": "closing", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "effect-sunat-filing-eligible",
+        "memory": { "id": "mem-13", "topicKey": "decision/13", "kind": "decision", "status": "approved", "fiscalEffect": "sunat_filing", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "effect-none-excluded",
+        "memory": { "id": "mem-14", "topicKey": "decision/14", "kind": "decision", "status": "approved", "fiscalEffect": "none", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "effect-approval-excluded",
+        "memory": { "id": "mem-15", "topicKey": "decision/15", "kind": "decision", "status": "approved", "fiscalEffect": "approval", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "level-critical-eligible",
+        "memory": { "id": "mem-16", "topicKey": "decision/16", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "critical", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "level-normal-excluded",
+        "memory": { "id": "mem-17", "topicKey": "decision/17", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "normal", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "level-nil-excluded",
+        "memory": { "id": "mem-18", "topicKey": "decision/18", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "numeric-materiality-irrelevant-normal-level-excluded",
+        "memory": { "id": "mem-19", "topicKey": "decision/19", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "normal", "materiality": 9999999999, "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "numeric-materiality-irrelevant-material-eligible-without-cents",
+        "memory": { "id": "mem-20", "topicKey": "decision/20", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      },
+      {
+        "name": "organization-mismatch-excluded",
+        "memory": { "id": "mem-21", "topicKey": "decision/21", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1, "scope": { "kind": "company", "organizationId": "org-999", "companyId": "acme", "ruc": "20100039201", "period": "202401" } },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "company-mismatch-excluded",
+        "memory": { "id": "mem-22", "topicKey": "decision/22", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1, "scope": { "kind": "company", "organizationId": "org-001", "companyId": "other-co", "ruc": "20100039201", "period": "202401" } },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "ruc-mismatch-excluded",
+        "memory": { "id": "mem-23", "topicKey": "decision/23", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1, "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20600995804", "period": "202401" } },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "period-mismatch-excluded",
+        "memory": { "id": "mem-24", "topicKey": "decision/24", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1, "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202402" } },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "institutional-memory-excluded",
+        "memory": { "id": "mem-25", "topicKey": "decision/25", "kind": "decision", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1, "scope": { "kind": "institutional" } },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": false
+      },
+      {
+        "name": "kind-is-not-an-eligibility-axis-fact-eligible",
+        "memory": { "id": "mem-26", "topicKey": "decision/26", "kind": "fact", "status": "approved", "fiscalEffect": "journal_entry", "materialityLevel": "material", "revision": 1 },
+        "scope": { "kind": "company", "organizationId": "org-001", "companyId": "acme", "ruc": "20100039201", "period": "202401" },
+        "isLatest": true,
+        "expected": true
+      }
+    ]
+  }
+}

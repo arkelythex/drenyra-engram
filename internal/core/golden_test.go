@@ -72,6 +72,12 @@ type goldenCase struct {
 	// TypeScript against the SAME vector files.
 	SODCases          []goldenSODCase          `json:"sodCases,omitempty"`
 	ReviewChecksCases []goldenReviewChecksCase `json:"reviewChecksCases,omitempty"`
+
+	// G-10 reconstructibility vectors (contract "reconstructibility"): the pure
+	// FZ-1 eligibility axes, the FZ-2 classifier precedence combinations and the
+	// frozen integer ratio/percentage cases — the SAME files run from TypeScript
+	// (design WU-1, AC-9/IR-4).
+	Reconstructibility *goldenReconstructibility `json:"reconstructibility,omitempty"`
 }
 
 type goldenInput struct {
@@ -249,6 +255,8 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runSODPolicyGolden(t, tc)
 			case "review-checks":
 				runReviewChecksGolden(t, tc)
+			case "reconstructibility":
+				runReconstructibilityGolden(t, tc)
 			case "judgment":
 				runJudgmentGolden(t, tc)
 			case "receipt":
@@ -516,6 +524,190 @@ func runReviewChecksGolden(t *testing.T, tc goldenCase) {
 		}
 	}
 	t.Logf("REVIEW_CHECKS %s cases=%d", tc.Name, len(tc.ReviewChecksCases))
+}
+
+// ──────────────────────────────────────────────
+// G-10 reconstructibility contract ("reconstructibility")
+// ──────────────────────────────────────────────
+
+// goldenReconstructibility is the shared G-10 vector payload (design WU-1,
+// AC-9/IR-4): the FZ-1 eligibility axes, the FZ-2 classifier precedence
+// combinations (including the direct not_approved case) and the frozen integer
+// ratio/percentage bytes. The SAME files run from TypeScript
+// (core/__tests__/golden.test.ts) and must agree exactly.
+type goldenReconstructibility struct {
+	EligibilityCases []goldenReconstructibilityEligibility `json:"eligibilityCases,omitempty"`
+	ClassifierCases  []goldenReconstructibilityClassifier  `json:"classifierCases,omitempty"`
+	RatioCases       []goldenReconstructibilityRatioCase   `json:"ratioCases,omitempty"`
+}
+
+// goldenReconstructibilityMemory is the minimal memory snapshot a vector needs:
+// status, fiscal effect, declared materiality level (nil = normal), the numeric
+// Materiality cents threshold (proving FZ-1 irrelevance), kind and revision.
+// Timestamps/content do not participate in any FZ predicate and are omitted.
+type goldenReconstructibilityMemory struct {
+	ID               string                 `json:"id"`
+	TopicKey         string                 `json:"topicKey"`
+	Kind             core.MemoryKind        `json:"kind"`
+	Status           core.MemoryStatus      `json:"status"`
+	FiscalEffect     core.FiscalEffect      `json:"fiscalEffect"`
+	MaterialityLevel *core.MaterialityLevel `json:"materialityLevel"`
+	Materiality      *int64                 `json:"materiality"`
+	Revision         int                    `json:"revision"`
+	Scope            core.Scope             `json:"scope,omitempty"`
+}
+
+// memory builds the core.AccountingMemory the FZ predicates consume. Missing
+// enum fields default to the fully-eligible values (decision / approved /
+// journal_entry) so vectors stay readable; every vector in the repo is explicit
+// anyway.
+func (g goldenReconstructibilityMemory) memory() core.AccountingMemory {
+	kind := g.Kind
+	if kind == "" {
+		kind = core.KindDecision
+	}
+	status := g.Status
+	if status == "" {
+		status = core.StatusApproved
+	}
+	effect := g.FiscalEffect
+	if effect == "" {
+		effect = core.FiscalEffectJournalEntry
+	}
+	var level *core.MaterialityLevel
+	if g.MaterialityLevel != nil {
+		l := *g.MaterialityLevel
+		level = &l
+	}
+	return core.AccountingMemory{
+		Identity:         core.Identity{ID: g.ID, TopicKey: g.TopicKey},
+		Kind:             kind,
+		Scope:            g.Scope,
+		Status:           status,
+		FiscalEffect:     effect,
+		MaterialityLevel: level,
+		Materiality:      g.Materiality,
+		Revision:         g.Revision,
+	}
+}
+
+type goldenReconstructibilityEligibility struct {
+	Name     string                         `json:"name"`
+	Memory   goldenReconstructibilityMemory `json:"memory"`
+	Scope    core.Scope                     `json:"scope"`
+	IsLatest bool                           `json:"isLatest"`
+	Expected bool                           `json:"expected"`
+}
+
+type goldenReconstructibilityClassifier struct {
+	Name                    string                         `json:"name"`
+	Memory                  goldenReconstructibilityMemory `json:"memory"`
+	Layers                  map[string]string              `json:"layers"`
+	ExpectedReason          string                         `json:"expectedReason"`
+	ExpectedReconstructible bool                           `json:"expectedReconstructible"`
+}
+
+type goldenReconstructibilityRatioCase struct {
+	Name                    string                       `json:"name"`
+	Numerator               int                          `json:"numerator"`
+	Denominator             int                          `json:"denominator"`
+	ExpectedPercentage      *int                         `json:"expectedPercentage"`
+	ExpectedRatio           core.ReconstructibilityRatio `json:"expectedRatio"`
+	ExpectedZeroDenominator bool                         `json:"expectedZeroDenominator"`
+}
+
+// goldenReport builds the report the classifier consumes: a FULLY-PASSING base
+// (the six receipt layers, principal provenance, supersession chain, evidence
+// availability, object availability, rule availability, rule version/vigencia)
+// overridden by the vector's layers map — "passed"|"failed"|"skipped" set the
+// layer status, "absent" removes the layer. Both runtimes build the identical
+// report.
+func goldenReport(layers map[string]string) core.VerificationReport {
+	names := []string{
+		core.LayerPayloadCanonicalization, core.LayerEnvelopeIntegrity,
+		core.LayerSignature, core.LayerSigningKeyValidity,
+		core.LayerTenantCompanyScope, core.LayerChainLink,
+		core.LayerPrincipalProvenance, core.LayerSupersessionChain,
+		core.LayerEvidenceAvailability, core.LayerObjectAvailability,
+		core.LayerRuleAvailability, core.LayerRuleVersionVigencia,
+	}
+	statusByName := map[string]core.VerificationStatus{}
+	for _, name := range names {
+		statusByName[name] = core.VerificationPassed
+	}
+	for name, status := range layers {
+		if status == "absent" {
+			delete(statusByName, name)
+			continue
+		}
+		statusByName[name] = core.VerificationStatus(status)
+	}
+	built := make([]core.VerificationLayer, 0, len(statusByName))
+	for _, name := range names {
+		if s, ok := statusByName[name]; ok {
+			built = append(built, core.VerificationLayer{Name: name, Status: s, Detail: "golden"})
+		}
+	}
+	return core.VerificationReport{SubjectType: "memory", SubjectID: "golden", Layers: built}
+}
+
+// runReconstructibilityGolden runs the PURE G-10 contract on every vector case:
+// FZ-1 eligibility, FZ-2 classifier precedence and the frozen ratio/percentage
+// — the same vector files must yield the identical outcomes from TypeScript.
+func runReconstructibilityGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if tc.Reconstructibility == nil {
+		t.Fatalf("%s: reconstructibility vector requires reconstructibility data", tc.Name)
+	}
+	for _, c := range tc.Reconstructibility.EligibilityCases {
+		t.Run("eligibility/"+c.Name, func(t *testing.T) {
+			// The vector carries the exact scope at CASE level (shared by the
+			// memory and the request): inject it so ScopeEquals can pass.
+			mem := c.Memory.memory()
+			if mem.Scope.Kind == "" {
+				// Eligible cases omit memory.scope and inherit the requested scope;
+				// exclusion cases carry their OWN scope so ScopeEquals fails.
+				mem.Scope = c.Scope
+			}
+			if got := core.IsMaterialDecision(mem, c.Scope, c.IsLatest); got != c.Expected {
+				t.Errorf("%s: IsMaterialDecision = %v, want %v", c.Name, got, c.Expected)
+			}
+		})
+	}
+	for _, c := range tc.Reconstructibility.ClassifierCases {
+		t.Run("classifier/"+c.Name, func(t *testing.T) {
+			reason, ok := core.ClassifyReconstructibility(c.Memory.memory(), goldenReport(c.Layers))
+			if ok != c.ExpectedReconstructible {
+				t.Errorf("%s: reconstructible = %v, want %v", c.Name, ok, c.ExpectedReconstructible)
+			}
+			if string(reason) != c.ExpectedReason {
+				t.Errorf("%s: reason = %q, want %q", c.Name, reason, c.ExpectedReason)
+			}
+		})
+	}
+	for _, c := range tc.Reconstructibility.RatioCases {
+		t.Run("ratio/"+c.Name, func(t *testing.T) {
+			counts := core.BuildReconstructibilityCounts(c.Denominator, c.Numerator)
+			if counts.Ratio != c.ExpectedRatio {
+				t.Errorf("%s: ratio = %+v, want %+v", c.Name, counts.Ratio, c.ExpectedRatio)
+			}
+			if counts.ZeroDenominator != c.ExpectedZeroDenominator {
+				t.Errorf("%s: zeroDenominator = %v, want %v", c.Name, counts.ZeroDenominator, c.ExpectedZeroDenominator)
+			}
+			if c.ExpectedPercentage == nil {
+				if counts.Percentage != nil {
+					t.Errorf("%s: percentage = %d, want null (never a misleading 0%%/100%%)", c.Name, *counts.Percentage)
+				}
+			} else if counts.Percentage == nil || *counts.Percentage != *c.ExpectedPercentage {
+				t.Errorf("%s: percentage = %v, want %d", c.Name, counts.Percentage, *c.ExpectedPercentage)
+			}
+		})
+	}
+	t.Logf("RECONSTRUCTIBILITY %s eligibility=%d classifier=%d ratio=%d",
+		tc.Name,
+		len(tc.Reconstructibility.EligibilityCases),
+		len(tc.Reconstructibility.ClassifierCases),
+		len(tc.Reconstructibility.RatioCases))
 }
 
 // ──────────────────────────────────────────────

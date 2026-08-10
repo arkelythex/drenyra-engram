@@ -1,0 +1,106 @@
+# Drenyra Engram — SDD configuration (OpenSpec file-based artifact store)
+project: drenyra-engram
+module: github.com/arkelythex/drenyra-engram
+artifact_store: openspec
+description: >
+  Institutional accounting memory for AI agents. Scope-first, audit-grade,
+  agent-agnostic. A single Go binary with a scope-first SQLite store, Ed25519
+  receipts and offline verification, exposed via CLI, HTTP API, and MCP.
+
+stack:
+  go: "1.26"
+  typescript: "7.0.2"
+  test_frameworks:
+    go: standard library (go test)
+    typescript: vitest 4
+  runtime: bun (TS), Go binary (Go)
+  package_manager: bun (bun.lock)
+  key_directories:
+    - cmd/drenyra-engram        # CLI entrypoint (save, review, rule, object, verify, mcp, serve, …)
+    - internal/core             # Domain model + PURE logic (no I/O)
+    - internal/store            # SQLite store (single-writer, immutable revisions, schema v14)
+    - internal/search           # Scope-first token-overlap search + benchmark
+    - internal/server           # Shared domain services + MCP (JSON-RPC) + HTTP REST adapters
+    - internal/auth             # Verified principal, sessions, error codes
+    - internal/authz            # Versioned policies (approval, judgment, evidence lifecycle)
+    - internal/sync             # Additive local-store reconciliation
+    - contracts/                # Frozen contract set (memory, scope, lifecycle, provenance, …)
+    - core/ store/ authz/ lifecycle/   # TypeScript reference + parity mirrors
+    - testdata/golden           # Go<->TS golden vectors (byte-identical across runtimes)
+    - docs/                     # Architecture, decisions, product, demo, benchmark, security
+
+strict_tdd: true
+tdd_notes: >
+  Tests are the quality gate. Full Go suite (10 packages) + TypeScript suite
+  (360 tests) + typecheck. New domain logic MUST join the Go<->TS golden parity
+  mechanism; new fiscal behavior MUST keep the non-authorization boundary intact.
+
+test_commands:
+  go_suite: "go test ./..."
+  go_bench: "go test ./internal/search/bench -v"
+  ts_suite: "npm test"
+  typecheck: "npm run typecheck"
+  vet: "go vet ./..."
+  fmt: "gofmt -l ."
+  golden_parity: "go test ./internal/core -run TestGoldenVectorsGo"
+  full_ts_verify: "npm run verify:package"
+
+# Recommended verification order for a change touching Go + TS:
+verify_order:
+  - "npm run typecheck"
+  - "go vet ./..."
+  - "gofmt -l ."
+  - "go test ./..."
+  - "npm test"
+
+conventions:
+  commits: conventional commits only (feat:, fix:, docs:, test:, bench:, build:, refactor:)
+  ai_attribution: never add AI attribution (no "Co-Authored-By") to commits
+  money: >
+    Monetary values are WHOLE int64 cents (Go) / BigInt cents (TS). Never floats.
+    Sequence/revision counters are JSON integers, never floats.
+  scope_first: >
+    Scope (Company/RUC/period) is structural, not a post-filter. Every read or
+    mutation takes the exact scope and FAILS CLOSED on mismatch. Cross-tenant
+    invisibility is a tested invariant.
+  golden_parity: >
+    Go<->TS byte-identical golden vectors live in testdata/golden and are
+    enforced by TestGoldenVectorsGo; new domain logic must join the parity
+    mechanism.
+  non_authorization_boundary: >
+    Drenyra Engram NEVER authorizes operations. No code path may treat an
+    observation as approval. The approval gate is professional review of a
+    memory, never authorization of a declaration.
+  contracts: >
+    contracts/ is a frozen public surface. Contract changes are high-materiality:
+    bump the version, document the migration path, get explicit approval.
+  provenance: every observation records who/what/when/why; forgeable provenance is a defect.
+  secrets: no credentials, tokens, or customer data in code, docs, tests, or seeds.
+  ts_types: no `any`; use precise types, `unknown`, or justified generics.
+  docs_as_code: update docs in the same PR as code; stale docs are a bug.
+  pr_size: prefer small verifiable changes; split changes over 400 lines into chained PRs.
+  review_gate_rejects: >
+    silent error handling, production console.log, missing scope checks, missing
+    provenance, missing tests, contract changes without docs.
+
+phases:
+  propose:
+    strict_tdd: false
+  spec:
+    strict_tdd: false
+  design:
+    strict_tdd: false
+  tasks:
+    strict_tdd: false
+  apply:
+    strict_tdd: true
+    notes: >
+      STRICT TDD MODE. Test runner: go test ./... (Go) / npm test (TS).
+      Write failing test -> implement -> verify green, per change slice.
+  verify:
+    strict_tdd: true
+    notes: >
+      Validate against spec + tasks. Re-run typecheck, go vet, gofmt -l,
+      go test ./..., npm test. Report CRITICAL / WARNING / SUGGESTION.
+  archive:
+    strict_tdd: false

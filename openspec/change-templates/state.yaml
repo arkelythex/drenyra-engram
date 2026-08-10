@@ -1,0 +1,32 @@
+# {change-name}
+
+## Metadata
+
+change: {change-name}
+status: draft            # draft | proposed | in-progress | verify | archive
+artifact_store: openspec
+created: {YYYY-MM-DD}
+updated: {YYYY-MM-DD}
+
+## Phase status
+
+proposal: pending        # pending | done
+spec: pending
+design: pending
+tasks: pending
+apply: pending
+verify: pending
+archive: pending
+
+## Current
+
+next_recommended: propose
+blocked_reasons: []
+
+## Links
+
+links:
+  proposal: openspec/changes/{change-name}/proposal.md
+  spec: openspec/changes/{change-name}/spec.md
+  design: openspec/changes/{change-name}/design.md
+  tasks: openspec/changes/{change-name}/tasks.md

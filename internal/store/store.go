@@ -205,6 +205,13 @@ type Store interface {
 	// ListByStatus returns every stored memory with the given v2 status,
 	// insertion order.
 	ListByStatus(status core.MemoryStatus) ([]core.AccountingMemory, error)
+	// LatestMaterialDecisionHeads returns the FZ-1 material-decision heads of ONE
+	// exact company scope + period (G-10 reconstructibility metric, design D-3):
+	// only the maximum revision per (topic_key, exact scope) chain, scoped in
+	// SQL, with the approved/status, six-fiscal-effect and material/critical
+	// level predicates applied in the query. READ-ONLY — never starts a
+	// transaction. A valid empty scope returns zero heads and no error.
+	LatestMaterialDecisionHeads(ctx context.Context, scope core.Scope) ([]core.AccountingMemory, error)
 	Relate(fromID, toID string, relation core.Relation, meta *core.RelationMeta) error
 	// RelationBetween returns the relation recorded from fromID to toID (the
 	// first matching row in insertion order), if any.

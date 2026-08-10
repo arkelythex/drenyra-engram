@@ -75,6 +75,29 @@ import {
 	sodViolation,
 	validateReviewChecks,
 } from "../../authz/approval-policy.js";
+import {
+	buildReconstructibilityCounts,
+	classifyReconstructibility,
+	isMaterialDecision,
+} from "../reconstructibility.js";
+import {
+	LAYER_CHAIN_LINK,
+	LAYER_ENVELOPE_INTEGRITY,
+	LAYER_EVIDENCE_AVAILABILITY,
+	LAYER_OBJECT_AVAILABILITY,
+	LAYER_PAYLOAD_CANONICALIZATION,
+	LAYER_PRINCIPAL_PROVENANCE,
+	LAYER_RULE_AVAILABILITY,
+	LAYER_RULE_VERSION_VIGENCIA,
+	LAYER_SIGNATURE,
+	LAYER_SIGNING_KEY_VALIDITY,
+	LAYER_SUPERSESSION_CHAIN,
+	LAYER_TENANT_COMPANY_SCOPE,
+	type VerificationLayer,
+	type VerificationOutcome,
+	type VerificationReport,
+	type VerificationStatus,
+} from "../verify.js";
 
 interface GoldenPrincipal {
 	subjectId: string;
@@ -204,15 +227,44 @@ interface GoldenCase {
 	 * evaluates; reviewChecksCases (contract "review-checks") are the
 	 * materiality + declared-checks triples the review-checks clause evaluates.
 	 */
-	sodCases?: Array<{ proposer: string; reviewer: string; violation: boolean }>;
-	reviewChecksCases?: Array<{
-		materialityLevel: MaterialityLevel | null;
-		evidenceInspected: boolean;
-		ruleInspected: boolean;
-		required: boolean;
-		errorCode: string;
-	}>;
-	expected: {
+    	sodCases?: Array<{ proposer: string; reviewer: string; violation: boolean }>;
+    	reviewChecksCases?: Array<{
+    		materialityLevel: MaterialityLevel | null;
+    		evidenceInspected: boolean;
+    		ruleInspected: boolean;
+    		required: boolean;
+    		errorCode: string;
+    	}>;
+    	/**
+    	 * v1-readiness reconstructibility vectors (contract "reconstructibility"):
+    	 * the pure FZ-1 eligibility predicate, the FZ-2 classifier precedence and
+    	 * the frozen ratio/percentage — mirrored in core/reconstructibility.ts.
+    	 */
+    	reconstructibility?: {
+    		eligibilityCases?: Array<{
+    			name: string;
+    			memory: GoldenReconstructibilityMemory;
+    			scope: MemoryScope;
+    			isLatest: boolean;
+    			expected: boolean;
+    		}>;
+    		classifierCases?: Array<{
+    			name: string;
+    			memory: GoldenReconstructibilityMemory;
+    			layers: Record<string, string>;
+    			expectedReason: string;
+    			expectedReconstructible: boolean;
+    		}>;
+    		ratioCases?: Array<{
+    			name: string;
+    			numerator: number;
+    			denominator: number;
+    			expectedRatio: { numerator: number; denominator: number };
+    			expectedZeroDenominator: boolean;
+    			expectedPercentage: number | null;
+    		}>;
+    	};
+		expected: {
 		contentHash: string;
 		identityHash: string;
 		envelopeHash: string;
@@ -240,6 +292,90 @@ interface GoldenCase {
 		immutable?: boolean;
 	};
 }
+/** Golden reconstructibility memory snapshot (mirrors goldenReconstructibilityMemory in Go). */
+	interface GoldenReconstructibilityMemory {
+		id: string;
+		topicKey: string;
+		kind?: MemoryKind;
+		status?: MemoryStatus;
+		fiscalEffect?: FiscalEffect;
+		materialityLevel?: MaterialityLevel | null;
+		materiality?: number;
+		revision?: number;
+		scope?: MemoryScope;
+	}
+
+	/** Builds the vector memory; eligible cases omit scope and inherit the requested one. */
+	function goldenReconstructibilityMemory(
+		g: GoldenReconstructibilityMemory,
+		requestedScope: MemoryScope | undefined,
+	): AccountingMemory {
+		const mem: AccountingMemory = {
+			identity: { id: g.id, topicKey: g.topicKey },
+			title: "vector",
+			kind: (g.kind ?? "decision") as MemoryKind,
+			scope: g.scope ?? {
+				kind: "company",
+				organizationId: "",
+				companyId: "",
+				ruc: "",
+				period: "",
+			},
+			content: { what: "v", why: "v", where: "v", learned: "v" },
+			status: (g.status ?? "approved") as MemoryStatus,
+			fiscalEffect: (g.fiscalEffect ?? "journal_entry") as FiscalEffect,
+			effectiveAt: "2026-01-01T00:00:00Z",
+			recordedAt: "2026-01-01T00:00:00Z",
+			contentHash: "",
+			revision: g.revision ?? 1,
+			source: { system: "golden", actorId: "golden", actorKind: "agent" },
+		};
+		if (g.materialityLevel !== undefined && g.materialityLevel !== null) {
+			mem.materialityLevel = g.materialityLevel;
+		}
+		if (g.materiality !== undefined) {
+			mem.materiality = BigInt(g.materiality);
+		}
+		if (g.scope === undefined && requestedScope) {
+			// Eligible cases omit memory.scope and inherit the requested scope;
+			// exclusion cases carry their own scope so scopeEquals fails.
+			mem.scope = requestedScope;
+		}
+		return mem;
+	}
+
+	/** Builds a VerificationReport from the vector's layer map (name → status). */
+	function goldenReport(layers: Record<string, string>): VerificationReport {
+		const names = [
+			LAYER_PAYLOAD_CANONICALIZATION,
+			LAYER_ENVELOPE_INTEGRITY,
+			LAYER_SIGNATURE,
+			LAYER_SIGNING_KEY_VALIDITY,
+			LAYER_TENANT_COMPANY_SCOPE,
+			LAYER_CHAIN_LINK,
+			LAYER_PRINCIPAL_PROVENANCE,
+			LAYER_SUPERSESSION_CHAIN,
+			LAYER_EVIDENCE_AVAILABILITY,
+			LAYER_OBJECT_AVAILABILITY,
+			LAYER_RULE_AVAILABILITY,
+			LAYER_RULE_VERSION_VIGENCIA,
+		];
+		const reportLayers: VerificationLayer[] = names.map((name) => ({
+			name,
+			status: (layers[name] ?? "passed") as VerificationStatus,
+			detail: "",
+		}));
+		return {
+			subjectType: "memory",
+			subjectId: "vector",
+			outcome: "passed" as VerificationOutcome,
+			receipts: [],
+			layers: reportLayers,
+			accountingCorrectness: "Accounting correctness: NOT ASSERTED",
+		};
+	}
+
+
 
 const goldenDir = resolve(process.cwd(), "testdata", "golden");
 
@@ -822,11 +958,60 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							);
 						}
 					}
-					break;
-				}
-				default: {
-					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
-				}
+    					break;
+    				}
+    				case "reconstructibility": {
+    					const data = tc.reconstructibility;
+    					if (!data) {
+    						throw new Error(
+    							`${tc.name}: reconstructibility vector requires data`,
+    						);
+    					}
+    					for (const c of (data.eligibilityCases ?? [])) {
+    						const mem = goldenReconstructibilityMemory(c.memory, c.scope);
+    						expect(
+    							isMaterialDecision(mem, c.scope, c.isLatest),
+    							`${tc.name}: eligibility ${c.name}`,
+    						).toBe(c.expected);
+    					}
+    					for (const c of (data.classifierCases ?? [])) {
+    						const mem = goldenReconstructibilityMemory(c.memory, undefined);
+    						const res = classifyReconstructibility(
+    							mem,
+    							goldenReport(c.layers),
+    						);
+    						expect(
+    							res.reconstructible,
+    							`${tc.name}: classifier ${c.name} reconstructible`,
+    						).toBe(c.expectedReconstructible);
+    						expect(
+    							res.reason,
+    							`${tc.name}: classifier ${c.name} reason`,
+    						).toBe(c.expectedReason);
+    					}
+    					for (const c of (data.ratioCases ?? [])) {
+    						const counts = buildReconstructibilityCounts(
+    							c.denominator,
+    							c.numerator,
+    						);
+    						expect(
+    							counts.ratio,
+    							`${tc.name}: ratio ${c.name}`,
+    						).toEqual(c.expectedRatio);
+    						expect(
+    							counts.zeroDenominator,
+    							`${tc.name}: ratio ${c.name} zeroDenominator`,
+    						).toBe(c.expectedZeroDenominator);
+    						expect(
+    							counts.percentage,
+    							`${tc.name}: ratio ${c.name} percentage`,
+    						).toBe(c.expectedPercentage);
+    					}
+    					break;
+    				}
+    				default: {
+    					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
+    				}
 			}
 		});
 	}

@@ -11,3 +11,4 @@ export * from "./receipt.js";
 export * from "./verify.js";
 export * from "./evidence-object.js";
 export * from "./evidence-hold.js";
+export * from "./reconstructibility.js";

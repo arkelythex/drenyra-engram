@@ -113,6 +113,7 @@ export const LAYER_SUPERSESSION_CHAIN = "supersession chain";
 export const LAYER_EVIDENCE_AVAILABILITY = "evidence availability";
 export const LAYER_OBJECT_AVAILABILITY = "object availability";
 export const LAYER_RULE_AVAILABILITY = "rule availability";
+export const LAYER_RULE_VERSION_VIGENCIA = "rule version/vigencia";
 export const LAYER_JUDGMENT_HASH = "judgment hash";
 
 /** The six receipt-layer names in the stable order — the per-receipt order AND
