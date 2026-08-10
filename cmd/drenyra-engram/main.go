@@ -80,6 +80,10 @@ func run(args []string) int {
 		return cmdCompare(args[1:])
 	case "approve":
 		return cmdApprove(args[1:])
+	case "review":
+		return cmdReview(args[1:])
+	case "rule":
+		return cmdRule(args[1:])
 	case "auth":
 		return cmdAuth(args[1:])
 	case "keys":
@@ -1938,6 +1942,8 @@ func cmdObject(args []string) int {
 		return cmdObjectStore(args[1:])
 	case "get":
 		return cmdObjectGet(args[1:])
+	case "ingest":
+		return cmdObjectIngest(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown object subcommand %q\n", args[0])
 		printObjectUsage(os.Stderr)
@@ -1945,9 +1951,10 @@ func cmdObject(args []string) int {
 	}
 }
 
-func printObjectUsage(w *os.File) {
+func printObjectUsage(w io.Writer) {
 	fmt.Fprintln(w, "usage: drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--content-type <mime>] [--actor <name>] [--source-system <system>] [--reference <ref>] [--objects <dir>] [--db <path>]")
 	fmt.Fprintln(w, "       drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--objects <dir>] [--db <path>]   (scope-first: exact scope must match)")
+	fmt.Fprintln(w, "       drenyra-engram object ingest <invoice.xml> --ruc <11 digits> [--period <YYYYMM>] [--actor <name>] [--db <path>]   (v0.6.0 adapter contract — parse + WORM store; NEVER claims SUNAT integration)")
 }
 
 // objectCLIScope builds the CLI's exact company scope for objects: the same
@@ -3655,6 +3662,262 @@ func splitCSV(raw string) []string {
 	return out
 }
 
+// ──────────────────────────────────────────────
+// review — v0.9.0 review workspace (docs/architecture/review-workspace-v0.9.md)
+// ──────────────────────────────────────────────
+
+// cmdReview dispatches the review workspace subcommands: queue and detail are
+// SCOPE-FIRST READS (no authenticated session needed — reads never authorize);
+// reject and return are the AUTHENTICATED decision commands whose principal is
+// DERIVED from the stored CLI session (auth login), never declared by the caller
+// — there is deliberately NO --actor/--subject flag on them (the same ADR-003
+// contract as approve and the purge decisions).
+func cmdReview(args []string) int {
+	if len(args) == 0 {
+		printReviewUsage(os.Stderr)
+		return 2
+	}
+	switch args[0] {
+	case "queue":
+		return cmdReviewQueue(args[1:])
+	case "detail":
+		return cmdReviewDetail(args[1:])
+	case "reject":
+		return cmdReviewReject(args[1:])
+	case "return":
+		return cmdReviewReturn(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "drenyra-engram: unknown review subcommand %q\n", args[0])
+		printReviewUsage(os.Stderr)
+		return 2
+	}
+}
+
+// printReviewUsage prints the review subcommand surface.
+func printReviewUsage(w io.Writer) {
+	fmt.Fprintln(w, `usage:
+  drenyra-engram review queue <ruc> [--period <YYYYMM>] [--limit <n>] [--offset <n>] [--db <path>]   (v0.9.0 scope-first read)
+  drenyra-engram review detail <memory-id> --ruc <11 digits> [--period <YYYYMM>] [--db <path>]   (v0.9.0 scope-first read)
+  drenyra-engram review reject <memory-id> --expected-envelope <hash> --reason <text> [--request-id <id>] [--db <path>]   (v0.9.0 authenticated human gate)
+  drenyra-engram review return <memory-id> --expected-envelope <hash> --reason <text> [--request-id <id>] [--db <path>]   (v0.9.0 authenticated human gate)`)
+}
+
+// cmdReviewQueue lists the pending_review queue of an EXACT company scope
+// (design §3): scope-first, deterministically ordered, bounded pagination
+// (--limit default 50 max 200, --offset default 0). Read-only; no session.
+func cmdReviewQueue(args []string) int {
+	fs := flag.NewFlagSet("review queue", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional)")
+	limit := fs.Int("limit", 0, "page size (default 50, max 200)")
+	offset := fs.Int("offset", 0, "page offset (default 0)")
+	fs.Usage = func() {
+		printReviewUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--period": true, "--limit": true, "--offset": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || *limit < 0 || *offset < 0 {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(rest[0], *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	page, err := server.New(st, "cli").ReviewQueue(context.Background(), core.ReviewQueueQuery{
+		Scope:  scope,
+		Limit:  *limit,
+		Offset: *offset,
+	})
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(page)
+}
+
+// cmdReviewDetail composes the review of ONE pending revision, scope-guarded
+// (design §4): the diff, evidence/rules state, open judgments, review metadata
+// and the boundary notice. Read-only; no session.
+func cmdReviewDetail(args []string) int {
+	fs := flag.NewFlagSet("review detail", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	rruc := fs.String("ruc", "", "company RUC (exactly 11 digits; required)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional)")
+	fs.Usage = func() {
+		printReviewUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--ruc": true, "--period": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*rruc) == "" {
+		fs.Usage()
+		return 2
+	}
+	scope, err := cliCompanyScope(*rruc, *period)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	detail, err := server.New(st, "cli").ReviewDetail(context.Background(), rest[0], scope)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(detail)
+}
+
+// cmdReviewReject rejects a pending_review memory (design §5): pending_review →
+// rejected (terminal), AUTHENTICATED via the stored CLI session, idempotent by
+// (tenant, requestId) and hash-guarded. --expected-envelope is REQUIRED (the
+// envelope hash the reviewer actually saw); --reason is REQUIRED when the
+// memory's risk class demands it (material/critical or
+// closing/declaration/sunat_filing) and always persisted; --request-id is
+// optional (a UUID is generated when absent).
+func cmdReviewReject(args []string) int {
+	fs := flag.NewFlagSet("review reject", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	expectedEnvelope := fs.String("expected-envelope", "", "REQUIRED envelope hash the reviewer actually saw")
+	reason := fs.String("reason", "", "human rejection reason (REQUIRED for material/critical or closing/declaration/sunat_filing; always persisted)")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printReviewUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--expected-envelope": true, "--reason": true, "--request-id": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*expectedEnvelope) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliReviewPrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("review reject: %v", err)
+	}
+	result, err := server.New(st, "cli").RejectMemory(context.Background(), core.RejectMemoryCommand{
+		MemoryID:             rest[0],
+		ExpectedEnvelopeHash: *expectedEnvelope,
+		Reason:               *reason,
+		RequestID:            key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cmdReviewReturn RETURNS a pending_review memory to its proposer for correction
+// (design §5): pending_review → returned (NON-terminal — an agent Save on the
+// returned memory creates a NEW revision that re-enters pending_review).
+// AUTHENTICATED via the stored CLI session; the reason is REQUIRED (a correction
+// request — the reason tells the agent what to fix).
+func cmdReviewReturn(args []string) int {
+	fs := flag.NewFlagSet("review return", flag.ContinueOnError)
+	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
+	expectedEnvelope := fs.String("expected-envelope", "", "REQUIRED envelope hash the reviewer actually saw")
+	reason := fs.String("reason", "", "REQUIRED correction request reason")
+	requestID := fs.String("request-id", "", "tenant-scoped idempotency key (optional; a UUID is generated when absent)")
+	fs.Usage = func() {
+		printReviewUsage(fs.Output())
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--expected-envelope": true, "--reason": true, "--request-id": true,
+	})); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	rest := fs.Args()
+	if len(rest) != 1 || strings.TrimSpace(*expectedEnvelope) == "" || strings.TrimSpace(*reason) == "" {
+		fs.Usage()
+		return 2
+	}
+
+	st, err := openStore(*dbPath)
+	if err != nil {
+		return fail("%v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	principal, err := cliReviewPrincipal(st)
+	if err != nil {
+		return fail("%v", err)
+	}
+	key, err := cliRequestID(*requestID)
+	if err != nil {
+		return fail("review return: %v", err)
+	}
+	result, err := server.New(st, "cli").ReturnMemory(context.Background(), core.ReturnMemoryCommand{
+		MemoryID:             rest[0],
+		ExpectedEnvelopeHash: *expectedEnvelope,
+		Reason:               *reason,
+		RequestID:            key,
+	}, principal)
+	if err != nil {
+		return fail("%v", err)
+	}
+	return emit(result)
+}
+
+// cliReviewPrincipal derives the AUTHENTICATED review principal from the stored
+// CLI session (auth login) — never from a caller flag; a missing session fails
+// closed with AUTHENTICATION_REQUIRED pointing at auth login.
+func cliReviewPrincipal(st *store.SQLiteStore) (auth.VerifiedApprovalPrincipal, error) {
+	token, err := loadSessionToken()
+	if err != nil {
+		return auth.VerifiedApprovalPrincipal{}, fmt.Errorf("AUTHENTICATION_REQUIRED: no authenticated CLI session — run `drenyra-engram auth login --token <token> --db <path>` first (%v)", err)
+	}
+	resolver := &auth.Resolver{Sessions: st, Mode: auth.RuntimeProduction}
+	return resolver.Authenticate(context.Background(), auth.AuthenticationAssertion{
+		Method:     auth.AuthMethodSession,
+		Credential: token,
+	})
+}
+
 func printUsage(w *os.File) {
 	fmt.Fprintln(w, `drenyra-engram — institutional accounting memory engine (v0.2 Go foundation)
 
@@ -3666,6 +3929,10 @@ Usage:
   drenyra-engram doctor [--db <path>] [--objects <dir>]
   drenyra-engram compare <idA> <idB> [--db <path>]
   drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
+  drenyra-engram review queue <ruc> [--period <YYYYMM>] [--limit <n>] [--offset <n>] [--db <path>]   (v0.9.0 scope-first read)
+  drenyra-engram review detail <memory-id> --ruc <11 digits> [--period <YYYYMM>] [--db <path>]   (v0.9.0 scope-first read)
+  drenyra-engram review reject <memory-id> --expected-envelope <hash> --reason <text> [--request-id <id>] [--db <path>]   (v0.9.0 authenticated human gate; terminal)
+  drenyra-engram review return <memory-id> --expected-envelope <hash> --reason <text> [--request-id <id>] [--db <path>]   (v0.9.0 authenticated human gate; non-terminal)
   drenyra-engram auth login --token <token> [--db <path>]
   drenyra-engram auth seed-local-dev --db <path> --tenant <id> --company <id> --ruc <11 digits> --subject <id> --roles <list>   (DRENYRA_ENV=local_dev only)
   drenyra-engram keys init
@@ -3722,6 +3989,8 @@ Flags:
   --any            match ANY query token (default: match ALL)
   --expected-envelope <hash> envelope hash the reviewer actually saw (approve, REQUIRED)
   --reason <text>            approval justification (approve, REQUIRED)
+  --limit <n>                review queue page size (review queue, default 50, max 200)
+  --offset <n>               review queue page offset (review queue, default 0)
   --relation <rel>           proposable adjudication relation (judge propose, REQUIRED)
   --resolution <text>        professional human resolution (judge confirm, REQUIRED)
   --expected-hash <hash>     proposed judgment hash the adjudicator actually saw (judge confirm/reject, REQUIRED)
@@ -3769,6 +4038,10 @@ Lifecycle (v2): memories with fiscal effect are saved pending_review and only
 approve (AUTHENTICATED human gate) moves them to approved; reject ends the
 review, void annuls without successor, supersede routes readers to --target.
 compare reports identity/scope/content deltas and a relation verdict.
+Review workspace (v0.9.0): review queue/detail are scope-first reads of the
+pending_review queue; review reject (terminal) and review return (NON-terminal
+— an agent Save on the returned memory creates a NEW revision that re-enters
+pending_review) are the AUTHENTICATED decisions derived from the CLI session.
 
 Monthly close (v0.5): "close create" drafts a monthly close through the
 canonical CreateClose service — kind=summary, fiscalEffect=closing, topic

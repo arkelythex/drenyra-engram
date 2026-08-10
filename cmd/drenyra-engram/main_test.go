@@ -233,8 +233,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 12 || report.Observations != 2 || report.RevisionChains != 2 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 12, 2 observations, 2 chains", report)
+	if report.SchemaVersion != 14 || report.Observations != 2 || report.RevisionChains != 2 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 14, 2 observations, 2 chains", report)
 	}
 }
 
