@@ -111,7 +111,7 @@ The supplied 660-question questionnaire is retained as the audit backlog. The fo
 | X. Privacy | 384–400 | RISK | Data classification, provider routing, redaction, deletion/retention/legal-hold policy |
 | Y. Threat model | 401–419 | UNKNOWN / RISK | Written threat model, assets/actors, key/database/object-store compromise playbooks |
 | Z. Operability | 420–433 | RISK | Doctor coverage, backup/restore, recovery objectives, tenant export and corruption drills |
-| AA. Scale | 434–448 | UNKNOWN | Volume assumptions, large-store benchmark, FTS/partitioning decision, latency/cost budgets |
+| AA. Scale | 434–448 | RISK → PARTIAL (the deterministic search benchmark is DELIVERED: 25.5k-memory corpus, 203 labeled queries + 14 leakage probes, Recall@10 0.931 / MRR@10 0.931 / warm p95 31ms / leakage 0 — baseline MEETS the §8.3 targets; FTS5/BM25 NOT adopted per §8.4 decision rule; typo tolerance 0.58 tracked as the follow-up. Volume/cost assumptions for production scale remain open) | docs/benchmark/search-baseline-v0.1.md |
 | AB. Local-first/sync | 449–460 | PASS for additive local sync / UNKNOWN for production authority | Cloud authority, conflict/approval semantics, fork/clock policy, sync invariants |
 | AC. APIs/MCP/CLI | 461–472 | PASS for shared services / RISK for long-term compatibility | Surface parity matrix, version negotiation, stable error catalog, tool deprecation policy |
 | AD. Go↔TS | 473–482 | PASS for current mirror contracts / RISK for maintenance cost | Protocol ownership decision, golden-vector CI, independent canonicalization and crypto matrix |
@@ -192,3 +192,21 @@ Do not label v1.0 until all are true:
 2. Correct README, architecture, and roadmap drift.
 3. Add the evidence/retention and threat-model documents before adding more integrations.
 4. Turn the 25 answers into signed product/architecture decisions, then close the 660-question register with tests or operational evidence rather than prose alone.
+
+## Reconciliation (2026-08-10) — Open-source licensing decision
+
+The interim source-available posture (2026-08-09) was superseded by an explicit
+owner decision: the repository is now **public under the Apache License 2.0**
+([ADR-004](../decisions/ADR-004-open-source-license.md)). All claims of
+"private", "contractual distribution", and "source-available" in README,
+RELEASING, SECURITY, workflows, goreleaser, package.json, and the threat model
+were replaced with the open-source posture. A gitleaks full-history scan
+(115 commits; 12 `generic-api-key` findings) verified all 12 are test-fixture
+false positives (request IDs, topic keys, documented fixture token hash, Go↔TS
+Ed25519 parity vectors) — **no real secrets in history**.
+
+Block AJ moves from FAIL/RISK to **PARTIAL**: the license/product-policy
+contradiction is resolved via Apache-2.0; signed releases, SBOM, dependency
+audit, contribution review, and disclosure remain open. The Drenyra repo's
+`docs/products/private-product-policy.md` still needs the exclusion edit (out
+of scope for this repository).

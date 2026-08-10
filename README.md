@@ -6,10 +6,10 @@
 
 <p>
 <a href="https://github.com/arkelythex/drenyra-engram/releases"><img src="https://img.shields.io/github/v/release/arkelythex/drenyra-engram" alt="Release"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/License-Proprietary-red.svg" alt="License: Proprietary"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
 <img src="https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26">
 <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey" alt="Platform">
-<img src="https://img.shields.io/badge/tests-277%20TS%20%2B%20Go%20suite-green" alt="Tests">
+<img src="https://img.shields.io/badge/tests-360%20TS%20%2B%20Go%20suite-green" alt="Tests">
 </p>
 
 </div>
@@ -17,19 +17,27 @@
 ---
 
 > [!IMPORTANT]
-> **Private commercial product.** This repository is **private**; releases
-> and container images stay private (GHCR, authenticated pulls). Distribution
-> is contractual, never public. See the Drenyra
-> [Private Product Policy](https://github.com/arkelythex/Drenyra/blob/main/docs/products/private-product-policy.md).
+> **Open source (Apache-2.0).** This repository is **public** under the
+> [Apache License 2.0](LICENSE): source, releases and container images are
+> freely available for commercial and non-commercial use, modification and
+> redistribution, subject to the license terms. Drenyra Engram is released
+> under Apache-2.0 independently of the Drenyra private-product policy.
 >
 > **v0.7.0 — Evidence Objects (local-first)** (implemented in this repository):
 > v0.3 Accounting Memory Kernel, v0.4 authenticated approvals, judgments,
-> Ed25519 receipts, offline verification, v0.5 close intelligence, and the
+> Ed25519 receipts, offline verification, v0.5 close intelligence, the
 > v0.7.0 local-first evidence-object slice (content-addressed WORM object
 > bytes, schema-v8 immutable metadata, `object_stored` receipts, scoped
-> store/get, object-level rehash verification, CLI/HTTP/MCP surfaces) are
-> implemented and tested. Fiscal Policy Memory (v0.6.0) is in progress. See the
-> [ROADMAP](ROADMAP.md) and the [due-diligence audit](docs/due-diligence/2026-08-product-architecture-audit.md).
+> store/get, object-level rehash verification, CLI/HTTP/MCP surfaces), and the
+> v0.9.0 engine-side Review Workspace slice (scope-first review queue over
+> `pending_review`, review-detail assembly with evidence/rule state and open
+> judgments, authenticated reject with reason, the non-terminal `return`
+> decision, SoD + review-checks anti-rubber-stamp gates, velocity alerts, MCP/
+> HTTP/CLI surfaces) are implemented and tested. Phase 6 Fiscal Policy
+> Memory is DELIVERED (versioned rules with vigencia + jurisdiction,
+> structured rule links, regulatory-change impact, rule-version
+> verification). See the [ROADMAP](ROADMAP.md) and the
+> [due-diligence audit](docs/due-diligence/2026-08-product-architecture-audit.md).
 
 Drenyra Engram is the standalone, scope-first institutional accounting memory engine (Go): persistent observations, mission summaries, learned policies, professional judgments, relations, vigencia, and provenance — searched **scope-first** (company/RUC/period), over MCP, HTTP, CLI, and local sync. First consumer: the Drenyra adapter (observability read, mission write, fiscal memory), live-tested against the released binary.
 
@@ -69,8 +77,10 @@ a business action.
   content-addressed layout (`objects/<sha[0:2]>/<sha[2:4]>/<sha256>`); the
   object id IS the SHA-256 of the bytes (identical bytes → duplicate NO-OP),
   schema-v8 immutable metadata, `object_stored` receipts, scoped store/get,
-  and `verify object` re-hashing stored bytes. Deferred: retention, legal
-  hold, export, purge, cloud storage.
+  and `verify object` re-hashing stored bytes. The v0.8.0 evidence lifecycle
+  adds versioned retention policies, legal holds, the approved purge
+  pipeline, and the lifecycle export. Deferred: cloud/remote object storage,
+  the scheduler executor, OCR/content search, production backup/restore.
 - **Canonical content hashes** — `contentHash` identifies the immutable
   content; history never mutates, supersession is explicit and atomic.
 - **Institutional knowledge** — policies, conventions, and precedents that
@@ -83,7 +93,7 @@ a business action.
 - **Explainable period summary** — the killer demo: why did account 4011 end
   with this balance (facts, approved adjustments, rules applied, evidence,
   late exceptions — ordered by accounting-effective date).
-- **MCP, HTTP, CLI** — same engine, multiple surfaces (37 MCP tools: 24
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (57 MCP tools: 44
   `accounting_*` + 13 `engram_*`).
 
 ## Quick start
@@ -184,4 +194,4 @@ company memory through the surface you intend to query it from, or keep
 
 ## License
 
-Proprietary. © 2026 Arkelythex. All rights reserved. See [LICENSE](LICENSE).
+Apache License 2.0. © 2026 Arkelythex. See [LICENSE](LICENSE).

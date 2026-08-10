@@ -7,6 +7,52 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
+## Unreleased — post-v0.5 milestones (delivered on main, unreleased)
+
+> Milestone-by-milestone detail: [ROADMAP.md](ROADMAP.md) Phases 3–6f.
+
+### v0.7.0 — Evidence Objects (local-first slice)
+
+Content-addressed WORM object bytes (`objects/<sha[0:2]>/<sha[2:4]>/<sha256>`),
+schema-v8 immutable metadata, `object_stored` receipts, scoped store/get,
+object-level rehash verification, CLI/HTTP/MCP surfaces.
+
+### v0.8.0 — Evidence Lifecycle (retention, holds, purge, export)
+
+Versioned retention policies (put/resolve/evaluate), object-level legal holds
+(place/lift/list), the approved purge pipeline (request → approval → physical
+execution), and the deterministic lifecycle export. Schema v12.
+
+### v0.9.0 — Review Workspace (engine-side slice)
+
+Scope-first review queue over `pending_review` (deterministic ordering,
+bounded pagination), review-detail assembly (structured diff, evidence WORM
+availability, rule refs/vigencia, open judgments, envelope H1, boundary
+notice), AUTHENTICATED reject-with-reason and the non-terminal `return`
+decision, SoD + review-checks anti-rubber-stamp gates, per-principal velocity
+alerts, MCP/HTTP/CLI surfaces. Schema v13. Contracts extended (lifecycle,
+receipts, approval). Design: docs/architecture/review-workspace-v0.9.md.
+
+### Phase 6 — Fiscal Policy Memory (v0.6.0, delivered 2026-08-10)
+
+Versioned rules with temporal vigencia + jurisdiction (`policyRule`), schema
+v14 structured rule links (`rule_links.version` + `effective_at`), the
+`RuleImpact` regulatory-change read (CLI/MCP/HTTP), and the pure
+`ResolveRuleVersionFromChain` + `rule version/vigencia` verification layer
+(Go↔TS mirrored). Contracts: memory.md, verification.md.
+
+### Search baseline benchmark + FTS5/BM25 decision
+
+Deterministic 25.5k-memory corpus, 203 labeled queries + 14 leakage probes:
+Recall@10 0.931, MRR@10 0.931, warm p95 31ms, leakage 0 — the baseline MEETS
+every §8.3 target; FTS5/BM25 NOT adopted (§8.4). docs/benchmark/search-baseline-v0.1.md.
+
+### Comprobante ingestion adapter contract (§7.3)
+
+`core.ParseComprobanteXML` (minimal UBL 2.1, SUNAT mod-11 RUC checksum, whole
+cents), `core.ParseCDRXML`, `server.IngestComprobante` (WORM store), CLI
+`object ingest`. Explicit NON-integration boundary (no SUNAT credentials).
+
 ## v0.4.0 — Evidence, Conflict and Judgment (unreleased)
 
 ### Step 1 — ApprovalPrincipal autenticado (DONE)

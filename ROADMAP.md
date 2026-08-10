@@ -193,12 +193,38 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
 
     > Implemented in commits 3eab1e1..2fe6a7e.
 
-## Phase 6 — Fiscal Policy Memory (v0.6.0)
+## Phase 6 — Fiscal Policy Memory (v0.6.0) — DELIVERED (2026-08-10)
 
-- [ ] Versioned rules with temporal vigencia
-- [ ] Jurisdiction dimension (Perú → LATAM)
-- [ ] Regulatory-change impact reconstruction
-- [ ] Rule used in a historical decision, reconstructible
+- [x] **Versioned rules with temporal vigencia** — rules remain `kind=rule`
+memories; the (topicKey, exact Scope) revision chain IS the version
+chain; `Validity{EffectiveAt, ExpiresAt, Source}` half-open windows;
+superseded revisions stay visible and historically valid.
+- [x] **Jurisdiction dimension (Perú → LATAM)** — `policyRule{jurisdiction,
+legislation, authority, tags}` on rule memories (syntax-validated, never
+geopolitical truth), self-describing hash contribution (legacy memories
+hash byte-identically), schema v7 `policy_rule_json`.
+- [x] **Structured rule links (Batch 2)** — `SaveInput.ruleLinks[]` pins the
+EXACT rule revision at the decision instant (schema v14:
+`rule_links.version` + `effective_at` + `idx_rule_links_ref`); atomic
+save integration; `AddRuleLinkVersion` post-save; idempotency +
+`RULE_LINK_VERSION_CONFLICT`; closed-period gate; TS mirror.
+- [x] **Regulatory-change impact reconstruction (Batch 3)** — `RuleImpact`
+reverse read (structured pins UNION legacy bare refs via json_each,
+tenant-visible, company-scoped with a scope selector,
+`RULE_CHAIN_AMBIGUOUS`); overlap classification against the selected
+changed revision's window; CLI `rule show|history|impact`, MCP
+`accounting_rule_show|history|impact`, HTTP
+`GET /accounting/rules/{topic}(/history)(/impact?revision=N)`.
+- [x] **Rule used in a historical decision, reconstructible (Batch 4)** —
+pure `ResolveRuleVersionFromChain` (RULE_NOT_IN_FORCE /
+RULE_VIGENCIA_OVERLAP / RULE_VERSION_MISMATCH / RULE_STATUS_INVALID),
+`rule version/vigencia` verification layer + `ruleVersions` traces
+(legacy refs = skipped, invalid pin fails the layer, NOT ASSERTED
+preserved), Go↔TS parity (core/rules.ts mirror + mirrored tests).
+
+Design: docs/architecture/fiscal-policy-memory-v0.6.md · contracts:
+memory.md (structured links), verification.md (rule version/vigencia layer).
+Tests: Go 9/9 packages, TS 360 tests, typecheck clean.
 
 ## Phase 6b — Evidence Objects (v0.7.0) — DELIVERED (local-first slice)
 
@@ -233,16 +259,98 @@ Extracted via vertical PRs and versioned releases, **not** a bulk move:
       `POST /accounting/objects`, `GET /accounting/objects/{objectId}`; MCP
       `accounting_object_store`, `accounting_object_get`.
 - [x] **Go/TS coverage**: Go suite green (`internal/core`, `internal/store`,
-      `internal/server`, `cmd`) and TypeScript suite green (277 tests / 20 files
+      `internal/server`, `cmd`) and TypeScript suite green (360 tests / 25 files
       incl. `core/evidence-object.ts` mirror + `store/memory-store.ts` v0.7
       mirror).
 
-**Explicitly DEFERRED (not implemented):** retention expiry (no retention
-clock), legal hold, export, purge/deletion, cloud/remote object storage, OCR
-or content search over objects, SUNAT/ERP object ingestion, and production
-object-store operations (backup/restore drills, encryption-at-rest/TDE,
-recovery objectives). Architecture: docs/architecture/evidence-object-v0.7.md;
+**v0.8.0 evidence lifecycle (DELIVERED after this list — schema v12):**
+versioned retention policies (`PutRetentionPolicy`/`Resolve`/`Evaluate`),
+object-level legal holds (place/lift/list), the approved purge pipeline
+(request → approval → physical execution), and the deterministic lifecycle
+export — docs/architecture/evidence-lifecycle-v0.8.md. As of v0.8 the
+deferral list below is REDUCED to the items still genuinely open.
+
+**Explicitly DEFERRED (not implemented):** cloud/remote object storage, the
+scheduler executor for lifecycle expiry, OCR or content search over objects,
+SUNAT/ERP object ingestion, and production object-store operations
+(backup/restore drills, encryption-at-rest/TDE, recovery objectives).
+Architecture: docs/architecture/evidence-object-v0.7.md;
 threat model: docs/security/evidence-lifecycle-and-threat-model.md.
+
+## Phase 6c — Review Workspace (v0.9.0) — DELIVERED (engine-side slice)
+
+> The professional review layer over the existing `pending_review` state
+> (design brief §6; docs/architecture/review-workspace-v0.9.md). Headless and
+> independently deployable; the professional Web UI belongs to Drenyra and is
+> NOT part of this repository. Works without Phase 6 (rule refs are
+> best-effort). Schema v13.
+
+- [x] **Queue** — `ListReviewQueue`: pending_review of an EXACT company scope,
+deterministic ordering (materiality rank DESC → recordedAt ASC → rowid),
+bounded pagination (default 50, max 200), ref counts + open-judgment
+counts per item. Scope isolation enforced server-side.
+- [x] **Review detail** — `ReviewDetail`: pending revision + structured
+content diff vs chain predecessor + evidence WORM availability + rule
+refs/vigencia best-effort + open proposed judgments touching the memory +
+fresh envelope H1 + boundary notice ("signature integrity is not
+accounting correctness").
+- [x] **Decisions (authenticated, idempotent, hash-guarded)** — `approve`
+extended (SoD + review checks for material/critical); `reject` NEW
+authenticated path with reason policy + idempotency + H1 guard + reason in
+receipt (payload v0.10.0); `return` NEW non-terminal status (`returned`,
+pending_review → returned) with required reason + `memory_returned`
+receipt; agent Save on a returned memory re-enters pending_review.
+- [x] **Anti-rubber-stamp** — SoD fail-closed (SOD_VIOLATION);
+REVIEW_CHECKS_REQUIRED for material/critical; proposal change invalidates
+the review (ENVELOPE_MISMATCH); per-principal velocity alerts
+(review_velocity_events, observable, non-blocking).
+- [x] **Surfaces** — MCP `accounting_review_queue|detail|reject|return`;
+HTTP `GET /accounting/review/queue`, `GET /accounting/review/{memoryId}`,
+`POST /accounting/memories/{memoryId}/reject|return`;
+CLI `review queue|detail|reject|return`. Contracts extended:
+lifecycle.md (`returned`), receipts.md (`memory_returned` + reject
+payload v0.10.0), approval.md (SoD + review-checks clauses). Go↔TS golden
+vectors: sod-policy, review-checks, memory-returned-receipt-v10.
+- [x] Tests: Go suite green (9/9 packages), TS suite green (352 tests),
+typecheck clean.
+
+## Phase 6d — Reconstructible-close demo fixture (DELIVERED 2026-08-10)
+
+> The deterministic fictional drill proving the design brief §7.1 promise
+> (balance → ledger ref → entry → evidence object → rule + vigencia →
+> judgment → approval → offline verification) without the original agent.
+> Test: `TestReconstructibleCloseFixture`; docs/demo/reconstructible-close.md.
+> Advances gate G-2 to PARTIAL (real/anonymized close still required). The
+> drill also fixed a verifier gap: `evidence_linked` provenance now resolves
+> by (memory, timestamp, ref) — same-second XML+CDR pairs are unambiguous.
+
+## Phase 6f — Comprobante ingestion adapter contract (DELIVERED 2026-08-10)
+
+> The design brief §7.3 ADAPTER CONTRACT: `core.ParseComprobanteXML`
+> (minimal UBL 2.1 invoice parsing — serie/numero, emitter RUC with the SUNAT
+> mod-11 checksum, issue date, PayableAmount in whole cents; `<Invoice>` admits
+> ONLY Catálogo 01 codes 01/03 — notas 07/08 are CreditNote/DebitNote roots),
+> `core.ParseCDRXML` (response code),
+> `server.IngestComprobante` (parse + WORM object store, content-addressed
+> duplicate NO-OP), CLI `object ingest <file>`. The explicit
+> NON-INTEGRATION boundary: NO SUNAT credentials, NO retries, NO outage/
+> response-retention, NO source authority — production SUNAT/ERP ingestion
+> remains a Gate 0 decision (G0-5: CDR/XML first) and is NOT implemented.
+> Advances gate G-3 (adapter contract defined); the fixture demo docs
+> updated. Tests: core parser (valid/failure matrix) + server end-to-end.
+
+## Phase 6e — Search baseline benchmark (DELIVERED 2026-08-10)
+
+> The deterministic search benchmark (design brief §8): a 25,500-memory
+> synthetic corpus (RucA 25k + RucB 500), 203 labeled queries + 14
+> cross-tenant probes with a COMPUTED ground truth, and the harness
+> internal/search/bench. Results: Recall@10 0.931, MRR@10 0.931, warm p95
+> 31ms, leakage exactly 0, deterministic ordering, adversarial-safe — the
+> baseline MEETS every §8.3 target. **FTS5/BM25 NOT adopted** (§8.4: no
+> quality gap to justify it; standard BM25 would not close the one weakness
+> — typo tolerance 0.58 — which needs a trigram tokenizer and is tracked as
+> a follow-up if it becomes a product requirement). Report:
+> docs/benchmark/search-baseline-v0.1.md; audit Block AA → PARTIAL.
 
 ## Phase 7 — Institutional Accounting Brain (v1.0.0)
 
