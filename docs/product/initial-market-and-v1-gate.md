@@ -212,20 +212,27 @@ with an open item.** Current status of every item: **NOT MET**, unless noted.
 | # | Gate criterion | Closes | Status now | Evidence / owner |
 |---|---|---|---|---|
 | G-1 | One paying customer profile and one workflow validated | D-1, D-2, D-3 | NOT MET | ICP + workflow closure evidence (audit Block B) |
-| G-2 | One real or legally approved anonymized close is reproducible end-to-end | D-2 | NOT MET | Fixture + drill; audit Block C |
-| G-3 | Ledger boundary and first ERP/SUNAT integration are explicit | D-4 | NOT MET | Integration decision is DEFERRED (audit decision #5, Block W); no SUNAT/ERP integration is implemented |
+| G-2 | One real or legally approved anonymized close is reproducible end-to-end | D-2 | PARTIAL (the deterministic FICTIONAL fixture is delivered and green: `TestReconstructibleCloseFixture` — versioned rules + WORM evidence + late event + adjudicated contradiction + approvals + close + offline verification; G-2 still requires ONE real or legally approved anonymized close reproduced the same way) | [docs/demo/reconstructible-close.md](../demo/reconstructible-close.md); audit Block C |
+| G-3 | Ledger boundary and first ERP/SUNAT integration are explicit | D-4 | PARTIAL (ledger boundary FROZEN — D-4; first integration DECIDED at Gate 0 — G0-5: CDR/XML comprobante ingestion first, SIRE second, ERP deferred; the ADAPTER CONTRACT is defined; production integration is NOT implemented — no credentials/retries/outage/response-retention, audit Block W) | [gate-0-decisions.md](gate-0-decisions.md); design brief §7.3 |
 | G-4 | Human identity, MFA/assurance, membership, SoD, dual approval production-backed | D-3 | NOT MET | Production identity provider is DEFERRED (audit decision #4); `oidc` is recognized but not resolvable — [contracts/approval.md](../../contracts/approval.md) |
-| G-5 | Evidence objects have hash, retention, availability, legal-hold, export semantics | — | PARTIAL (hash + availability DELIVERED, v0.7.0 local-first: content-addressed WORM bytes, schema v8, `object_stored` receipts, scoped store/get, rehash availability verification; **retention, legal hold, export, purge, cloud remain DEFERRED**) | [docs/security/evidence-lifecycle-and-threat-model.md](../security/evidence-lifecycle-and-threat-model.md) (delivered vs deferred split) |
+| G-5 | Evidence objects have hash, retention, availability, legal-hold, export semantics | — | PARTIAL (hash + availability DELIVERED v0.7.0; retention policies + legal holds + approved purge pipeline + lifecycle export DELIVERED v0.8.0 — schema v12; **still DEFERRED: cloud/remote object storage, scheduler executor, OCR/content search, production backup/restore drills**) | [docs/architecture/evidence-lifecycle-v0.8.md](../architecture/evidence-lifecycle-v0.8.md); [docs/security/evidence-lifecycle-and-threat-model.md](../security/evidence-lifecycle-and-threat-model.md) |
 | G-6 | Cross-tenant, race, fuzz, restore, and corruption drills pass | — | PARTIAL (cross-tenant structural + race coverage exist; fuzz/restore/corruption drills not demonstrated) | [contracts/scope.md](../../contracts/scope.md); audit Blocks G, K, Q, Z |
 | G-7 | Signing-key rotation/revocation and compromise response are tested | — | PARTIAL (rotation + revocation are implemented and tested; compromise-response playbook is not) | [contracts/receipts.md](../../contracts/receipts.md); audit Block O |
 | G-8 | Threat model and privacy/data-provider policy are reviewed | — | NOT MET (first written threat model: [docs/security/evidence-lifecycle-and-threat-model.md](../security/evidence-lifecycle-and-threat-model.md); external review pending) | audit Block Y |
 | G-9 | Verification UI says cryptographic integrity is **not** accounting correctness | D-4 | PARTIAL (CLI reports end with "Accounting correctness: NOT ASSERTED"; product UI does not exist in this repo) | [contracts/verification.md](../../contracts/verification.md) |
 | G-10 | North Star metric has a baseline and a customer-observed target | D-5 | NOT MET | Metric definition + instrumentation plan |
-| G-11 | Product/license/non-goals documentation is internally consistent | — | PARTIAL (README badge corrected to proprietary; architecture/roadmap drift fixes in progress per audit findings) | [docs/due-diligence/2026-08-product-architecture-audit.md](../due-diligence/2026-08-product-architecture-audit.md) |
+| G-11 | Product/license/non-goals documentation is internally consistent | — | PARTIAL (license decision flipped to Apache-2.0 — ADR-004; doc repair across README/RELEASING/SECURITY/threat-model in progress) | [docs/due-diligence/2026-08-product-architecture-audit.md](../due-diligence/2026-08-product-architecture-audit.md); [ADR-004](../../docs/decisions/ADR-004-open-source-license.md) |
 
 **Non-goals re-affirmed for v1 scope:** authorization engine, cloud offering,
 PostgreSQL inside this repository, product UI — [ROADMAP.md](../../ROADMAP.md)
 (non-goals), [docs/architecture/ecosystem-boundaries.md](../architecture/ecosystem-boundaries.md).
+
+**Owners and review dates (draft — pending owner confirmation at Gate 0,
+2026-08-17):** every gate item is owned by Arkelythex (product owner); the
+review cadence is per-evidence, with the hard checkpoint at the Gate 0
+deadline (2026-08-17) for G-3/G-4 (integration + identity decisions) and at
+each customer-evidence milestone for G-1/G-2/G-10. A gate marked PARTIAL may
+advance only when its missing piece is explicitly tracked (never silently).
 
 ---
 
