@@ -36,9 +36,9 @@ const ReasonAuthorized = "AUTHORIZED"
 // Decision is the pure authorization outcome: allowed, the exact policy
 // version, and the frozen reason code.
 type Decision struct {
-	Allowed      bool
+	Allowed       bool
 	PolicyVersion string
-	ReasonCode   string
+	ReasonCode    string
 }
 
 // ApprovalAuthorizationPolicy is the pure authorization contract. Implementors
