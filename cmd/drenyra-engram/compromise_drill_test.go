@@ -54,15 +54,15 @@ func dbReceiptKeyID(t *testing.T, dbPath, subjectType, subjectID string) string 
 
 // TestCLICompromiseResponseDrill runs the full G-7 sequence:
 //
-//	1. keys init — active key A created (0600 keyring).
-//	2. save a fixture — receipt signed by key A (pre-compromise artifact).
-//	3. verify memory — PASSES before any incident (baseline).
-//	4. keys rotate — ONE transaction: key B activated, key A revoked_at stamped.
-//	5. verify memory — STILL PASSES: pre-cutoff (issued_at < revoked_at) retained
-//	   under the frozen FZ-3 policy (Step 6 of the playbook).
-//	6. save a second fixture — the store/signing seam must sign with key B, never
-//	   the revoked key A (Step 2 "stop signing is ENFORCED by the engine").
-//	7. keys show — active key is B, unrevoked; A carries its revoked_at.
+//  1. keys init — active key A created (0600 keyring).
+//  2. save a fixture — receipt signed by key A (pre-compromise artifact).
+//  3. verify memory — PASSES before any incident (baseline).
+//  4. keys rotate — ONE transaction: key B activated, key A revoked_at stamped.
+//  5. verify memory — STILL PASSES: pre-cutoff (issued_at < revoked_at) retained
+//     under the frozen FZ-3 policy (Step 6 of the playbook).
+//  6. save a second fixture — the store/signing seam must sign with key B, never
+//     the revoked key A (Step 2 "stop signing is ENFORCED by the engine").
+//  7. keys show — active key is B, unrevoked; A carries its revoked_at.
 func TestCLICompromiseResponseDrill(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
 	_, env := cliKeyringEnv(t)
