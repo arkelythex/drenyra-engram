@@ -1,0 +1,24 @@
+name: Fuzz CI (bounded)
+
+# Bounded fuzz gate (spec FR-3, AC-2): runs the three frozen fuzz targets via
+# `make fuzz-ci` (3 × 30s, never unbounded). Runs on a weekly schedule and on
+# manual dispatch only — fuzzing is deliberately NOT part of the push/PR gate
+# workflows (go.yml / ci.yml), which stay bounded and unchanged.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * 1'
+
+jobs:
+  fuzz-ci:
+    name: Fuzz (3 targets × 30s)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+      - name: Run bounded fuzz gate
+        run: make fuzz-ci

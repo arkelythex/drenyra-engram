@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("Compañía García S.A.C. emitió la factura F001-948 el 31/01/2026 por el servicio de consultoría; el importe quedó registrado en la memoria mensual del periodo. La revisión confirmó la conciliación del estado financiero de la empresa. Facturación y boletas electrónicas numeradas para el cierre contable de enero.")

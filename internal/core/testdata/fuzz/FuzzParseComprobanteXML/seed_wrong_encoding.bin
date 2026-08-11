@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("<?xml version=\"1.0\" encoding=\"ISO-8859-1\"?>\n<Invoice xmlns:cbc=\"urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2\">\n  <cbc:ID>F001-001</cbc:ID>\n  <cbc:IssueDate>2026-01-31</cbc:IssueDate>\n  <cbc:InvoiceTypeCode>01</cbc:InvoiceTypeCode>\n  <cbc:SupplierName>Caf\xe9 Garc\xeda</cbc:SupplierName>\n</Invoice>\n")

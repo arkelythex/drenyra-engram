@@ -16,6 +16,7 @@ package core
 import (
 	"encoding/xml"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -169,10 +170,19 @@ func splitSerieNumero(id string) (serie, numero string, ok bool) {
 func parsePayableAmount(raw string) (cents int64, currency string, err error) {
 	raw = strings.TrimSpace(raw)
 	// Currency suffix: "1284.30 PEN" or "1284.30" (attribute dropped by the
-	// minimal local-name matcher — acceptable for the adapter contract).
+	// minimal local-name matcher — acceptable for the adapter contract). The
+	// optional trailing field MUST be a 3-letter ISO 4217 code; a space-grouped
+	// amount ("1 284.30") or junk suffix ("1284.30 99") fails closed instead of
+	// being silently misread as a currency.
 	fields := strings.Fields(raw)
-	if len(fields) > 1 {
-		currency = strings.ToUpper(fields[len(fields)-1])
+	if len(fields) > 2 {
+		return 0, "", fmt.Errorf("INVALID_COMPROBANTE_TOTAL: %q is not a 2-decimal amount", raw)
+	}
+	if len(fields) == 2 {
+		if !isISO4217Code(fields[1]) {
+			return 0, "", fmt.Errorf("INVALID_COMPROBANTE_TOTAL: %q is not an amount", raw)
+		}
+		currency = strings.ToUpper(fields[1])
 		raw = fields[0]
 	}
 	parts := strings.Split(raw, ".")
@@ -187,11 +197,17 @@ func parsePayableAmount(raw string) (cents int64, currency string, err error) {
 		}
 	}
 	var whole, frac int64
-	if _, err := fmt.Sscanf(intPart, "%d", &whole); err != nil {
+	// ParseInt (not Sscanf) so a PayableAmount with trailing or embedded
+	// garbage after a parseable integer ("1284abc", "12a4.30") fails closed
+	// instead of being silently accepted as the prefix amount — the frozen
+	// contract requires a typed error, never a silent guess.
+	whole, err = strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
 		return 0, "", fmt.Errorf("INVALID_COMPROBANTE_TOTAL: %q is not an amount", raw)
 	}
 	if fracPart != "" {
-		if _, err := fmt.Sscanf(fracPart, "%d", &frac); err != nil {
+		frac, err = strconv.ParseInt(fracPart, 10, 64)
+		if err != nil {
 			return 0, "", fmt.Errorf("INVALID_COMPROBANTE_TOTAL: %q is not an amount", raw)
 		}
 	}
@@ -203,6 +219,21 @@ func parsePayableAmount(raw string) (cents int64, currency string, err error) {
 		currency = "PEN"
 	}
 	return cents, currency, nil
+}
+
+// isISO4217Code reports whether s is a 3-letter ISO 4217 currency code — the
+// only suffix the adapter accepts after a 2-decimal amount.
+func isISO4217Code(s string) bool {
+	if len(s) != 3 {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		c := s[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') {
+			return false
+		}
+	}
+	return true
 }
 
 // extractDocNumber pulls the "numero F001-948" pattern out of a CDR
