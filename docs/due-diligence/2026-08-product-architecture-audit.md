@@ -206,7 +206,9 @@ false positives (request IDs, topic keys, documented fixture token hash, Go↔TS
 Ed25519 parity vectors) — **no real secrets in history**.
 
 Block AJ moves from FAIL/RISK to **PARTIAL**: the license/product-policy
-contradiction is resolved via Apache-2.0; signed releases, SBOM, dependency
-audit, contribution review, and disclosure remain open. The Drenyra repo's
+contradiction is resolved via Apache-2.0; signed releases are now enabled
+via GitHub Attestations (SLSA provenance, `actions/attest` v4 in the
+release workflow — public repo free plan); SBOM, dependency audit,
+contribution review, and disclosure remain open. The Drenyra repo's
 `docs/products/private-product-policy.md` still needs the exclusion edit (out
 of scope for this repository).

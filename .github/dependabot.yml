@@ -9,3 +9,15 @@ updates:
     open-pull-requests-limit: 5
     allow:
       - dependency-type: development
+  # GitHub Actions: keeps the pinned action SHAs + version comments current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  # Go module dependencies (go.mod / go.sum).
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

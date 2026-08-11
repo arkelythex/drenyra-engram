@@ -61,5 +61,7 @@ release:
   prerelease: auto
   footer: |
     ---
-    Published from the private release workflow. Artifacts verified via
-    checksums.txt; SBOMs attached per binary for supply-chain review.
+    Published from the public release workflow. Artifacts verified via
+    checksums.txt; SBOMs attached per binary; signed SLSA provenance
+    attestations attached per release (see the Actions run) — verify with
+    `gh attestation verify <artifact> -R arkelythex/drenyra-engram`.

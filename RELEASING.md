@@ -1,6 +1,6 @@
 # Releasing — Drenyra Engram
 
-> **Last updated:** 2026-08-03.
+> **Last updated:** 2026-08-11.
 
 > Fiscal convention: monetary values in the Drenyra ecosystem are BigInt cents; no float is ever used for money; version/sequence numbers are JSON integers, never floats.
 > **Open-source product policy:** Drenyra Engram is released under the **Apache License 2.0**. Source, releases, and container images are public; contributions follow [CONTRIBUTING.md](CONTRIBUTING.md). Drenyra Engram is excluded from the Drenyra private-product policy (Drenyra repo).
@@ -32,7 +32,12 @@ Every release ships, for procurement/audit review:
 - **Binaries** — linux/darwin/windows × amd64/arm64, static, `-trimpath`.
 - **checksums.txt** — SHA-256 of every artifact; verify with `sha256sum -c`.
 - **SBOMs** — `*.spdx.json` per binary (syft); the bill of materials answers "what is in this engine?" for compliance review.
-- **SLSA provenance** — *deferred*: GitHub Attestations (`actions/attest-build-provenance`) was deferred because it required a paid plan on private repos. The repository is now **public (Apache-2.0)**, where attestations are available on the free plan — enabling them is pending a release-pipeline review (see release.yml). SBOMs + checksums are the current evidence.
+- **SLSA provenance** — **enabled**: GitHub Attestations
+  (`actions/attest` v4, Sigstore-signed) generates a provenance attestation
+  that binds every artifact in `checksums.txt` (name + SHA-256) to the
+  build. Verify any artifact with `gh attestation verify <artifact> -R
+  arkelythex/drenyra-engram`. Attestations are available on the free plan
+  for public repositories.
 
 These artifacts are **public** GitHub release assets under the Apache-2.0 license — open source, freely downloadable.
 
