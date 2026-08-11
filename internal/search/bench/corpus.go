@@ -108,14 +108,23 @@ func GenerateMemory(rng *rand.Rand, ruc string, year, i int) core.AccountingMemo
 	return mem
 }
 
-// GenerateCorpus builds the deterministic corpus: RucA memories (25,000) plus
-// a smaller RucB set for the leakage probe. The slice is in insertion order
+// GenerateCorpus builds the deterministic corpus: RucA memories (Years*PerYear)
+// plus a smaller RucB set for the leakage probe. The slice is in insertion order
 // (stable); search consumes it via MemorySource.List.
 func GenerateCorpus() []core.AccountingMemory {
+	return GenerateCorpusAt(PerYear)
+}
+
+// GenerateCorpusAt builds the same deterministic corpus at an explicit per-year
+// density. The §8.1 production assumption is 25,000 memories/company/year (125k
+// over the 5-year horizon); the CI harness runs the tractable 5,000/year default
+// and the production-scale run is invoked explicitly (bench + env-gated test).
+// The seed and vocabulary are identical, so a run at any density is reproducible.
+func GenerateCorpusAt(perYear int) []core.AccountingMemory {
 	rng := rand.New(rand.NewSource(20260810))
-	out := make([]core.AccountingMemory, 0, Years*PerYear+500)
+	out := make([]core.AccountingMemory, 0, Years*perYear+500)
 	for year := 2022; year < 2022+Years; year++ {
-		for i := 0; i < PerYear; i++ {
+		for i := 0; i < perYear; i++ {
 			out = append(out, GenerateMemory(rng, RucA, year, i))
 		}
 	}

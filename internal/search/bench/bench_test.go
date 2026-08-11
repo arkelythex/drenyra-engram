@@ -7,6 +7,7 @@
 package bench
 
 import (
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -196,6 +197,130 @@ func BenchmarkSearchLatency(b *testing.B) {
 	corpus := GenerateCorpus()
 	src := corpusSource{corpus}
 	queries := GenerateQueries(corpus)
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		q := queries[n%len(queries)]
+		if _, err := evalQuery(src, q); err != nil {
+			b.Fatalf("query %q: %v", q.Query, err)
+		}
+	}
+	b.ReportMetric(float64(len(corpus)), "corpus-memories")
+}
+
+// ProductionPerYear is the §8.1 assumed density: 25,000 memories per company
+// per year, i.e. 125,000 over the 5-year horizon.
+const ProductionPerYear = 25000
+
+// runMetricsAt runs the labeled set at an explicit per-year density and returns
+// the aggregated metrics (shared by the CI test and the production-scale run).
+func runMetricsAt(perYear int, t testing.TB) *metrics {
+	corpus := GenerateCorpusAt(perYear)
+	src := corpusSource{corpus}
+	queries := GenerateQueriesAt(corpus, perYear)
+	probes := CrossTenantProbesAt(corpus, perYear)
+	if len(queries) < 200 {
+		t.Fatalf("labeled set = %d, want ≥200", len(queries))
+	}
+
+	for _, q := range queries[:10] {
+		_, _ = evalQuery(src, q) // warmup pass
+	}
+
+	m := &metrics{}
+	for _, q := range queries {
+		start := time.Now()
+		ids, err := evalQuery(src, q)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("query %q (%s) crashed: %v", q.Query, q.Class, err)
+		}
+		m.record(q.Class, ids, q.WantIDs, elapsed)
+	}
+
+	// Determinism: the SAME query must yield the IDENTICAL id sequence.
+	probe := queries[1]
+	first, err := evalQuery(src, probe)
+	if err != nil {
+		t.Fatalf("determinism probe: %v", err)
+	}
+	second, err := evalQuery(src, probe)
+	if err != nil {
+		t.Fatalf("determinism probe rerun: %v", err)
+	}
+	if strings.Join(first, ",") != strings.Join(second, ",") {
+		t.Fatalf("non-deterministic ordering for equal scores: %v vs %v", first, second)
+	}
+
+	// Leakage — the HARD invariant (§8.3: exactly 0).
+	leak := 0
+	for _, q := range probes {
+		ids, err := evalQuery(src, q)
+		if err != nil {
+			t.Fatalf("leakage probe %q: %v", q.Query, err)
+		}
+		for _, id := range ids {
+			for _, want := range q.WantIDs {
+				if id == want {
+					leak++
+				}
+			}
+		}
+	}
+	if leak != 0 {
+		t.Fatalf("CROSS-TENANT LEAKAGE = %d (must be exactly 0)", leak)
+	}
+
+	t.Logf("── search benchmark (corpus %d memories, %d labeled queries, %d leakage probes) ──", len(corpus), len(queries), len(probes))
+	recall := float64(m.hits) / float64(m.count)
+	mrr := m.rrSum / float64(m.count)
+	t.Logf("Recall@10 overall: %d/%d = %.4f  (target ≥ 0.90)", m.hits, m.count, recall)
+	t.Logf("MRR@10 overall:    %.4f  (target ≥ 0.80)", mrr)
+	t.Logf("warm p95 latency:  %v  (target ≤ 150ms)", p95(m.latencies))
+	t.Logf("cross-tenant leakage: %d (target: exactly 0) — PASS", leak)
+	t.Logf("deterministic ordering: PASS")
+	classNames := make([]string, 0, len(m.byClass))
+	for k := range m.byClass {
+		classNames = append(classNames, k)
+	}
+	sort.Strings(classNames)
+	for _, k := range classNames {
+		c := m.byClass[k]
+		t.Logf("  %-18s recall %d/%d (%.2f)  mrr %.3f", k, c.hits, c.count, float64(c.hits)/float64(c.count), c.rrSum/float64(c.count))
+	}
+
+	if recall < 0.90 {
+		t.Logf("WARN: Recall@10 = %.4f < 0.90 — below the §8.3 proposed target (pending approval; FTS5/BM25 decision input)", recall)
+	}
+	if mrr < 0.80 {
+		t.Logf("WARN: MRR@10 = %.4f < 0.80 — below the §8.3 proposed target (pending approval; FTS5/BM25 decision input)", mrr)
+	}
+	if p := p95(m.latencies); p > 150*time.Millisecond {
+		t.Logf("WARN: warm p95 = %v > 150ms — below the §8.3 proposed target", p)
+	}
+	return m
+}
+
+// TestSearchBenchmarkProductionScale validates the §8.3 targets at the §8.1
+// production volume (125k memories over 5 years). It is env-gated
+// (DRENYRA_BENCH_PRODUCTION=1) so CI keeps the tractable 25k corpus; the
+// production-scale run is invoked explicitly:
+//
+//	DRENYRA_BENCH_PRODUCTION=1 go test ./internal/search/bench -run TestSearchBenchmarkProductionScale -v
+func TestSearchBenchmarkProductionScale(t *testing.T) {
+	if os.Getenv("DRENYRA_BENCH_PRODUCTION") == "" {
+		t.Skip("production-scale run requires DRENYRA_BENCH_PRODUCTION=1 (125k corpus, ~1-2min)")
+	}
+	runMetricsAt(ProductionPerYear, t)
+}
+
+// BenchmarkSearchLatencyProduction measures per-query latency at the §8.1
+// production volume. Run with:
+//
+//	go test ./internal/search/bench -bench BenchmarkSearchLatencyProduction -run '^$' -benchtime=1x
+func BenchmarkSearchLatencyProduction(b *testing.B) {
+	corpus := GenerateCorpusAt(ProductionPerYear)
+	src := corpusSource{corpus}
+	queries := GenerateQueriesAt(corpus, ProductionPerYear)
 	b.ResetTimer()
 	for n := 0; n < b.N; n++ {
 		q := queries[n%len(queries)]

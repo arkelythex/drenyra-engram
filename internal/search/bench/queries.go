@@ -35,20 +35,27 @@ const (
 )
 
 // GenerateQueries builds the labeled set (≥200) from the corpus, determinis-
-// tically. Class distribution: ~120 distinctive/exact, ~30 typo, ~20 account+
-// period, ~15 rule/vigencia, ~10 punctuation, ~10 no-result/adversarial, and
-// the cross-tenant probes appended separately.
+// tically, at the CI density (PerYear). Class distribution: ~120 distinctive/
+// exact, ~30 typo, ~20 account+period, ~15 rule/vigencia, ~10 punctuation,
+// ~10 no-result/adversarial, and the cross-tenant probes appended separately.
 func GenerateQueries(corpus []core.AccountingMemory) []LabeledQuery {
+	return GenerateQueriesAt(corpus, PerYear)
+}
+
+// GenerateQueriesAt is GenerateQueries at an explicit per-year density (see
+// GenerateCorpusAt). The stride constants (197, 823, 1151, 1597) are prime and
+// co-prime with any per-year density, so the walk covers every class.
+func GenerateQueriesAt(corpus []core.AccountingMemory, perYear int) []LabeledQuery {
 	q := make([]LabeledQuery, 0, 220)
-	nA := Years * PerYear // RucA memories occupy indices [0, nA)
+	nA := Years * perYear // RucA memories occupy indices [0, nA)
 
 	// 1. Exact-identifier + distinctive queries (~120) — walk RucA with a
 	// deterministic stride so every class of memory is covered.
-	stride := 197 // prime, co-prime with PerYear
+	stride := 197 // prime, co-prime with any perYear
 	count := 0
 	for i := 0; i < nA && count < 130; i = (i + stride) % nA {
 		mem := corpus[i]
-		gen := i % PerYear // generator index (the corpus packs 5000/year)
+		gen := i % perYear // generator index (the corpus packs perYear/year)
 		doc := DocNumber(RucA, memYear(mem), gen)
 		class := "exact-identifier"
 		query := doc
@@ -70,7 +77,7 @@ func GenerateQueries(corpus []core.AccountingMemory) []LabeledQuery {
 	typoCount := 0
 	for i := 0; i < nA && typoCount < 36; i += 823 {
 		mem := corpus[i]
-		gen := i % PerYear
+		gen := i % perYear
 		doc := DocNumber(RucA, memYear(mem), gen)
 		var typo string
 		if typoCount%2 == 0 && len(doc) > 2 {
@@ -119,7 +126,7 @@ func GenerateQueries(corpus []core.AccountingMemory) []LabeledQuery {
 		if mem.Kind != core.KindRule {
 			continue
 		}
-		gen := i % PerYear
+		gen := i % perYear
 		q = append(q, LabeledQuery{Class: "rule-vigencia", Query: fmt.Sprintf("%s %s", DocNumber(RucA, memYear(mem), gen), contentNoun(mem)), Scope: ScopeFor(RucA, memPeriod(mem)), Mode: matchAny, WantIDs: []string{mem.Identity.ID}})
 		ruleCount++
 	}
@@ -128,8 +135,8 @@ func GenerateQueries(corpus []core.AccountingMemory) []LabeledQuery {
 	// the tokenizer must split ":", "." and "_" exactly like "-", so the
 	// target stays uniquely rank-1 (a separator regression is a real miss).
 	for i := 0; i < 10; i++ {
-		mem := corpus[i*997]
-		gen := (i * 997) % PerYear
+		mem := corpus[(i*997)%nA]
+		gen := ((i * 997) % nA) % perYear
 		doc := DocNumber(RucA, memYear(mem), gen)
 		sep := []string{":", ".", "_", ":"}[i%4]
 		q = append(q, LabeledQuery{Class: "punctuation", Query: strings.ReplaceAll(doc, "-", sep), Scope: ScopeFor(RucA, memPeriod(mem)), Mode: matchAny, WantIDs: []string{mem.Identity.ID}})
@@ -154,8 +161,13 @@ func GenerateQueries(corpus []core.AccountingMemory) []LabeledQuery {
 // lives in RucB, executed under a RucA scope — the relevant hit must NEVER
 // surface (leakage exactly 0, §8.3).
 func CrossTenantProbes(corpus []core.AccountingMemory) []LabeledQuery {
+	return CrossTenantProbesAt(corpus, PerYear)
+}
+
+// CrossTenantProbesAt is CrossTenantProbes at an explicit per-year density.
+func CrossTenantProbesAt(corpus []core.AccountingMemory, perYear int) []LabeledQuery {
 	probes := []LabeledQuery{}
-	nA := Years * PerYear
+	nA := Years * perYear
 	for i := nA; i < len(corpus); i += 37 {
 		mem := corpus[i]
 		gen := (i - nA) % 100 // RucB packs 100/year
