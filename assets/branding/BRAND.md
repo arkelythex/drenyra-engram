@@ -15,7 +15,7 @@
 
 | Asset | Status |
 | --- | --- |
-| `drenyra-engram-banner-1.png` (in README) | **FAILS conformance** — coverage 0.77 < 0.85; off-palette royal blues (`#041c78`-family) and warm beige tones |
+| `drenyra-engram-banner-1.png` (in README) | **FAILS conformance** — coverage 0.80 < 0.92; off-palette royal blues (`#041c78`-family) and warm beige tones |
 | `drenyra-engram-banner-2.png`, `-3.png` | Off-palette variants, unreferenced — delete after regeneration |
 
 ## Regeneration prompt (ChatGPT Images 2.0)
@@ -68,12 +68,12 @@ node /home/dreamcoder08/Documents/PROYECTOS/drenyra-ai/scripts/brand-conformance
 
 **Acceptance criteria:**
 
-1. The checker reports `✓ <file> (coverage ≥ 0.85)` and the final line is `PASS`.
+1. The checker reports `✓ <file> (coverage ≥ 0.92)` and the final line is `PASS`.
 2. The image contains **no text** (verify visually).
 3. The image carries **C2PA provenance metadata** (ChatGPT Images exports it).
 
 **If it fails:** the checker prints the top off-palette colors and their sample
-counts, e.g. `coverage 0.77 < 0.85 · off-palette: #e2d2b9 x2 ...`. Feed that
+counts, e.g. `coverage 0.80 < 0.92 · off-palette: #e2d2b9 x2 ...`. Feed that
 back into the prompt: explicitly ban those hues ("no #e2d2b9 or similar warm
 beige tones") and regenerate. Iterate until PASS — usually 1–2 rounds.
 
