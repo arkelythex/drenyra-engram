@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -230,6 +231,111 @@ func TestMCPPurgeMutationsRequireAllArgs(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestMCPPurgeRequestIdempotentReplay (AC-L-2, FR-L.3) freezes the replay
+// contract of the MCP purge-request surface. The stdio MCP server has NO
+// authenticated session binding (design §3 — tool arguments never supply
+// identity), so accounting_purge_request FAILS CLOSED with
+// AUTHENTICATION_REQUIRED on EVERY call: issuing the exact same tool call
+// twice with the same request_id yields the IDENTICAL deterministic fail-closed
+// result and ZERO state (no request row, event, receipt or idempotency key) —
+// the surface can never silently create a partial reservation or a duplicate.
+// The stored-outcome replay semantics live in the exact domain service the
+// tool delegates to with a bound principal (m.api.RequestPurge — the same
+// service requestPurgeDirect exercises): replaying the same (tenant, requestId,
+// payload, principal) returns the ORIGINAL stored request with
+// idempotentReplay=true and no second event/receipt. The fresh-only request
+// fixture above remains but no longer stands alone.
+func TestMCPPurgeRequestIdempotentReplay(t *testing.T) {
+	m, api := newTestMCP(t)
+	recordsToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "lucia.ramirez",
+		[]auth.AccountingRole{auth.RoleRecordsComplianceOfficer})
+	accountantToken := seedPurgeIdentity(t, api, testOrgID, "acme", testRucA, "ana.garcia",
+		[]auth.AccountingRole{auth.RoleAccountant})
+	objectID, _, _, h := purgeFixture(t, api, recordsToken)
+	const replayKey = "req-purge-mcp-replay-001"
+
+	toolArgs := map[string]any{
+		"object_id": objectID, "jurisdiction": "PE", "legislation": "NATIONAL-TAX",
+		"category": "invoice", "expected_lifecycle_hash": h,
+		"reason": "retention period elapsed", "request_id": replayKey,
+	}
+	before := mcpPurgeDoctorDigest(t, api)
+
+	// The exact same tool call twice: BOTH fail closed with the frozen
+	// AUTHENTICATION_REQUIRED (the stdio server has no session binding) —
+	// deterministic, identical, zero state.
+	var firstText, secondText string
+	for i := 0; i < 2; i++ {
+		response := call(t, m, 1, "tools/call", map[string]any{
+			"name": "accounting_purge_request", "arguments": toolArgs,
+		})
+		if response.Error != nil {
+			t.Fatalf("domain failure must be a tool result, not a JSON-RPC error: %+v", response.Error)
+		}
+		var output toolCallOutput
+		if err := json.Unmarshal(response.Result, &output); err != nil {
+			t.Fatalf("decode tool result: %v", err)
+		}
+		if !output.IsError || len(output.Content) == 0 || !strings.Contains(output.Content[0]["text"], "AUTHENTICATION_REQUIRED") {
+			t.Fatalf("MCP purge request must fail closed with AUTHENTICATION_REQUIRED: %v", output.Content)
+		}
+		text := output.Content[0]["text"]
+		if i == 0 {
+			firstText = text
+		} else {
+			secondText = text
+		}
+	}
+	if firstText != secondText {
+		t.Fatalf("replayed fail-closed result differs: %q vs %q (must be deterministic)", firstText, secondText)
+	}
+	after := mcpPurgeDoctorDigest(t, api)
+	if before != after {
+		t.Fatalf("MCP fail-closed purge request mutated state: before %v after %v", before, after)
+	}
+
+	// The stored-outcome replay semantics live in the domain service the tool
+	// delegates to with a bound principal: first call fresh, same-request replay
+	// returns the ORIGINAL stored request with idempotentReplay=true and NO
+	// second event/receipt.
+	first := requestPurgeDirect(t, api, objectID, h, replayKey, accountantToken)
+	afterFirst := mcpPurgeDoctorDigest(t, api)
+	replay, err := api.RequestPurge(context.Background(), core.RequestPurgeCommand{
+		ObjectID:              objectID,
+		Jurisdiction:          "PE",
+		Legislation:           "NATIONAL-TAX",
+		Category:              "invoice",
+		ExpectedLifecycleHash: h,
+		Reason:                "retention period elapsed",
+		RequestID:             replayKey,
+	}, purgePrincipal(t, api, accountantToken))
+	if err != nil {
+		t.Fatalf("delegated-service replay: %v", err)
+	}
+	if !replay.IdempotentReplay || replay.Request.RequestID != first.Request.RequestID {
+		t.Fatalf("delegated-service replay = %+v, want the stored request %s with idempotentReplay", replay, first.Request.RequestID)
+	}
+	afterReplay := mcpPurgeDoctorDigest(t, api)
+	if afterFirst != afterReplay {
+		t.Fatalf("delegated-service replay duplicated effects: before %v after %v", afterFirst, afterReplay)
+	}
+}
+
+// mcpPurgeDoctorDigest is the deterministic logical zero-effect digest of the
+// purge surface (doctor counts — never raw SQLite bytes).
+func mcpPurgeDoctorDigest(t *testing.T, api *API) string {
+	t.Helper()
+	report, err := api.Doctor()
+	if err != nil {
+		t.Fatalf("doctor digest: %v", err)
+	}
+	return strings.Join([]string{
+		strconv.Itoa(report.PurgeRequests), strconv.Itoa(report.PurgeApprovals), strconv.Itoa(report.LifecycleEvents),
+		strconv.Itoa(report.PurgeIdempotencyKeys), strconv.Itoa(report.Holds), strconv.Itoa(report.HoldIdempotencyKeys),
+		strconv.Itoa(report.Observations),
+	}, "/")
 }
 
 // TestMCPLifecycleExportScopeFirst: the read-only export returns the

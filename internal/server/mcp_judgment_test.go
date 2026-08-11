@@ -247,8 +247,122 @@ func TestMCPJudgmentRejectFailsClosedWithoutSession(t *testing.T) {
 	}
 }
 
-// TestMCPJudgmentWithdrawSameProposer: the SAME proposer identity withdraws its
-// own proposal → the withdrawn judgment is the in-band tool result.
+// TestMCPJudgmentProposeIdempotentReplay (AC-L-2, FR-L.3): the SAME tool call
+// issued twice with the same (request_id, payload, provenance source) — the
+// second result carries the FIRST stored judgment id and the replay marker
+// (idempotentReplay=true), and the store keeps exactly ONE proposal. The
+// fresh-only proposal tests above remain but no longer stand alone.
+func TestMCPJudgmentProposeIdempotentReplay(t *testing.T) {
+	m, api := newTestMCP(t)
+	fromID, toID := mcpJudgmentPair(t, api)
+
+	firstResp := proposeJudgmentMCP(t, m, fromID, toID, "mcp-judgment-replay-1", agentMCPSource("agent-1"))
+	if firstResp.Error != nil {
+		t.Fatalf("first propose error: %+v", firstResp.Error)
+	}
+	var first core.ProposeJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, firstResp)), &first); err != nil {
+		t.Fatalf("decode first propose result: %v", err)
+	}
+	if first.IdempotentReplay || first.JudgmentID == "" {
+		t.Fatalf("first propose = %+v, want a fresh stored judgment id", first)
+	}
+
+	// The exact same tool call again: the second result must carry the FIRST
+	// stored judgment id and the replay marker — never a second proposal.
+	secondResp := proposeJudgmentMCP(t, m, fromID, toID, "mcp-judgment-replay-1", agentMCPSource("agent-1"))
+	if secondResp.Error != nil {
+		t.Fatalf("replay propose error: %+v", secondResp.Error)
+	}
+	var second core.ProposeJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, secondResp)), &second); err != nil {
+		t.Fatalf("decode replay propose result: %v", err)
+	}
+	if !second.IdempotentReplay {
+		t.Fatalf("second propose must be an idempotent replay, got %+v", second)
+	}
+	if second.JudgmentID != first.JudgmentID || second.Judgment.ID != first.JudgmentID {
+		t.Fatalf("replay judgment id = %q, want the first stored id %q", second.JudgmentID, first.JudgmentID)
+	}
+	if second.Judgment.Status != core.JudgmentProposed {
+		t.Fatalf("replay status = %q, want proposed (the stored outcome)", second.Judgment.Status)
+	}
+}
+
+// TestMCPJudgmentProposeConflictOnChangedPayload (FR-L.2, AC-L-6): reusing the
+// same MCP request id with a DIFFERENT bound payload is the frozen typed
+// conflict (IDEMPOTENCY_CONFLICT as an in-band tool result), never a silent
+// success and never a second proposal.
+func TestMCPJudgmentProposeConflictOnChangedPayload(t *testing.T) {
+	m, api := newTestMCP(t)
+	fromID, toID := mcpJudgmentPair(t, api)
+
+	resp := proposeJudgmentMCP(t, m, fromID, toID, "mcp-judgment-conflict-1", agentMCPSource("agent-1"))
+	if resp.Error != nil {
+		t.Fatalf("first propose error: %+v", resp.Error)
+	}
+	var first core.ProposeJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, resp)), &first); err != nil {
+		t.Fatalf("decode first propose result: %v", err)
+	}
+
+	conflict := call(t, m, 3, "tools/call", map[string]any{
+		"name": "accounting_judgment_propose",
+		"arguments": map[string]any{
+			"from_id":    fromID,
+			"to_id":      toID,
+			"relation":   "contradicts",
+			"reason":     "CHANGED reason under the same request id",
+			"request_id": "mcp-judgment-conflict-1",
+			"source":     agentMCPSource("agent-1"),
+		},
+	})
+	text := toolCallErrorText(t, conflict)
+	if !strings.Contains(text, "IDEMPOTENCY_CONFLICT") {
+		t.Fatalf("changed payload under the same request id: error text must carry IDEMPOTENCY_CONFLICT, got %q", text)
+	}
+}
+
+// TestMCPJudgmentWithdrawIdempotentReplay: the same withdraw tool call twice
+// with the same request id — the second result replays the stored withdrawn
+// outcome (same event id) with no second event.
+func TestMCPJudgmentWithdrawIdempotentReplay(t *testing.T) {
+	m, api := newTestMCP(t)
+	fromID, toID := mcpJudgmentPair(t, api)
+
+	resp := proposeJudgmentMCP(t, m, fromID, toID, "mcp-judgment-w-replay-1", agentMCPSource("agent-1"))
+	var proposed core.ProposeJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, resp)), &proposed); err != nil {
+		t.Fatalf("decode propose result: %v", err)
+	}
+
+	withdrawArgs := map[string]any{
+		"judgment_id": proposed.JudgmentID,
+		"request_id":  "mcp-judgment-w-replay-1w",
+		"source":      agentMCPSource("agent-1"),
+	}
+	first := call(t, m, 1, "tools/call", map[string]any{"name": "accounting_judgment_withdraw", "arguments": withdrawArgs})
+	var firstResult core.WithdrawJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, first)), &firstResult); err != nil {
+		t.Fatalf("decode first withdraw result: %v", err)
+	}
+	if firstResult.IdempotentReplay || firstResult.JudgmentEventID == "" {
+		t.Fatalf("first withdraw = %+v, want a fresh stored event", firstResult)
+	}
+
+	second := call(t, m, 2, "tools/call", map[string]any{"name": "accounting_judgment_withdraw", "arguments": withdrawArgs})
+	var secondResult core.WithdrawJudgmentResult
+	if err := json.Unmarshal([]byte(toolResultText(t, second)), &secondResult); err != nil {
+		t.Fatalf("decode replay withdraw result: %v", err)
+	}
+	if !secondResult.IdempotentReplay || secondResult.JudgmentEventID != firstResult.JudgmentEventID {
+		t.Fatalf("replay withdraw = %+v, want the stored event %s with idempotentReplay", secondResult, firstResult.JudgmentEventID)
+	}
+	if secondResult.Judgment.Status != core.JudgmentWithdrawn {
+		t.Fatalf("replay status = %q, want withdrawn (stored outcome)", secondResult.Judgment.Status)
+	}
+}
+
 func TestMCPJudgmentWithdrawSameProposer(t *testing.T) {
 	m, api := newTestMCP(t)
 	fromID, toID := mcpJudgmentPair(t, api)

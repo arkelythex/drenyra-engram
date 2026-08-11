@@ -419,7 +419,8 @@ func (s *SQLiteStore) PlaceHold(ctx context.Context, cmd core.PlaceHoldCommand, 
 	// fingerprint and the acting principal must match exactly, else the request
 	// id was reused for a different intent.
 	var (
-		storedHoldID, storedResult, storedHash, storedActor, storedCreatedAt string
+		storedHoldID, storedResult               sql.NullString
+		storedHash, storedActor, storedCreatedAt string
 	)
 	err = conn.QueryRowContext(ctx, `
 		SELECT hold_id, result_json, command_hash, actor_binding, created_at
@@ -431,11 +432,11 @@ func (s *SQLiteStore) PlaceHold(ctx context.Context, cmd core.PlaceHoldCommand, 
 		if storedHash != commandHash || storedActor != actorBinding {
 			return core.PlaceHoldResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or principal")
 		}
-		if storedHoldID == "" || storedResult == "" {
+		if !storedHoldID.Valid || !storedResult.Valid {
 			return core.PlaceHoldResult{}, auth.New(auth.CodeIdempotencyConflict, "request id reservation never completed")
 		}
 		var replayed core.EvidenceHold
-		if err := json.Unmarshal([]byte(storedResult), &replayed); err != nil {
+		if err := json.Unmarshal([]byte(storedResult.String), &replayed); err != nil {
 			return core.PlaceHoldResult{}, fmt.Errorf("persistence error: decode replayed hold: %w", err)
 		}
 		return core.PlaceHoldResult{Hold: replayed, Created: false, IdempotentReplay: true}, nil
@@ -610,7 +611,8 @@ func (s *SQLiteStore) LiftHold(ctx context.Context, cmd core.LiftHoldCommand, pr
 	// outcome; the command fingerprint and the acting principal must match
 	// exactly, else the request id was reused for a different intent.
 	var (
-		storedHoldID, storedResult, storedHash, storedActor, storedCreatedAt string
+		storedHoldID, storedResult               sql.NullString
+		storedHash, storedActor, storedCreatedAt string
 	)
 	err = conn.QueryRowContext(ctx, `
 		SELECT hold_id, result_json, command_hash, actor_binding, created_at
@@ -622,11 +624,11 @@ func (s *SQLiteStore) LiftHold(ctx context.Context, cmd core.LiftHoldCommand, pr
 		if storedHash != commandHash || storedActor != actorBinding {
 			return core.LiftHoldResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or principal")
 		}
-		if storedHoldID == "" || storedResult == "" {
+		if !storedHoldID.Valid || !storedResult.Valid {
 			return core.LiftHoldResult{}, auth.New(auth.CodeIdempotencyConflict, "request id reservation never completed")
 		}
 		var replayed core.EvidenceHold
-		if err := json.Unmarshal([]byte(storedResult), &replayed); err != nil {
+		if err := json.Unmarshal([]byte(storedResult.String), &replayed); err != nil {
 			return core.LiftHoldResult{}, fmt.Errorf("persistence error: decode replayed hold: %w", err)
 		}
 		return core.LiftHoldResult{Hold: replayed, Lifted: true, IdempotentReplay: true}, nil

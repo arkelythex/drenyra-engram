@@ -251,6 +251,122 @@ func TestMCPReconciliationRejectFailsClosedWithoutSession(t *testing.T) {
 	}
 }
 
+// TestMCPReconciliationProposeIdempotentReplay (AC-L-2, FR-L.3): the SAME tool
+// call issued twice with the same (request_id, payload, provenance source) —
+// the second result carries the FIRST stored reconciliation id and the replay
+// marker (idempotentReplay=true), with the stored outcome and NO second
+// proposal. The fresh-only proposal tests above remain but no longer stand
+// alone.
+func TestMCPReconciliationProposeIdempotentReplay(t *testing.T) {
+	m, api := newTestMCP(t)
+	leftID, rightID := mcpReconciliationPair(t, api)
+
+	firstResp := proposeReconciliationMCP(t, m, leftID, rightID, "mcp-reconciliation-replay-1", agentMCPSource("agent-1"))
+	if firstResp.Error != nil {
+		t.Fatalf("first propose error: %+v", firstResp.Error)
+	}
+	var first core.ProposeReconciliationResult
+	if err := json.Unmarshal([]byte(toolResultText(t, firstResp)), &first); err != nil {
+		t.Fatalf("decode first propose result: %v", err)
+	}
+	if first.IdempotentReplay || first.ReconciliationID == "" {
+		t.Fatalf("first propose = %+v, want a fresh stored reconciliation id", first)
+	}
+
+	// The exact same tool call again: the second result must carry the FIRST
+	// stored reconciliation id and the replay marker.
+	secondResp := proposeReconciliationMCP(t, m, leftID, rightID, "mcp-reconciliation-replay-1", agentMCPSource("agent-1"))
+	if secondResp.Error != nil {
+		t.Fatalf("replay propose error: %+v", secondResp.Error)
+	}
+	var second core.ProposeReconciliationResult
+	if err := json.Unmarshal([]byte(toolResultText(t, secondResp)), &second); err != nil {
+		t.Fatalf("decode replay propose result: %v", err)
+	}
+	if !second.IdempotentReplay {
+		t.Fatalf("second propose must be an idempotent replay, got %+v", second)
+	}
+	if second.ReconciliationID != first.ReconciliationID || second.Reconciliation.ID != first.ReconciliationID {
+		t.Fatalf("replay reconciliation id = %q, want the first stored id %q", second.ReconciliationID, first.ReconciliationID)
+	}
+	if second.Reconciliation.Status != core.ReconciliationProposed {
+		t.Fatalf("replay status = %q, want proposed (the stored outcome)", second.Reconciliation.Status)
+	}
+}
+
+// TestMCPReconciliationProposeConflictOnChangedAmounts (FR-L.2, AC-L-6):
+// reusing the same MCP request id with a DIFFERENT bound payload (amounts) is
+// the frozen typed IDEMPOTENCY_CONFLICT, never a silent success.
+func TestMCPReconciliationProposeConflictOnChangedAmounts(t *testing.T) {
+	m, api := newTestMCP(t)
+	leftID, rightID := mcpReconciliationPair(t, api)
+
+	resp := proposeReconciliationMCP(t, m, leftID, rightID, "mcp-reconciliation-conflict-1", agentMCPSource("agent-1"))
+	if resp.Error != nil {
+		t.Fatalf("first propose error: %+v", resp.Error)
+	}
+
+	conflict := call(t, m, 3, "tools/call", map[string]any{
+		"name": "accounting_reconciliation_propose",
+		"arguments": map[string]any{
+			"left_memory_id":     leftID,
+			"right_memory_id":    rightID,
+			"method":             "extracto_contable",
+			"currency":           "PEN",
+			"left_amount_cents":  999999,
+			"right_amount_cents": 984000,
+			"tolerance_cents":    16000,
+			"reason":             "diferencia de saldo entre mayor y SIRE",
+			"request_id":         "mcp-reconciliation-conflict-1",
+			"source":             agentMCPSource("agent-1"),
+		},
+	})
+	text := toolCallErrorText(t, conflict)
+	if !strings.Contains(text, "IDEMPOTENCY_CONFLICT") {
+		t.Fatalf("changed amounts under the same request id: error text must carry IDEMPOTENCY_CONFLICT, got %q", text)
+	}
+}
+
+// TestMCPReconciliationWithdrawIdempotentReplay: the same withdraw tool call
+// twice with the same request id — the second result replays the stored
+// withdrawn outcome (same event id) with no second event.
+func TestMCPReconciliationWithdrawIdempotentReplay(t *testing.T) {
+	m, api := newTestMCP(t)
+	leftID, rightID := mcpReconciliationPair(t, api)
+
+	resp := proposeReconciliationMCP(t, m, leftID, rightID, "mcp-reconciliation-w-replay-1", agentMCPSource("agent-1"))
+	var proposed core.ProposeReconciliationResult
+	if err := json.Unmarshal([]byte(toolResultText(t, resp)), &proposed); err != nil {
+		t.Fatalf("decode propose result: %v", err)
+	}
+
+	withdrawArgs := map[string]any{
+		"reconciliation_id": proposed.ReconciliationID,
+		"request_id":        "mcp-reconciliation-w-replay-1w",
+		"source":            agentMCPSource("agent-1"),
+	}
+	first := call(t, m, 1, "tools/call", map[string]any{"name": "accounting_reconciliation_withdraw", "arguments": withdrawArgs})
+	var firstResult core.WithdrawReconciliationResult
+	if err := json.Unmarshal([]byte(toolResultText(t, first)), &firstResult); err != nil {
+		t.Fatalf("decode first withdraw result: %v", err)
+	}
+	if firstResult.IdempotentReplay || firstResult.ReconciliationEventID == "" {
+		t.Fatalf("first withdraw = %+v, want a fresh stored event", firstResult)
+	}
+
+	second := call(t, m, 2, "tools/call", map[string]any{"name": "accounting_reconciliation_withdraw", "arguments": withdrawArgs})
+	var secondResult core.WithdrawReconciliationResult
+	if err := json.Unmarshal([]byte(toolResultText(t, second)), &secondResult); err != nil {
+		t.Fatalf("decode replay withdraw result: %v", err)
+	}
+	if !secondResult.IdempotentReplay || secondResult.ReconciliationEventID != firstResult.ReconciliationEventID {
+		t.Fatalf("replay withdraw = %+v, want the stored event %s with idempotentReplay", secondResult, firstResult.ReconciliationEventID)
+	}
+	if secondResult.Reconciliation.Status != core.ReconciliationWithdrawn {
+		t.Fatalf("replay status = %q, want withdrawn (stored outcome)", secondResult.Reconciliation.Status)
+	}
+}
+
 // TestMCPReconciliationWithdrawSameProposer: the SAME proposer identity
 // withdraws its own proposal → the withdrawn reconciliation is the in-band tool
 // result.

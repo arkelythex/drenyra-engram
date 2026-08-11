@@ -351,6 +351,65 @@ func TestCLIReconcileShow(t *testing.T) {
 	}
 }
 
+// TestCLIReconcileReplay (AC-L-3, FR-L.4): reconcile propose with the SAME
+// --request-id submitted twice — the second run prints the FIRST stored
+// reconciliation id with idempotentReplay=true and the store serves exactly the
+// same single proposal. The fresh-only assertion above is NOT sufficient alone.
+func TestCLIReconcileReplay(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	leftID, rightID := seedReconciliationObservationsCLI(t, db)
+	const key = "req-cli-reconcile-replay-1"
+
+	runPropose := func() core.ProposeReconciliationResult {
+		t.Helper()
+		stdout, stderr, code := runCLI(t, "reconcile", "propose", leftID, rightID,
+			"--method", "extracto_contable", "--currency", "PEN",
+			"--left-amount-cents", "1000000", "--right-amount-cents", "984000",
+			"--tolerance-cents", "16000", "--reason", "diferencia de saldo entre mayor y SIRE",
+			"--request-id", key, "--db", db)
+		if code != 0 {
+			t.Fatalf("reconcile propose failed (exit %d): %s", code, stderr)
+		}
+		var result core.ProposeReconciliationResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("reconcile propose output not JSON: %v\n%s", err, stdout)
+		}
+		return result
+	}
+
+	first := runPropose()
+	if first.IdempotentReplay || first.ReconciliationID == "" {
+		t.Fatalf("first propose = %+v, want a fresh stored reconciliation id", first)
+	}
+	afterFirst := cliDoctorDigest(t, db)
+
+	second := runPropose()
+	if !second.IdempotentReplay || second.ReconciliationID != first.ReconciliationID || second.Reconciliation.ID != first.ReconciliationID {
+		t.Fatalf("replay propose = %+v, want the stored reconciliation %s with idempotentReplay", second, first.ReconciliationID)
+	}
+	if second.Reconciliation.Status != core.ReconciliationProposed {
+		t.Fatalf("replay status = %q, want proposed (the stored outcome)", second.Reconciliation.Status)
+	}
+	if second.Reconciliation.LeftAmountCents != 1000000 || second.Reconciliation.RightAmountCents != 984000 {
+		t.Fatalf("replay amounts = %d/%d, want the stored 1000000/984000 (int64 cents)", second.Reconciliation.LeftAmountCents, second.Reconciliation.RightAmountCents)
+	}
+	afterSecond := cliDoctorDigest(t, db)
+	if afterFirst != afterSecond {
+		t.Fatalf("reconcile replay duplicated effects: before %s after %s", afterFirst, afterSecond)
+	}
+
+	// The store serves exactly the same single proposal row.
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	r, ok := st.GetReconciliation(context.Background(), first.ReconciliationID)
+	if !ok || r.ID != first.ReconciliationID || r.Status != core.ReconciliationProposed {
+		t.Fatalf("stored reconciliation = %+v (ok=%v), want the single stored proposal", r, ok)
+	}
+}
+
 // TestCLIHelpListsReconcileCommands: help documents the reconciliation surface.
 func TestCLIHelpListsReconcileCommands(t *testing.T) {
 	stdout, _, code := runCLI(t, "help")

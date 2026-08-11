@@ -1316,6 +1316,11 @@ func (s *SQLiteStore) ApprovePurge(ctx context.Context, cmd core.ApprovePurgeCom
 		if err := json.Unmarshal([]byte(storedResult.String), &replayed); err != nil {
 			return core.ApprovePurgeResult{}, fmt.Errorf("persistence error: decode replayed approval: %w", err)
 		}
+		// The stored outcome was written by the ORIGINAL attempt with
+		// IdempotentReplay=false; this IS the replay, so surface the flag (same
+		// rule as ExecutePurge). Reject/Cancel/Withdraw below follow the same
+		// pattern.
+		replayed.IdempotentReplay = true
 		return replayed, nil
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := conn.ExecContext(ctx, `
@@ -1702,6 +1707,7 @@ func (s *SQLiteStore) RejectPurge(ctx context.Context, cmd core.RejectPurgeComma
 		if err := json.Unmarshal([]byte(resultJSON), &replayed); err != nil {
 			return core.RejectPurgeResult{}, fmt.Errorf("persistence error: decode replayed rejection: %w", err)
 		}
+		replayed.IdempotentReplay = true
 		return replayed, nil
 	}
 
@@ -1826,6 +1832,7 @@ func (s *SQLiteStore) CancelPurge(ctx context.Context, cmd core.CancelPurgeComma
 		if err := json.Unmarshal([]byte(resultJSON), &replayed); err != nil {
 			return core.CancelPurgeResult{}, fmt.Errorf("persistence error: decode replayed cancellation: %w", err)
 		}
+		replayed.IdempotentReplay = true
 		return replayed, nil
 	}
 
@@ -1941,6 +1948,7 @@ func (s *SQLiteStore) WithdrawPurge(ctx context.Context, cmd core.WithdrawPurgeC
 		if err := json.Unmarshal([]byte(resultJSON), &replayed); err != nil {
 			return core.WithdrawPurgeResult{}, fmt.Errorf("persistence error: decode replayed withdrawal: %w", err)
 		}
+		replayed.IdempotentReplay = true
 		return replayed, nil
 	}
 

@@ -223,6 +223,60 @@ func TestCLIReviewReturnHappyPath(t *testing.T) {
 	}
 }
 
+// TestCLIReviewRejectReplay (AC-L-3, FR-L.4): review reject with the SAME
+// --request-id submitted twice against the same temp DB — the second run prints
+// the FIRST stored decision event id with idempotentReplay=true, the memory
+// stays rejected, and the doctor digest (pending approvals unchanged at 0)
+// proves no second decision event/receipt. The fresh-only assertion above is
+// NOT sufficient alone.
+func TestCLIReviewRejectReplay(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	token := seedCLIIdentity(t, db)
+	env := sessionFileEnv(t.TempDir())
+	if _, stderr, code := runCLIEnv(t, env, "auth", "login", "--token", token, "--db", db); code != 0 {
+		t.Fatalf("auth login failed (exit %d): %s", code, stderr)
+	}
+	id := savePendingCLIReview(t, db, "review.reject.replay")
+	h1 := memoryEnvelope(t, db, id)
+	const key = "req-cli-review-reject-replay-1"
+
+	runReject := func() core.RejectMemoryResult {
+		t.Helper()
+		stdout, stderr, code := runCLIEnv(t, env,
+			"review", "reject", id, "--expected-envelope", h1, "--reason", "evidencia insuficiente",
+			"--request-id", key, "--db", db)
+		if code != 0 {
+			t.Fatalf("review reject failed (exit %d): %s", code, stderr)
+		}
+		var result core.RejectMemoryResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("review reject output not JSON: %v\n%s", err, stdout)
+		}
+		return result
+	}
+
+	first := runReject()
+	if first.IdempotentReplay || first.DecisionEventID == "" {
+		t.Fatalf("first reject = %+v, want a fresh stored decision event", first)
+	}
+	if first.CurrentStatus != "rejected" {
+		t.Fatalf("first reject status = %q, want rejected", first.CurrentStatus)
+	}
+	afterFirst := cliDoctorDigest(t, db)
+
+	second := runReject()
+	if !second.IdempotentReplay || second.DecisionEventID != first.DecisionEventID {
+		t.Fatalf("replay reject = %+v, want the stored decision event %s with idempotentReplay", second, first.DecisionEventID)
+	}
+	if second.CurrentStatus != "rejected" || second.PreviousStatus != "pending_review" {
+		t.Fatalf("replay reject = %+v, want the stored pending_review → rejected outcome", second)
+	}
+	afterSecond := cliDoctorDigest(t, db)
+	if afterFirst != afterSecond {
+		t.Fatalf("review reject replay duplicated effects: before %s after %s", afterFirst, afterSecond)
+	}
+}
+
 // TestCLIReviewRejectSODViolation: the reviewer cannot decide their own
 // proposal — a pending memory recorded by the SAME authenticated subject fails
 // closed with SOD_VIOLATION and the memory stays pending_review.

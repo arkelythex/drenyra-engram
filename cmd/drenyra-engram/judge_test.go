@@ -9,6 +9,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -327,6 +328,79 @@ func TestCLIJudgeShow(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "JUDGMENT_NOT_FOUND") {
 		t.Fatalf("stderr must carry JUDGMENT_NOT_FOUND: %q", stderr)
+	}
+}
+
+// cliDoctorDigest is the deterministic logical zero-effect digest of the CLI
+// replay tests (doctor counts — never raw SQLite bytes).
+func cliDoctorDigest(t *testing.T, db string) string {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store for digest: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	report, err := st.Doctor(context.Background(), store.DoctorOptions{})
+	if err != nil {
+		t.Fatalf("doctor digest: %v", err)
+	}
+	return fmt.Sprintf("%d/%d/%d/%d/%d/%d/%d", report.Observations, report.Transitions, report.PendingApprovals,
+		report.PurgeRequests, report.LifecycleEvents, report.PurgeIdempotencyKeys, report.Holds)
+}
+
+// TestCLIJudgeReplay (AC-L-3, FR-L.4): judge propose with the SAME --request-id
+// submitted twice — the second run prints the FIRST stored judgment id with
+// idempotentReplay=true, and the store serves exactly the same single proposal
+// (the open-tuple contract makes a duplicate proposal of the same pair
+// impossible; the stored id identity proves no second row). The fresh-only
+// assertion above is NOT sufficient alone.
+func TestCLIJudgeReplay(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	fromID, toID := seedJudgeObservationsCLI(t, db)
+	const key = "req-cli-judge-replay-1"
+
+	runPropose := func() core.ProposeJudgmentResult {
+		t.Helper()
+		stdout, stderr, code := runCLI(t, "judge", "propose", fromID, toID,
+			"--relation", "contradicts", "--reason", "diferencia de saldo entre mayor y SIRE",
+			"--request-id", key, "--db", db)
+		if code != 0 {
+			t.Fatalf("judge propose failed (exit %d): %s", code, stderr)
+		}
+		var result core.ProposeJudgmentResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("judge propose output not JSON: %v\n%s", err, stdout)
+		}
+		return result
+	}
+
+	first := runPropose()
+	if first.IdempotentReplay || first.JudgmentID == "" {
+		t.Fatalf("first propose = %+v, want a fresh stored judgment id", first)
+	}
+	afterFirst := cliDoctorDigest(t, db)
+
+	second := runPropose()
+	if !second.IdempotentReplay || second.JudgmentID != first.JudgmentID || second.Judgment.ID != first.JudgmentID {
+		t.Fatalf("replay propose = %+v, want the stored judgment %s with idempotentReplay", second, first.JudgmentID)
+	}
+	if second.Judgment.Status != core.JudgmentProposed {
+		t.Fatalf("replay status = %q, want proposed (the stored outcome)", second.Judgment.Status)
+	}
+	afterSecond := cliDoctorDigest(t, db)
+	if afterFirst != afterSecond {
+		t.Fatalf("judge replay duplicated effects: before %s after %s", afterFirst, afterSecond)
+	}
+
+	// The store serves exactly the same single proposal row.
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	j, ok := st.GetJudgment(context.Background(), first.JudgmentID)
+	if !ok || j.ID != first.JudgmentID || j.Status != core.JudgmentProposed {
+		t.Fatalf("stored judgment = %+v (ok=%v), want the single stored proposal", j, ok)
 	}
 }
 

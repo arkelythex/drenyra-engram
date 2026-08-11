@@ -527,7 +527,8 @@ func (s *SQLiteStore) PutRetentionPolicy(ctx context.Context, cmd core.PutRetent
 	// fingerprint and the acting principal must match exactly, else the request
 	// id was reused for a different intent.
 	var (
-		storedPolicyID, storedResult, storedHash, storedActor, storedCreatedAt string
+		storedPolicyID, storedResult             sql.NullString
+		storedHash, storedActor, storedCreatedAt string
 	)
 	err = conn.QueryRowContext(ctx, `
 		SELECT retention_policy_id, result_json, command_hash, actor_binding, created_at
@@ -539,11 +540,11 @@ func (s *SQLiteStore) PutRetentionPolicy(ctx context.Context, cmd core.PutRetent
 		if storedHash != commandHash || storedActor != actorBinding {
 			return core.PutRetentionPolicyResult{}, auth.New(auth.CodeIdempotencyConflict, "request id already used with a different command or principal")
 		}
-		if storedPolicyID == "" || storedResult == "" {
+		if !storedPolicyID.Valid || !storedResult.Valid {
 			return core.PutRetentionPolicyResult{}, auth.New(auth.CodeIdempotencyConflict, "request id reservation never completed")
 		}
 		var replayed core.RetentionPolicy
-		if err := json.Unmarshal([]byte(storedResult), &replayed); err != nil {
+		if err := json.Unmarshal([]byte(storedResult.String), &replayed); err != nil {
 			return core.PutRetentionPolicyResult{}, fmt.Errorf("persistence error: decode replayed policy: %w", err)
 		}
 		return core.PutRetentionPolicyResult{Policy: replayed, Created: false, IdempotentReplay: true}, nil

@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -284,7 +285,336 @@ func TestCLIExportLifecycleRequiresRUC(t *testing.T) {
 	}
 }
 
-// seedPurgeRecordsCLIIdentity seeds the SECOND CLI purge identity (a records
+// cliPurgeReplaySeed is the fixed pipeline state a CLI purge replay row needs:
+// the request id, the bound policy identity and the exact canonical snapshot
+// hashes at each stage (all int64 cents / integer versions; no floats).
+type cliPurgeReplaySeed struct {
+	objectID   string
+	requestID  string
+	policyID   string
+	policyVer  int64
+	category   string
+	scope      core.Scope
+	hRequest   string // stored/unmanaged snapshot
+	hRequested string // requested snapshot (after the request row)
+	hApproved  string // approved snapshot (after one approval)
+	approval   core.EvidencePurgeApproval
+}
+
+// seedCLIPurgeReplayStage opens db, seeds the evidence object + enabled
+// retention policy and advances the pipeline to the given stage ("request" or
+// "approved") through the REAL store path with the fixture principals. The CLI
+// binary opens the SAME db path with the same derived objects root, so the
+// seeded pipeline is exactly what the CLI commands operate on.
+func seedCLIPurgeReplayStage(t *testing.T, db, accountantToken, recordsToken, stage string) cliPurgeReplaySeed {
+	t.Helper()
+	st, err := store.Open(db)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	accountant := purgeCLIPrincipal(t, st, accountantToken)
+	records := purgeCLIPrincipal(t, st, recordsToken)
+	scope := cliPurgeScope()
+
+	objResult, err := st.StoreObject(ctx, core.ObjectStoreInput{
+		Bytes:       []byte("cli-purge-replay-target-bytes-0123456789"),
+		ContentType: "application/xml",
+		Scope:       scope,
+		Source:      core.Source{System: "cli-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+	})
+	if err != nil {
+		t.Fatalf("store purge target object: %v", err)
+	}
+	polResult, err := st.PutRetentionPolicy(ctx, core.PutRetentionPolicyCommand{
+		Scope:           scope,
+		Jurisdiction:    "PE",
+		Legislation:     "NATIONAL-TAX",
+		Authority:       "tenant-records",
+		Source:          "deployment decision 2026-08-07",
+		Category:        "invoice",
+		MinPeriod:       "202401",
+		ExpectedVersion: 0,
+		Enabled:         true,
+		RequestID:       "req-policy-cli-replay-" + stage,
+	}, records)
+	if err != nil {
+		t.Fatalf("seed retention policy: %v", err)
+	}
+	policy := polResult.Policy
+	objectID := objResult.Object.ObjectID
+	hRequest := core.ComputeLifecycleSnapshotHash(core.LifecycleSnapshot{
+		ObjectID:       objectID,
+		TenantID:       scope.OrganizationID,
+		CompanyID:      scope.CompanyID,
+		RUC:            scope.RUC,
+		Period:         scope.Period,
+		LifecycleState: core.PurgeLifecycleStored,
+		RetentionState: core.RetentionEligibility("unmanaged"),
+		BlockingHolds:  []core.LifecycleHoldRef{},
+	})
+	reqResult, err := st.RequestPurge(ctx, core.RequestPurgeCommand{
+		ObjectID:              objectID,
+		Jurisdiction:          "PE",
+		Legislation:           "NATIONAL-TAX",
+		Category:              "invoice",
+		ExpectedLifecycleHash: hRequest,
+		Reason:                "retention period elapsed",
+		RequestID:             "req-purge-cli-replay-" + stage,
+	}, accountant)
+	if err != nil {
+		t.Fatalf("request purge fixture: %v", err)
+	}
+	request := reqResult.Request
+	hRequested := core.ComputeLifecycleSnapshotHash(core.LifecycleSnapshot{
+		ObjectID:       objectID,
+		TenantID:       scope.OrganizationID,
+		CompanyID:      scope.CompanyID,
+		RUC:            scope.RUC,
+		Period:         scope.Period,
+		LifecycleState: core.PurgeLifecycleRequested,
+		RetentionState: core.RetentionEligibilityEligible,
+		PolicyID:       policy.PolicyID,
+		PolicyVersion:  policy.Version,
+		Category:       policy.Category,
+		BlockingHolds:  []core.LifecycleHoldRef{},
+		RequestID:      request.RequestID,
+		ApprovalIDs:    []string{},
+	})
+	seed := cliPurgeReplaySeed{
+		objectID: objectID, requestID: request.RequestID,
+		policyID: policy.PolicyID, policyVer: policy.Version, category: policy.Category,
+		scope: scope, hRequest: hRequest, hRequested: hRequested,
+	}
+	if stage == "request" {
+		return seed
+	}
+	appResult, err := st.ApprovePurge(ctx, core.ApprovePurgeCommand{
+		RequestID:             request.RequestID,
+		ExpectedLifecycleHash: hRequested,
+		Reason:                "verified against the reviewed snapshot",
+		RequestIDKey:          "req-approve-cli-replay-" + stage,
+	}, records)
+	if err != nil {
+		t.Fatalf("approve purge fixture: %v", err)
+	}
+	seed.approval = appResult.Approval
+	seed.hApproved = core.ComputeLifecycleSnapshotHash(core.LifecycleSnapshot{
+		ObjectID:       objectID,
+		TenantID:       scope.OrganizationID,
+		CompanyID:      scope.CompanyID,
+		RUC:            scope.RUC,
+		Period:         scope.Period,
+		LifecycleState: core.PurgeLifecycleApproved,
+		RetentionState: core.RetentionEligibilityEligible,
+		PolicyID:       policy.PolicyID,
+		PolicyVersion:  policy.Version,
+		Category:       policy.Category,
+		BlockingHolds:  []core.LifecycleHoldRef{},
+		RequestID:      request.RequestID,
+		ApprovalIDs:    []string{appResult.Approval.ApprovalID},
+	})
+	return seed
+}
+
+// TestCLIPurgeRequestReplay (AC-L-3, FR-L.4): purge request with the SAME
+// --request-id submitted twice — the second run prints the FIRST stored request
+// with idempotentReplay=true, and the doctor digest (request/event/idempotency
+// counts) is unchanged between the runs: no duplicate request row, event or
+// receipt. The fresh-only cycle test above is NOT sufficient alone.
+func TestCLIPurgeRequestReplay(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	token := seedPurgeCLIIdentity(t, db, []auth.AccountingRole{auth.RoleAccountant, auth.RoleRecordsComplianceOfficer})
+	objectID, h := purgeCLIFixture(t, db, token)
+	env := writeSessionFile(t, t.TempDir(), token)
+	const key = "req-purge-cli-replay-request"
+
+	runRequest := func() core.RequestPurgeResult {
+		t.Helper()
+		stdout, stderr, code := runCLIEnv(t, env, "purge", "request", objectID,
+			"--jurisdiction", "PE", "--legislation", "NATIONAL-TAX", "--category", "invoice",
+			"--expected-hash", h, "--reason", "retention period elapsed",
+			"--request-id", key, "--db", db)
+		if code != 0 {
+			t.Fatalf("purge request failed (exit %d): %s", code, stderr)
+		}
+		var result core.RequestPurgeResult
+		if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+			t.Fatalf("purge request output not JSON: %v (stdout %q)", err, stdout)
+		}
+		return result
+	}
+
+	first := runRequest()
+	if first.IdempotentReplay || !first.Created || first.Request.RequestID == "" {
+		t.Fatalf("first request = %+v, want a created pipeline", first)
+	}
+	afterFirst := cliDoctorDigest(t, db)
+
+	second := runRequest()
+	if !second.IdempotentReplay || second.Request.RequestID != first.Request.RequestID {
+		t.Fatalf("replay request = %+v, want the stored request %s with idempotentReplay", second, first.Request.RequestID)
+	}
+	if second.Request.Status != core.PurgeRequestStatusRequested {
+		t.Fatalf("replay status = %q, want requested (stored outcome)", second.Request.Status)
+	}
+	afterSecond := cliDoctorDigest(t, db)
+	if afterFirst != afterSecond {
+		t.Fatalf("purge request replay duplicated effects: before %s after %s", afterFirst, afterSecond)
+	}
+}
+
+// TestCLIPurgeSubcommandReplays (AC-L-3, FR-L.4): every other idempotent purge
+// subcommand exposed by the parser — approve, reject, cancel, withdraw, execute
+// — is invoked twice with the SAME tenant-scoped idempotency key
+// (--request-id-key / --execution-id). The second invocation MUST return the
+// stored outcome with idempotentReplay=true and leave the doctor digest
+// unchanged: no duplicate decision, event, receipt or execution.
+func TestCLIPurgeSubcommandReplays(t *testing.T) {
+	rows := []struct {
+		name      string
+		stage     string // "request" or "approved"
+		session   string // "accountant" or "records"
+		idemFlags []string
+		// uuidKey marks the execute row: --execution-id must be a real UUID
+		// (the tenant-scoped idempotency key of the execution attempt), unlike
+		// --request-id-key which accepts an arbitrary string.
+		uuidKey bool
+		run     func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int)
+		assert  func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed)
+	}{
+		{
+			name: "approve", stage: "request", session: "records",
+			idemFlags: []string{"--request-id-key"},
+			run: func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int) {
+				return runCLIEnv(t, env, "purge", "approve", seed.requestID,
+					"--expected-hash", seed.hRequested, "--reason", "verified",
+					"--request-id-key", key, "--db", db)
+			},
+			assert: func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed) {
+				var first, second core.ApprovePurgeResult
+				mustJSON(t, firstRaw, &first)
+				mustJSON(t, secondRaw, &second)
+				if first.IdempotentReplay || second.IdempotentReplay != true || second.Approval.ApprovalID != first.Approval.ApprovalID {
+					t.Fatalf("approve replay = %+v, want the stored approval %s with idempotentReplay", second, first.Approval.ApprovalID)
+				}
+			},
+		},
+		{
+			name: "reject", stage: "request", session: "records",
+			idemFlags: []string{"--request-id-key"},
+			run: func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int) {
+				return runCLIEnv(t, env, "purge", "reject", seed.requestID,
+					"--reason", "not eligible", "--request-id-key", key, "--db", db)
+			},
+			assert: func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed) {
+				var first, second core.RejectPurgeResult
+				mustJSON(t, firstRaw, &first)
+				mustJSON(t, secondRaw, &second)
+				if first.IdempotentReplay || second.IdempotentReplay != true || second.Request.Status != core.PurgeRequestStatusRejected || second.Request.Status != first.Request.Status {
+					t.Fatalf("reject replay = %+v, want the stored rejected outcome with idempotentReplay", second)
+				}
+			},
+		},
+		{
+			name: "cancel", stage: "request", session: "accountant",
+			idemFlags: []string{"--request-id-key"},
+			run: func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int) {
+				return runCLIEnv(t, env, "purge", "cancel", seed.requestID,
+					"--request-id-key", key, "--db", db)
+			},
+			assert: func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed) {
+				var first, second core.CancelPurgeResult
+				mustJSON(t, firstRaw, &first)
+				mustJSON(t, secondRaw, &second)
+				if first.IdempotentReplay || second.IdempotentReplay != true || second.Request.Status != core.PurgeRequestStatusCancelled || second.Request.Status != first.Request.Status {
+					t.Fatalf("cancel replay = %+v, want the stored cancelled outcome with idempotentReplay", second)
+				}
+			},
+		},
+		{
+			name: "withdraw", stage: "approved", session: "records",
+			idemFlags: []string{"--request-id-key"},
+			run: func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int) {
+				return runCLIEnv(t, env, "purge", "withdraw", seed.requestID,
+					"--reason", "cleanup", "--request-id-key", key, "--db", db)
+			},
+			assert: func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed) {
+				var first, second core.WithdrawPurgeResult
+				mustJSON(t, firstRaw, &first)
+				mustJSON(t, secondRaw, &second)
+				if first.IdempotentReplay || second.IdempotentReplay != true || second.Request.Status != first.Request.Status {
+					t.Fatalf("withdraw replay = %+v, want the stored outcome with idempotentReplay", second)
+				}
+			},
+		},
+		{
+			name: "execute", stage: "approved", session: "records",
+			idemFlags: []string{"--execution-id"}, uuidKey: true,
+			run: func(t *testing.T, seed cliPurgeReplaySeed, env []string, db, key string) (string, string, int) {
+				return runCLIEnv(t, env, "purge", "execute", seed.requestID,
+					"--expected-hash", seed.hApproved, "--reason", "execution batch approved",
+					"--execution-id", key, "--db", db)
+			},
+			assert: func(t *testing.T, firstRaw, secondRaw string, seed cliPurgeReplaySeed) {
+				var first, second core.ExecutePurgeResult
+				mustJSON(t, firstRaw, &first)
+				mustJSON(t, secondRaw, &second)
+				if first.IdempotentReplay || second.IdempotentReplay != true || second.Execution.ExecutionID != first.Execution.ExecutionID {
+					t.Fatalf("execute replay = %+v, want the stored execution %s with idempotentReplay", second, first.Execution.ExecutionID)
+				}
+				if second.Execution.State != core.PurgeExecutionCompleted || first.Execution.State != core.PurgeExecutionCompleted {
+					t.Fatalf("execute states = %q/%q, want completed/completed", first.Execution.State, second.Execution.State)
+				}
+			},
+		},
+	}
+
+	for _, row := range rows {
+		t.Run(row.name+"/replay", func(t *testing.T) {
+			db := filepath.Join(t.TempDir(), "engram.db")
+			accountantToken := seedPurgeCLIIdentity(t, db, []auth.AccountingRole{auth.RoleAccountant})
+			recordsToken := seedPurgeRecordsCLIIdentity(t, db)
+			seed := seedCLIPurgeReplayStage(t, db, accountantToken, recordsToken, row.stage)
+
+			sessionToken := accountantToken
+			if row.session == "records" {
+				sessionToken = recordsToken
+			}
+			env := writeSessionFile(t, t.TempDir(), sessionToken)
+			key := "req-purge-cli-replay-key"
+			if row.uuidKey {
+				key = "00000000-0000-4000-8000-0000000000" + fmt.Sprintf("%02d", len(rows))
+			}
+
+			stdout, stderr, code := row.run(t, seed, env, db, key)
+			if code != 0 {
+				t.Fatalf("%s failed (exit %d): %s", row.name, code, stderr)
+			}
+			afterFirst := cliDoctorDigest(t, db)
+
+			stdout2, stderr2, code2 := row.run(t, seed, env, db, key)
+			if code2 != 0 {
+				t.Fatalf("%s replay failed (exit %d): %s", row.name, code2, stderr2)
+			}
+			row.assert(t, stdout, stdout2, seed)
+			afterSecond := cliDoctorDigest(t, db)
+			if afterFirst != afterSecond {
+				t.Fatalf("%s replay duplicated effects: before %s after %s", row.name, afterFirst, afterSecond)
+			}
+		})
+	}
+}
+
+// mustJSON decodes a CLI stdout payload as the given result type.
+func mustJSON(t *testing.T, raw string, out any) {
+	t.Helper()
+	if err := json.Unmarshal([]byte(raw), out); err != nil {
+		t.Fatalf("CLI output not JSON: %v\n%s", err, raw)
+	}
+}
+
 // compliance officer — the SoD-DISTINCT approver/executor) + one expiring
 // session directly on db and returns the raw token. The existing
 // seedPurgeCLIIdentity is hardcoded to the accountant "ana.garcia", so the

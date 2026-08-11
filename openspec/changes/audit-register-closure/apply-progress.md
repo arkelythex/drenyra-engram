@@ -111,3 +111,38 @@ Parent-owned rows (deferred lifecycle actions, preserved byte-for-byte in tasks.
 ## Next phase
 
 - Parent: bounded post-apply review of the PR J candidate (normalization + freeze), then chain continues to PR L. Verify and archive run only after the full chain merges.
+
+## PR L — Idempotency replay matrix and lost-response proof (APPENDED by orchestrator)
+
+**status:** DELIVERED (all L tasks checked, gates green)
+
+**Defects exposed by the matrix and fixed (NFR-L.1 production-exception path):**
+1. `purge_store.go` — ApprovePurge/RejectPurge/CancelPurge/WithdrawPurge replay paths
+   returned the stored outcome with `IdempotentReplay=false` (the stored JSON carried
+   the original-attempt flag). Fixed: set `replayed.IdempotentReplay = true` after
+   unmarshal, matching the ExecutePurge rule (`purge_execution_store.go:536`).
+2. `hold_store.go` + `retention_policy_store.go` — the interrupted-reservation scan
+   read `hold_id`/`result_json`/`retention_policy_id` into plain `string`, so a
+   reserved-but-never-completed row (NULL columns) surfaced a raw scan error instead
+   of the typed IDEMPOTENCY_CONFLICT. Fixed: `sql.NullString` + `.Valid` guard,
+   mirroring the purge precedent (`purge_store.go:2060`).
+
+**Tests added:**
+- `internal/server/idempotency_replay_matrix_test.go` — TestIdempotencyReplayMatrix
+  (consolidated operation × surface catalog: approve, judgment propose/confirm/withdraw,
+  reconciliation propose/confirm/withdraw, review reject, hold place/lift, reopen,
+  retention put, purge request/approve/reject/cancel/withdraw/execute × HTTP/MCP/CLI/sync)
+  + TestIdempotencyReplayMatrixProofLinksResolve (external-proof link guard).
+- MCP replay cases added to mcp_purge/mcp_judgment/mcp_reconciliation tests.
+- CLI replay cases added to judge/reconcile/review/purge command tests.
+- `internal/store/idempotency_interrupted_reservation_test.go` — lost-response
+  recovery for approve/judgment/reconciliation/review/hold + reopen atomic
+  rollback/replay tests.
+
+**Gates:** go test ./... green (10 packages), go vet clean, gofmt clean,
+npm test 385/385 green.
+
+**Orchestrator note:** the apply subagent for PR L timed out twice mid-implementation;
+the orchestrator completed the helper functions, fixed the `body` field typed-nil bug
+in the matrix harness (replayInvocation.body map[string]any -> any), resolved the
+proof-link paths, and applied the two production defect fixes above.
