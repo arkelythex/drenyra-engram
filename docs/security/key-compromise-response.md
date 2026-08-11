@@ -3,6 +3,9 @@
 > **Status:** operator playbook (v1 gate, G-7) · **Basis:** NIST SP 800-57
 > key-compromise guidance and the FROZEN FZ-3 cutoff semantics of this change
 > (`openspec/changes/v1-readiness/spec.md`).
+> **Automated DRILL:** `TestCLICompromiseResponseDrill`
+> (`cmd/drenyra-engram/compromise_drill_test.go`) exercises the full
+> suspend → rotate → revoke → verify fail-closed journey through the real CLI.
 > **Applies to:** `contracts/verification.md` (signing-key validity layer),
 > `internal/core/verify.go` (`VerifySigningKeyValidity`), the one-way
 > `signing_keys.revoked_at` update, and the keyring rotation surface
