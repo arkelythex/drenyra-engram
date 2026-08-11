@@ -52,6 +52,33 @@ El receipt certifica.  El profesional autoriza.  La memoria orienta.
 - `receiptId` references the Ed25519 receipt issued by the Drenyra ecosystem;
   this engine never signs.
 
+## Frozen override-absence decision
+
+**Drenyra Engram has no override feature.** This section is frozen: normative,
+enforced by negative conformance, and part of the audit record for the
+authorization closure (docs/due-diligence/2026-08-product-architecture-audit.md,
+block J).
+
+- **No override path exists.** There is no override, break-glass, force, bypass,
+  super-admin, or privileged-emergency input or flag on any supported surface
+  (HTTP, MCP, CLI, shared API), and no adapter input maps to such a field. The
+  absence is structural and behavioral: forbidden spellings fail closed with the
+  frozen typed denial, and policy-denied operations are unbypassable at the
+  policy, service, and store boundaries.
+- **Override audit is negative conformance.** The absence is intentional and is
+  proven by the consolidated versioned policy matrix and the negative
+  override-absence suites (structural + behavioral), not by an unimplemented
+  feature claim.
+- **Privileged and urgent callers are not exempt.** No administrative,
+  privileged, or urgent caller bypasses the versioned policy, the exact scope
+  tuple, the assurance floor, the role matrix, or the segregation-of-duties /
+  dual-approval (distinct-principal) rules. Blocker checks (closed-period,
+  retention, holds, lifecycle version) also run before authorization and cannot
+  be overridden.
+- **Professional memory approval is outside business/payment authorization.**
+  `approve`/`reject` remain the professional review of a memory — never an
+  authorization of a business or payment action. The engine authorizes nothing.
+
 ## Frozen semantics (v0.2) — migration policy
 
 > The bullets in this section are **frozen-for-0.2**: normative, enforced by
