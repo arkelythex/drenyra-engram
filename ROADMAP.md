@@ -352,6 +352,28 @@ typecheck clean.
 > a follow-up if it becomes a product requirement). Report:
 > docs/benchmark/search-baseline-v0.1.md; audit Block AA → PARTIAL.
 
+## Phase 6g — v1-readiness engineering evidence (DELIVERED 2026-08-11, SDD v1-readiness)
+
+> The SDD change v1-readiness (openspec/changes/v1-readiness, archived) delivered the
+> implementable v1.0-gate engineering evidence:
+>
+> - **G-6 (resilience drills):** Go fuzz targets (comprobante XML, receipt payload
+>   canonicalization, search tokenizer) + 21 committed seeds + `make fuzz-ci` (3×30s
+>   bounded CI); doctor SQLite health checks (quick/integrity drill-only/
+>   foreign-key/cell-size); copy-only corruption drill (marked copy, detection-
+>   required, STORE_WRITE_FROZEN retry-proof latch, byte-preserved evidence); restore
+>   drill (VACUUM INTO + 4-check verify + 6-case negative matrix). The fuzz harnesses
+>   found and fixed a real parser bug (silent trailing-garbage amount parsing).
+> - **G-7 (key-compromise response):** docs/security/key-compromise-response.md
+>   (NIST SP 800-57, 8 steps) + gap analysis proving implementation == contract +
+>   the FZ-3 cutoff boundary matrix as permanent regression. HSM/KMS + compromise-
+>   response drill remain open (parent-owned).
+> - **G-10 (reconstructibility North Star):** the read-only reconstructibility
+>   surface (CLI/MCP/HTTP) scoring material decisions reconstructible to evidence +
+>   rule + approval, with frozen eligibility/classifier semantics + golden Go↔TS
+>   vectors. Engineering baseline + instrumentation delivered; the customer-observed
+>   target remains parent-owned.
+
 ## Phase 7 — Institutional Accounting Brain (v1.0.0)
 
 - [ ] Accounting firms: shared memory with controlled sync
