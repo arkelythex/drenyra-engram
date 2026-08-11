@@ -3,14 +3,14 @@
 ## Metadata
 
 change: v1-readiness
-status: archive            # draft | proposed | in-progress | verify | archive
+status: archive # draft | proposed | in-progress | verify | archive
 artifact_store: openspec
 created: 2026-08-10
 updated: 2026-08-10
 
 ## Phase status
 
-proposal: done        # pending | done
+proposal: done # pending | done
 spec: done
 design: done
 tasks: done
