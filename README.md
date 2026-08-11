@@ -9,6 +9,14 @@
 **Institutional accounting memory for AI agents**<br>
 <em>One brain for fiscal knowledge. Scope-first, audit-grade, agent-agnostic.</em>
 
+> [!IMPORTANT]
+> **Drenyra Engram is the open component of the Drenyra ecosystem** —
+> licensed under Apache-2.0 and publicly visible, mirroring
+> `Gentleman-Programming/engram`. The commercial core (drenyra-ai,
+> drenyra-command-center, drenyra-pi, drenyra-skills,
+> drenyra-guardian-angel) is **private** and proprietary. Engram informs,
+> never authorizes — memory is context, not authority.
+
 </div>
 
 <p align="center">
