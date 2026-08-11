@@ -1,6 +1,6 @@
 # Contributing to Drenyra Engram
 
-**Status: pre-alpha.** Drenyra Engram is extracted from `arkelythex/drenyra-app-web` (`packages/memory`, `packages/agent-memory`) through vertical slices. The maintainer (Arkelythex) drives the extraction; external contributions are welcome only after the contracts in `contracts/` stabilize.
+**Status: pre-alpha.** Drenyra Engram is extracted from `arkelythex/drenyra-command-center` (`packages/memory`, `packages/agent-memory`) through vertical slices. The maintainer (Arkelythex) drives the extraction; external contributions are welcome only after the contracts in `contracts/` stabilize.
 
 ## Ground rules
 

@@ -100,6 +100,6 @@ This repo is the memory engine and contains professional approval, judgment,
 receipt, verification, review-workspace, fiscal-policy, and evidence-lifecycle
 primitives for its own immutable state transitions. It does **not** authorize
 external business operations, provide the product UI (that is
-`arkelythex/drenyra-app-web`), or provide the Pi harness (that is `arkelythex/drenyra-pi`).
+`arkelythex/drenyra-command-center`), or provide the Pi harness (that is `arkelythex/drenyra-pi`).
 The owning application remains responsible for business authorization and
 external side effects.

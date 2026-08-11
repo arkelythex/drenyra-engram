@@ -187,7 +187,7 @@ company-B memory — this is a tested invariant, not a filter.
 
 | Project | Role |
 |---|---|
-| [Drenyra App Web](https://github.com/arkelythex/drenyra-app-web) | Command Center — web application (consumes memory) |
+| [Drenyra Command Center](https://github.com/arkelythex/drenyra-command-center) | Command Center — web application (consumes memory) |
 | [Drenyra AI](https://github.com/arkelythex/drenyra-ai) | Agent ecosystem (may integrate) |
 | [Drenyra Pi](https://github.com/arkelythex/drenyra-pi) | Pi-native harness (reads context) |
 
