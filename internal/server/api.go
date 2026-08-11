@@ -164,9 +164,11 @@ func (a *API) Transitions() ([]core.StatusTransitionRecord, error) {
 	return a.Store.TransitionLog()
 }
 
-// Doctor returns the store health snapshot (schema guards, counts).
+// Doctor returns the store health snapshot (schema guards, counts, and the
+// G-6 SQLite health checks — routine mode: quick_check + foreign_key_check;
+// integrity_check is drill-only and never runs through this API).
 func (a *API) Doctor() (store.DoctorReport, error) {
-	return a.Store.Doctor()
+	return a.Store.Doctor(context.Background(), store.DoctorOptions{Mode: store.ModeRoutine})
 }
 
 // StoreObject captures ONE evidence object WORM-style (v0.7.0): the API is a

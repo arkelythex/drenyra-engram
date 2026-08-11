@@ -112,7 +112,7 @@ func TestObjectSymlinkTraversalFailsClosed(t *testing.T) {
 			!strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
 			t.Fatalf("VerifyObjectBytes through symlink = %v, want OBJECT_PATH_INVALID", err)
 		}
-		if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
+		if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
 			t.Fatalf("doctor with symlinked bucket error = %v, want OBJECT_PATH_INVALID (fail closed)", err)
 		}
 		entries, err := os.ReadDir(outside)
@@ -176,7 +176,7 @@ func TestObjectSymlinkTraversalFailsClosed(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
 			t.Fatalf("read of a symlinked byte file = %v (bytes %q), want OBJECT_PATH_INVALID — never followed", err, bytes)
 		}
-		if _, err := s2.Doctor(); err == nil || !strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
+		if _, err := s2.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), "OBJECT_PATH_INVALID") {
 			t.Fatalf("doctor with symlinked byte file error = %v, want OBJECT_PATH_INVALID", err)
 		}
 	})
@@ -262,7 +262,7 @@ func TestDoctorReportsOrphanAndTempFilesWithoutRepair(t *testing.T) {
 		t.Fatalf("write temp file: %v", err)
 	}
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("orphan/temp files must be REPORTED, never fail the doctor: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestDoctorMissingBytesFailsClosed(t *testing.T) {
 	if err := os.Remove(full); err != nil {
 		t.Fatalf("remove byte file: %v", err)
 	}
-	if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), "OBJECT_BYTES_MISSING") {
+	if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), "OBJECT_BYTES_MISSING") {
 		t.Fatalf("doctor with missing bytes error = %v, want OBJECT_BYTES_MISSING (fail closed)", err)
 	}
 }
@@ -328,7 +328,7 @@ func TestDoctorInvalidRowPathFailsClosed(t *testing.T) {
 		evilID, evilID, "../escape"); err != nil {
 		t.Fatalf("plant escaping row: %v", err)
 	}
-	if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), "INVALID_OBJECT") {
+	if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), "INVALID_OBJECT") {
 		t.Fatalf("doctor with escaping rel_path error = %v, want INVALID_OBJECT (fail closed)", err)
 	}
 }
@@ -522,7 +522,7 @@ func TestObjectHardlinkCorruptionFailsClosed(t *testing.T) {
 		t.Skipf("hardlinks unsupported on this platform/OS: %v", err)
 	}
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
@@ -585,7 +585,7 @@ func TestObjectPermissionsFailClosed(t *testing.T) {
 	if _, _, err := s.GetObject(context.Background(), result.Object.ObjectID, testScope(testRucA)); err == nil {
 		t.Fatal("read through an unsearchable bucket dir must fail closed")
 	}
-	if _, err := s.Doctor(); err == nil {
+	if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil {
 		t.Fatal("doctor with an unreadable subtree must fail closed (an incomplete report is not a report)")
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
@@ -635,7 +635,7 @@ func TestDoctorReportsLifecycleTableCounts(t *testing.T) {
 	s := newTestStore(t)
 	s.SetReceiptSigner(newParitySigner(s))
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor on empty store: %v", err)
 	}
@@ -651,7 +651,7 @@ func TestDoctorReportsLifecycleTableCounts(t *testing.T) {
 	}
 
 	approvedPurgePipeline(t, s) // one stored object, one bound policy, one request, one approval
-	report, err = s.Doctor()
+	report, err = s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor after the pipeline: %v", err)
 	}
@@ -686,7 +686,7 @@ func TestDoctorReportsIntentExecutionFindingBytesAbsent(t *testing.T) {
 	execID := "00000000-0000-4000-8000-00000000a001"
 	fx := crashWindowFixture(t, s, execID)
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor must NOT fail closed on a documented intent absence: %v", err)
 	}
@@ -753,7 +753,7 @@ func TestDoctorReportsIntentExecutionFindingBytesPresent(t *testing.T) {
 		t.Fatalf("corrupt-byte execution = %v, want OBJECT_HASH_MISMATCH", err)
 	}
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor on a present-bytes intent: %v", err)
 	}
@@ -815,7 +815,7 @@ func TestDoctorReportsInterruptedExecutionAndDocumentedPurge(t *testing.T) {
 		t.Fatalf("stale attempt state = %q, want interrupted", got)
 	}
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor after the retry history: %v", err)
 	}
@@ -875,7 +875,7 @@ func TestDoctorInterruptedOnlyHistoryNotAnAuthorization(t *testing.T) {
 	if err := os.Remove(objectBytesPath(t, s, fx.object)); err != nil {
 		t.Fatalf("remove object bytes: %v", err)
 	}
-	if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), objectErrBytesMissing) {
+	if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), objectErrBytesMissing) {
 		t.Fatalf("doctor with interrupted-only missing bytes = %v, want OBJECT_BYTES_MISSING (fail closed)", err)
 	}
 }

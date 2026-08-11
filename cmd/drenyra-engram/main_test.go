@@ -236,6 +236,84 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if report.SchemaVersion != 14 || report.Observations != 2 || report.RevisionChains != 2 {
 		t.Fatalf("doctor report = %+v, want schemaVersion 14, 2 observations, 2 chains", report)
 	}
+	// G-6 health-check fields (FZ-4/FR-4, design D-5): routine doctor reports
+	// quickCheck + foreignKeyCheck and integrityCheck as explicit not_run —
+	// full integrity_check never runs on the routine CLI path.
+	if report.QuickCheck.Status != "ok" {
+		t.Fatalf("doctor quickCheck = %q, want ok (detail %q)", report.QuickCheck.Status, report.QuickCheck.Detail)
+	}
+	if report.IntegrityCheck.Status != "not_run" {
+		t.Fatalf("doctor integrityCheck = %q, want not_run on routine doctor", report.IntegrityCheck.Status)
+	}
+	if report.ForeignKeyCheck.Status != "ok" || report.ForeignKeyCheck.ViolationCount != 0 {
+		t.Fatalf("doctor foreignKeyCheck = %+v, want ok/0", report.ForeignKeyCheck)
+	}
+	if report.CellSizeCheck.Effective != "on" {
+		t.Fatalf("doctor cellSizeCheck = %q, want on (enabled at connection init)", report.CellSizeCheck.Effective)
+	}
+}
+
+// TestCLIDoctorDrillCopyModeContract (task 2.4): the full diagnostic path
+// `doctor --drill-copy <copy.db> --snapshot-manifest <manifest.json>` emits the
+// extended report with integrityCheck populated (never not_run) on a marked
+// drill copy; it is mutually exclusive with --db (the full path never opens a
+// live database) and requires both flags together.
+func TestCLIDoctorDrillCopyModeContract(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "engram.db")
+	if _, stderr, code := runCLI(t, "save", fixturePath(t, "a.json"), "--db", db); code != 0 {
+		t.Fatalf("save: %d %s", code, stderr)
+	}
+	snap, err := store.CreateDrillSnapshot(context.Background(), store.CreateDrillSnapshotInput{
+		SourcePath:   db,
+		SnapshotPath: filepath.Join(t.TempDir(), "snap.db"),
+	})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	t.Run("full report on marked copy", func(t *testing.T) {
+		stdout, stderr, code := runCLI(t, "doctor", "--drill-copy", snap.SnapshotPath, "--snapshot-manifest", snap.ManifestPath)
+		if code != 0 {
+			t.Fatalf("doctor --drill-copy exit %d: %s", code, stderr)
+		}
+		var report store.DoctorReport
+		if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+			t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
+		}
+		if report.IntegrityCheck.Status != "ok" {
+			t.Fatalf("full doctor integrityCheck = %q, want ok (detail %q)", report.IntegrityCheck.Status, report.IntegrityCheck.Detail)
+		}
+		if report.QuickCheck.Status != "not_run" {
+			t.Fatalf("full doctor quickCheck = %q, want not_run", report.QuickCheck.Status)
+		}
+		if report.ForeignKeyCheck.Status != "ok" {
+			t.Fatalf("full doctor foreignKeyCheck = %+v, want ok", report.ForeignKeyCheck)
+		}
+	})
+
+	t.Run("--db and --drill-copy are mutually exclusive", func(t *testing.T) {
+		_, stderr, code := runCLI(t, "doctor", "--db", db, "--drill-copy", snap.SnapshotPath, "--snapshot-manifest", snap.ManifestPath)
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2 (usage); stderr=%q", code, stderr)
+		}
+	})
+
+	t.Run("drill-copy requires snapshot-manifest", func(t *testing.T) {
+		_, stderr, code := runCLI(t, "doctor", "--drill-copy", snap.SnapshotPath)
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2; stderr=%q", code, stderr)
+		}
+		if !strings.Contains(stderr, "DRILL_COPY_REQUIRED") {
+			t.Fatalf("stderr = %q, want DRILL_COPY_REQUIRED", stderr)
+		}
+	})
+
+	t.Run("snapshot-manifest requires drill-copy", func(t *testing.T) {
+		_, stderr, code := runCLI(t, "doctor", "--snapshot-manifest", snap.ManifestPath)
+		if code != 2 {
+			t.Fatalf("exit = %d, want 2; stderr=%q", code, stderr)
+		}
+	})
 }
 
 func TestCLIHasNoAuthorizationCommands(t *testing.T) {

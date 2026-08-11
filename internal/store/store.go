@@ -58,9 +58,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	sqlite "modernc.org/sqlite"
@@ -265,7 +267,7 @@ type Store interface {
 	RuleRefs(memoryID string) ([]string, error)
 	Relations() ([]core.RelationRecord, error)
 	TransitionLog() ([]core.StatusTransitionRecord, error)
-	Doctor() (DoctorReport, error)
+	Doctor(ctx context.Context, opts DoctorOptions) (DoctorReport, error)
 	// FindPeriodClosure returns the period_closures projection row of the exact
 	// company scope, when one exists (v0.5.0 close foundation, design §2.2/§2.3).
 	// The projection is the authoritative closure state; querying approved closing
@@ -507,6 +509,24 @@ type SQLiteStore struct {
 	// <dir-of-db>/objects, overridable via OpenWithObjects (the CLI/HTTP/MCP
 	// surfaces surface it as --objects / $DRENYRA_ENGRAM_OBJECTS).
 	objectsRoot string
+
+	// writeFrozen is the process-local, monotonic write-freeze latch (design
+	// D-8). It applies ONLY to a marked drill-store handle whose full doctor
+	// detected corruption: once set, every write entry point returns the typed
+	// STORE_WRITE_FROZEN error before beginning a transaction. Retry cannot
+	// clear it and no unfreeze method exists. It has no authority over any
+	// production database.
+	writeFrozen atomic.Bool
+	// drillCopy marks a store handle opened from a MARKED drill copy (see
+	// OpenDrillCopy): the handle is read-only by construction (mode=ro,
+	// query_only) and is the only handle on which the full diagnostic surface
+	// (integrity_check) may run.
+	drillCopy bool
+	// doctorTrace records the PRAGMA statements executed by the last Doctor
+	// call, in order (query-hook instrumentation — the AC-3 query-order
+	// contract: routine = quick_check → foreign_key_check; full = integrity_check
+	// → foreign_key_check). Cleared at the start of every Doctor call.
+	doctorTrace []string
 }
 
 // ReceiptSigner mints and persists an immutable receipt for one covered act. The
@@ -548,6 +568,13 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 // $DRENYRA_ENGRAM_OBJECTS) use this; every other caller keeps Open's safe
 // default. All other semantics are identical to Open.
 func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLiteStore, error) {
+	// A database carrying the adjacent <path>.drenyra-drill.json marker is a
+	// MARKED drill copy (design D-6): normal open refuses it with the typed
+	// DRILL_COPY_ONLY error so a drill artifact can never be used as a live
+	// writable store. Drill copies are opened only through OpenDrillCopy.
+	if _, err := os.Stat(path + drillMarkerSuffix); err == nil {
+		return nil, fmt.Errorf("%w: %s carries the drill marker %s", ErrDrillCopyOnly, path, path+drillMarkerSuffix)
+	}
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite store: %w", err)
@@ -559,6 +586,7 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 		`PRAGMA foreign_keys = ON`,
 		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA journal_mode = WAL`,
+		`PRAGMA cell_size_check = ON`,
 	} {
 		if _, err := db.Exec(pragma); err != nil {
 			_ = db.Close()
@@ -2608,7 +2636,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		input.TopicKey, string(input.Scope.Kind), input.Scope.OrganizationID,
 		input.Scope.CompanyID, input.Scope.RUC, input.Scope.Period,
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
 	}
@@ -3363,7 +3391,7 @@ type IdentitySeed struct {
 // stay explicit and still fail loudly on duplicates.
 func (s *SQLiteStore) SeedIdentity(seed IdentitySeed) error {
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return fmt.Errorf("seed identity: begin: %w", err)
 	}
@@ -5165,7 +5193,7 @@ func (s *SQLiteStore) Relate(fromID, toID string, relation core.Relation, meta *
 	}
 
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -5216,7 +5244,7 @@ func (s *SQLiteStore) Relate(fromID, toID string, relation core.Relation, meta *
 // core.SupersedePrev before persisting; this is the low-level mutation.
 func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.TransitionMeta) (core.AccountingMemory, error) {
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -5327,7 +5355,7 @@ func (s *SQLiteStore) ApplyStatusTransition(memoryID string, to core.MemoryStatu
 		return core.AccountingMemory{}, fmt.Errorf("INVALID_TRANSITION: unknown target status %q", to)
 	}
 	ctx := context.Background()
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -5904,6 +5932,18 @@ type SigningKeyRecord struct {
 // or commit one). Rotation and the batch-2 emission points commit
 // register+revoke / act+receipt atomically through it.
 func (s *SQLiteStore) BeginReceiptTx(ctx context.Context) (*sql.Tx, error) {
+	return s.beginWriteTx(ctx)
+}
+
+// beginWriteTx is the single transaction-begin choke point of every runtime
+// write entry point: it checks the drill write-freeze latch FIRST and returns
+// the typed STORE_WRITE_FROZEN error before any transaction starts (design
+// D-8). On a normal store the latch is always false, so this is exactly
+// s.db.BeginTx with a fail-closed guard in front.
+func (s *SQLiteStore) beginWriteTx(ctx context.Context) (*sql.Tx, error) {
+	if s.writeFrozen.Load() {
+		return nil, ErrStoreWriteFrozen
+	}
 	return s.db.BeginTx(ctx, nil)
 }
 
@@ -6647,10 +6687,30 @@ type DoctorReport struct {
 	// window. REPORTED findings, never failed, never repaired; the doctor is
 	// read-only evidence.
 	PurgeFindings []PurgeDoctorFinding `json:"purgeFindings,omitempty"`
+
+	// G-6 SQLite health checks (FZ-4/FR-4, design D-5): routine doctor always
+	// runs quick_check then foreign_key_check and reports integrityCheck as an
+	// explicit "not_run"; full integrity_check runs ONLY on the explicit
+	// drill/diagnostic path (marked drill copy) and is always paired with
+	// foreign_key_check. cellSizeCheck always states the EFFECTIVE pragma value
+	// so the evidence is inspectable. All checks are read-only observations.
+	QuickCheck      CheckResult           `json:"quickCheck"`
+	IntegrityCheck  CheckResult           `json:"integrityCheck"`
+	ForeignKeyCheck ForeignKeyCheckResult `json:"foreignKeyCheck"`
+	CellSizeCheck   CellSizeCheckResult   `json:"cellSizeCheck"`
 }
 
 // Doctor verifies the schema (fail closed on corruption) and reports counts.
-func (s *SQLiteStore) Doctor() (DoctorReport, error) {
+// The G-6 health checks (FZ-4/FR-4) extend the report: routine mode runs
+// quick_check then foreign_key_check (integrityCheck: not_run); full mode runs
+// integrity_check then foreign_key_check on a MARKED DRILL COPY only — live
+// stores refuse full mode with ErrDrillCopyRequired, and an integrity failure
+// on the drill path latches writes closed (design D-8). On drill copies the
+// WORM object/purge scans are skipped: they are live-store operational audits
+// tied to the objects root, and the drill report's contract is schema, counts,
+// and the four health checks.
+func (s *SQLiteStore) Doctor(ctx context.Context, opts DoctorOptions) (DoctorReport, error) {
+	s.doctorTrace = nil
 	// Fail closed: every expected table and the immutability guard must exist.
 	// The v10–v12 purge lifecycle tables are part of the current schema: a
 	// store missing them cannot produce a faithful lifecycle snapshot.
@@ -6682,6 +6742,27 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 		Storage:       "sqlite (modernc.org/sqlite)",
 		DBPath:        s.dbPath(),
 	}
+
+	// G-6 health checks (FZ-4/FR-4). Routine = quick_check then
+	// foreign_key_check; full = integrity_check then foreign_key_check on a
+	// marked drill copy. Full integrity is never reachable through the routine
+	// API, and detection (integrity failure) freezes writes on the drill handle.
+	switch opts.Mode {
+	case ModeFull:
+		if !s.drillCopy {
+			return DoctorReport{}, ErrDrillCopyRequired
+		}
+		report.IntegrityCheck = s.runCheck(ctx, "integrity_check")
+		if report.IntegrityCheck.Status == StatusFailed {
+			s.writeFrozen.Store(true)
+		}
+		report.QuickCheck = CheckResult{Status: StatusNotRun, Detail: "quick_check is routine-only; the full path runs integrity_check"}
+	default:
+		report.QuickCheck = s.runCheck(ctx, "quick_check")
+		report.IntegrityCheck = CheckResult{Status: StatusNotRun, Detail: "integrity_check is drill-only; run doctor --drill-copy on a marked copy"}
+	}
+	report.ForeignKeyCheck = s.runFKCheck(ctx)
+	report.CellSizeCheck = s.cellSizeCheck(ctx)
 	counts := []struct {
 		query string
 		dst   *int
@@ -6712,25 +6793,28 @@ func (s *SQLiteStore) Doctor() (DoctorReport, error) {
 	// WORM object-layer audit (v0.7.x hardening): rows must resolve to valid
 	// paths with present bytes — missing bytes and invalid paths FAIL CLOSED;
 	// orphan and temp byte files are REPORTED findings (never deleted, never
-	// repaired; the doctor is read-only evidence).
-	report.ObjectsRoot = s.objectsRoot
-	objectFindings, err := s.doctorObjectScan()
-	if err != nil {
-		return DoctorReport{}, err
-	}
-	report.ObjectFindings = objectFindings
+	// repaired; the doctor is read-only evidence). Skipped on drill copies (no
+	// objects root; the WORM audit is a live-store operational concern).
+	if !s.drillCopy {
+		report.ObjectsRoot = s.objectsRoot
+		objectFindings, err := s.doctorObjectScan()
+		if err != nil {
+			return DoctorReport{}, err
+		}
+		report.ObjectFindings = objectFindings
 
-	// Purge execution-ledger audit (§13.3): every 'intent' / 'interrupted'
-	// execution row is REPORTED as an auditable finding with its exact
-	// identity, intent metadata, completion-receipt presence and a read-only
-	// bytes-state probe. Runs AFTER the object scan so the fail-closed
-	// corruption gate stays authoritative: undocumented missing bytes abort
-	// before any finding is reported.
-	purgeFindings, err := s.doctorPurgeExecutionsScan()
-	if err != nil {
-		return DoctorReport{}, err
+		// Purge execution-ledger audit (§13.3): every 'intent' / 'interrupted'
+		// execution row is REPORTED as an auditable finding with its exact
+		// identity, intent metadata, completion-receipt presence and a read-only
+		// bytes-state probe. Runs AFTER the object scan so the fail-closed
+		// corruption gate stays authoritative: undocumented missing bytes abort
+		// before any finding is reported.
+		purgeFindings, err := s.doctorPurgeExecutionsScan()
+		if err != nil {
+			return DoctorReport{}, err
+		}
+		report.PurgeFindings = purgeFindings
 	}
-	report.PurgeFindings = purgeFindings
 	return report, nil
 }
 

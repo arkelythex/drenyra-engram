@@ -1013,7 +1013,7 @@ func TestVerifyObjectBytesPurgedExpectedAbsence(t *testing.T) {
 
 	// The doctor does NOT fail closed on the purged object's missing bytes (the
 	// report builds), while the plain object's missing bytes keep failing closed.
-	if _, err := s.Doctor(); err == nil || !strings.Contains(err.Error(), "OBJECT_BYTES_MISSING") {
+	if _, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err == nil || !strings.Contains(err.Error(), "OBJECT_BYTES_MISSING") {
 		t.Fatalf("doctor with an unauthorized missing byte file = %v, want OBJECT_BYTES_MISSING (fail closed)", err)
 	}
 
@@ -1036,7 +1036,7 @@ func TestVerifyObjectBytesPurgedExpectedAbsence(t *testing.T) {
 	}, recordsPrincipal(t)); err != nil {
 		t.Fatalf("execute purge on the isolated store: %v", err)
 	}
-	if _, err := iso.Doctor(); err != nil {
+	if _, err := iso.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine}); err != nil {
 		t.Fatalf("doctor with only a purged object must succeed (documented expected absence): %v", err)
 	}
 }

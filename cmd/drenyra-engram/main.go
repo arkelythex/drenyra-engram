@@ -315,8 +315,12 @@ func cmdDoctor(args []string) int {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
 	objects := fs.String("objects", "", "WORM evidence object root (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)")
-	fs.Usage = func() { fmt.Fprintln(fs.Output(), "usage: drenyra-engram doctor [--db <path>] [--objects <dir>]") }
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--objects": true})); err != nil {
+	drillCopy := fs.String("drill-copy", "", "marked drill copy for the FULL diagnostic path (mutually exclusive with --db; requires --snapshot-manifest)")
+	manifest := fs.String("snapshot-manifest", "", "drill manifest (the adjacent <copy>.drenyra-drill.json marker) for --drill-copy")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram doctor [--db <path>] [--objects <dir>] | doctor --drill-copy <copy.db> --snapshot-manifest <manifest.json>")
+	}
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--objects": true, "--drill-copy": true, "--snapshot-manifest": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -327,13 +331,44 @@ func cmdDoctor(args []string) int {
 		return 2
 	}
 
+	// Full diagnostic path (design D-6): doctor --drill-copy <copy.db>
+	// --snapshot-manifest <manifest.json> runs integrity_check + foreign_key_check
+	// on a MARKED drill copy only. It is mutually exclusive with --db — the full
+	// path never opens a live database — and both flags are required together.
+	explicitDB := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "db" {
+			explicitDB = true
+		}
+	})
+	if *drillCopy != "" || *manifest != "" {
+		if *drillCopy == "" || *manifest == "" {
+			fmt.Fprintf(os.Stderr, "drenyra-engram: DRILL_COPY_REQUIRED: --drill-copy and --snapshot-manifest must be used together\n")
+			return 2
+		}
+		if explicitDB {
+			fmt.Fprintf(os.Stderr, "drenyra-engram: INVALID_DRILL_PATH: --db cannot be combined with --drill-copy (the full path never opens a live database)\n")
+			return 2
+		}
+		st, err := store.OpenDrillCopy(*drillCopy, *manifest)
+		if err != nil {
+			return fail("%v", err)
+		}
+		defer func() { _ = st.Close() }()
+		report, err := st.Doctor(context.Background(), store.DoctorOptions{Mode: store.ModeFull})
+		if err != nil {
+			return fail("%v", err)
+		}
+		return emit(report)
+	}
+
 	st, err := openStoreWithRoot(*dbPath, *objects)
 	if err != nil {
 		return fail("%v", err)
 	}
 	defer func() { _ = st.Close() }()
 
-	report, err := st.Doctor()
+	report, err := st.Doctor(context.Background(), store.DoctorOptions{Mode: store.ModeRoutine})
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -3929,6 +3964,7 @@ Usage:
   drenyra-engram search <query> --company <ruc> [--period <YYYYMM>] [--any] [--db <path>]
   drenyra-engram context <ruc> [--period <YYYYMM>] [--db <path>]
   drenyra-engram doctor [--db <path>] [--objects <dir>]
+  drenyra-engram doctor --drill-copy <copy.db> --snapshot-manifest <manifest.json>   (G-6 full diagnostics on a MARKED drill copy only; never a live database)
   drenyra-engram compare <idA> <idB> [--db <path>]
   drenyra-engram approve <id> --expected-envelope <hash> --reason <text> [--db <path>]   (authenticated human gate)
   drenyra-engram review queue <ruc> [--period <YYYYMM>] [--limit <n>] [--offset <n>] [--db <path>]   (v0.9.0 scope-first read)
@@ -3987,6 +4023,8 @@ Usage:
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)
   --objects <dir>  WORM evidence object root for object store/get, doctor, verify object and reconstructibility (default <dir-of-db>/objects or $DRENYRA_ENGRAM_OBJECTS)
+  --drill-copy <copy.db>  marked drill copy for doctor full diagnostics (G-6; mutually exclusive with --db, requires --snapshot-manifest; never a live database)
+  --snapshot-manifest <manifest.json>  the adjacent <copy>.drenyra-drill.json drill marker for --drill-copy
   --company <ruc>  company RUC (exactly 11 digits); companyId is derived from it
   --company-id <id>  company id override for reconstructibility (default: the RUC — the established CLI derivation)
   --organization <id>  organization id override for reconstructibility (default: the fixed CLI organization)

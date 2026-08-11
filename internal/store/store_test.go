@@ -6,6 +6,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -493,7 +494,7 @@ func TestDoctorReportsHealth(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	report, err := s.Doctor()
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
