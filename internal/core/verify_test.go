@@ -305,6 +305,111 @@ func TestVerifySigningKeyValidity(t *testing.T) {
 	})
 }
 
+// TestVerifySigningKeyValidityFZ3CutoffMatrix freezes the EXACT FZ-3 cutoff
+// semantics (spec FZ-3, AC-7) as a PERMANENT regression: one table row per
+// frozen comparison, driven directly over the existing pure seam
+// core.VerifySigningKeyValidity (internal/core/verify.go:328). The semantics
+// are ALREADY implemented — this table pins them so any future drift fails
+// red. Per the contract guard (design D-9 / NFR-5), NO semantic production
+// edit is permitted merely to make this table pass: if a row fails, the
+// mismatch is surfaced to the orchestrator, never shipped.
+func TestVerifySigningKeyValidityFZ3CutoffMatrix(t *testing.T) {
+	pub, _ := testKeypair()
+	r, _, _ := signFixture(t) // issuedAt 2026-08-05T13:00:00Z
+
+	base := func() core.SigningKey {
+		return core.SigningKey{
+			Found:     true,
+			Algorithm: core.ReceiptAlgorithm,
+			PublicKey: base64.StdEncoding.EncodeToString(pub),
+			CreatedAt: "2026-08-05T10:00:00Z",
+		}
+	}
+	withRevokedAt := func(revokedAt string) core.SigningKey {
+		k := base()
+		k.RevokedAt = revokedAt
+		return k
+	}
+	withCreatedAt := func(createdAt string) core.SigningKey {
+		k := base()
+		k.CreatedAt = createdAt
+		return k
+	}
+	withIssuedAt := func(issuedAt string) core.SignedReceipt {
+		m := r
+		m.IssuedAt = issuedAt
+		return m
+	}
+
+	cases := []struct {
+		name     string
+		key      core.SigningKey
+		receipt  core.SignedReceipt
+		want     core.VerificationStatus
+		wantHint string // required detail substring for the fail-closed rows
+	}{
+		{
+			name:    "FZ-3 pre-cutoff: issued_at < revoked_at (one nanosecond before) passes",
+			key:     withRevokedAt("2026-08-05T13:00:00.000000001Z"),
+			receipt: r,
+			want:    core.VerificationPassed,
+		},
+		{
+			name:     "FZ-3 exact cutoff: issued_at == revoked_at rejects (equality fails, deterministic)",
+			key:      withRevokedAt("2026-08-05T13:00:00Z"),
+			receipt:  r,
+			want:     core.VerificationFailed,
+			wantHint: "at/after revocation",
+		},
+		{
+			name:     "FZ-3 post-cutoff: issued_at > revoked_at rejects",
+			key:      withRevokedAt("2026-08-05T12:59:59Z"),
+			receipt:  r,
+			want:     core.VerificationFailed,
+			wantHint: "at/after revocation",
+		},
+		{
+			name:     "FZ-3 created_at > issued_at rejects",
+			key:      withCreatedAt("2026-08-05T13:00:01Z"),
+			receipt:  r,
+			want:     core.VerificationFailed,
+			wantHint: "after the receipt issuance",
+		},
+		{
+			name:     "FZ-3 revoked key with unparseable revoked_at fails closed (never a guess)",
+			key:      withRevokedAt("not-a-timestamp"),
+			receipt:  r,
+			want:     core.VerificationFailed,
+			wantHint: "not a valid RFC3339 timestamp",
+		},
+		{
+			name:     "FZ-3 unparseable issued_at fails closed even when revoked_at is valid",
+			key:      withRevokedAt("2026-08-05T14:00:00Z"),
+			receipt:  withIssuedAt("garbage"),
+			want:     core.VerificationFailed,
+			wantHint: "not a valid RFC3339 timestamp",
+		},
+		{
+			name:    "FZ-3 revoked-but-never-cutoff (empty revoked_at) keeps the active-key contract",
+			key:     base(),
+			receipt: r,
+			want:    core.VerificationPassed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			layer := core.VerifySigningKeyValidity(tc.key, tc.receipt)
+			if layer.Status != tc.want {
+				t.Fatalf("status = %s, want %s (detail %q)", layer.Status, tc.want, layer.Detail)
+			}
+			if tc.wantHint != "" && !strings.Contains(layer.Detail, tc.wantHint) {
+				t.Fatalf("detail %q must contain %q", layer.Detail, tc.wantHint)
+			}
+		})
+	}
+}
+
 // ──────────────────────────────────────────────
 // Tenant/company scope and chain link
 // ──────────────────────────────────────────────

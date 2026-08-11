@@ -1,8 +1,8 @@
 # Apply Progress — v1-readiness
 
-> Phase: apply · Artifact: apply-progress · Status: in progress (PR-4 of 5)
+> Phase: apply · Artifact: apply-progress · Status: COMPLETE (PR-5 of 5 — all work units delivered; sdd-verify next)
 > Inputs: spec + design + tasks (read from `openspec/changes/v1-readiness/`). Strict TDD active (`openspec/config.yaml` `phases.apply.strict_tdd: true`).
-> Change delivered as CHAINED PRs per the Review Workload Forecast (PR 1 → PR 2 → PR 3 → PR 4 → PR 5).
+> Change delivered as CHAINED PRs per the Review Workload Forecast (PR 1 → PR 2 → PR 3 → PR 4 → PR 5). This final slice (PR-5) closes W3 (G-7) and completes the chain.
 
 ## Structured status consumed
 
@@ -206,3 +206,83 @@ Parent launch for the PR-4 slice (chained-PR apply, W1 scope only). OpenSpec art
 - No `any` in TS — untouched (typecheck green).
 - Seeds/fixtures contain no credentials, tokens, or real customer data — `TestFuzzCorpusSecuritySweep` scans decoded corpus content + READMEs (NFR-2).
 - Schema version stays 14 — no store/migration change in this slice.
+
+---
+
+## PR-5 — W3 G-7 key-compromise playbook, gap analysis, cutoff boundary tests (THIS SLICE — FINAL)
+
+PR-5 (fifth and final chained slice) delivered W3 (G-7, AC-6/AC-7, FR-7/FR-8, FZ-3, NFR-5) per design D-9 and tasks 3.1–3.4: the NIST-aligned operator playbook with the engine's real commands, the implementation-vs-contract gap analysis concluding **Implementation == Contract (FZ-3)**, and the exhaustive cutoff boundary matrix as PERMANENT regressions at the pure seam, the verification service path, and the real-store signing seam. **The chain is complete: W1 (PR-4), W2 (PR-3), W3 (PR-5), W4 (PR-1/PR-2) are all delivered; `sdd-verify` is next.** NO semantic change to verification was made — the gap tests confirmed the frozen semantics were already implemented (contract guard, NFR-5).
+
+### Structured status consumed
+
+Parent launch for the PR-5 slice (chained-PR apply, W3 scope only). OpenSpec artifact store; `actionContext: repo-local` with full-repo edit roots — safe. The native dispatcher quirk recorded in PR-2/PR-4 is unchanged (engine does not index `spec.md`); all required artifacts present and readable. Review Workload Guard decision: chain approved by the orchestrator (`auto-chain`), PR boundary = W3 exactly; no W1/W2/W4 code touched. Strict TDD active per `openspec/config.yaml`; external support file `~/.pi/gentle-ai/support/strict-tdd.md` loaded (project-local `.pi/gentle-ai/support/strict-tdd.md` does not exist).
+
+### TDD Cycle Evidence
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 3.1 FZ-3 pure matrix | `internal/core/verify_test.go` (`TestVerifySigningKeyValidityFZ3CutoffMatrix`) | Unit (pure seam) | ✅ existing `TestVerifySigningKeyValidity`+parity green (baseline captured) | ✅ written first; GREEN immediately — frozen semantics already implement FZ-3 (contract guard: NO production edit permitted or made) | ✅ 7/7 rows pass | ✅ 7 rows = full FZ-3 comparison set (before 1ns / equal / after / created>issued / unparseable revoked / unparseable issued / empty revoked) | ✅ gofmt/vet clean |
+| 3.2 service matrix + signing seam | `internal/server/verify_service_test.go` (`TestVerifyServiceSigningKeyCutoffMatrix`) | Integration (real store + real keyring signer + real chain) | ✅ existing `TestVerifyService*` green (baseline captured) | ✅ written first; GREEN immediately — same contract-guard pattern | ✅ 4/4 cases pass | ✅ before/equal/after/unparseable through full VerifyMemory; only signing-key-validity layer changes; chain unchanged (read-only); revoked key refuses new Save (real store) | ✅ gofmt/vet clean |
+| 3.3 playbook | `docs/security/key-compromise-response.md` | Doc (artifact) | N/A (new) | RED proven: readback tests failed ENOENT before the doc existed | ✅ written; readback + guard green | ✅ 8 ordered steps + policy + commands + gap table all pinned by readback | ✅ dropped metaphorical "cost" wording for the stale @drenyra/pi guard (money words keep "cents" naturally) |
+| 3.4 readback + contract guard | `internal/server/key_compromise_playbook_test.go` (2 tests) | Unit (filesystem readback) | N/A (new) | ✅ written first (RED: ENOENT on the missing doc) | ✅ green | ✅ structural readback (8 steps in order, NIST, exact compromise time, retention, fail-closed, boundaries, commands) + three-way contract guard (docs == contracts/verification.md == internal/core/verify.go, whitespace-normalized verbatim) | ✅ whitespace-collapse fix for 80-col markdown/comment wrapping (test-quality, no semantic change) |
+
+### Test summary (this slice)
+
+- **Tests written**: 13 new top-level/subtests: FZ-3 pure matrix (7 rows), service cutoff matrix (4 cases, each with layer-isolation + read-only + signing-refusal assertions), playbook structural readback (1), playbook contract guard (1).
+- **Tests passing**: all focused + full `go test ./...` green (10 packages).
+- **Layers**: Unit (pure seam, filesystem readback), Integration (real store + real signer + real receipt chain through `VerifyMemory`).
+- **Approval tests**: none needed — zero production files touched (tests + docs only).
+- **Pure functions created**: none (semantics frozen; this slice proves, it does not implement).
+- **Contract guard outcome**: the FZ-3 matrix and service matrix passed IMMEDIATELY against the existing implementation → implementation == contract confirmed; no mismatch surfaced (NFR-5 satisfied, no semantic change shipped).
+
+### Files changed (this slice)
+
+| File | Change |
+| --- | --- |
+| `docs/security/key-compromise-response.md` | NEW — operator playbook: purpose/non-claims, roles/prerequisites, the exact eight NIST-aligned steps (full trust failure → stop signing/suspend verification → preserve evidence + exact compromise time → independent replacement keypair in a clean environment → authenticated revocation → fail closed at/after cutoff → inventory/re-sign under policy → investigate adjacent systems), FZ-3 cutoff policy with before/equal/after examples + pre-compromise retention policy, command/evidence checklist (`keys rotate --db`, `keys show`, `verify receipt`/`verify memory`), recovery/re-signing constraints (no backdating, no rewrite, no self-recovery, money stays whole int64 cents), and the gap-analysis table (SigningKeyForVerify / LookupSigningKey / revoke-only trigger / VerifySigningKeyValidity / signer refusal) concluding **Implementation == Contract (FZ-3)** with quoted evidence |
+| `internal/core/verify_test.go` | `TestVerifySigningKeyValidityFZ3CutoffMatrix` added (7-row table-driven FZ-3 regression over the existing pure seam; +105 lines) |
+| `internal/server/verify_service_test.go` | `TestVerifyServiceSigningKeyCutoffMatrix` added (4-case service-path matrix; revocation applied through the engine's own `RevokePublicKey` one-way path on a second connection; only-layer-changes + read-only chain + real-store signing refusal; +149 lines, +`strings` import) |
+| `internal/server/key_compromise_playbook_test.go` | NEW — structural readback (AC-6) + three-way contract guard (NFR-5) |
+| `openspec/changes/v1-readiness/tasks.md` | 3.1–3.4 checked `[x]` (implementation-owned rows; parent-owned rows untouched byte-for-byte) |
+| `openspec/changes/v1-readiness/apply-progress.md` | This merged PR-5 section (header updated to COMPLETE) |
+
+### Gate results (PR-5)
+
+| Gate | Result |
+| --- | --- |
+| Focused: `go test ./internal/core/ ./internal/server/ ./internal/receipts/` | ✅ ok (core 1.6s, server 17.9s, receipts 0.03s) |
+| `go test ./...` | ✅ all 10 packages ok (cmd 14.8s, store 43.3s, server 27.8s, search/bench 6.8s, sync 4.8s …) |
+| `npm run typecheck` | ✅ clean (TS untouched — zero TS bytes in this slice) |
+| `go vet ./...` | ✅ clean |
+| `gofmt -l .` | ✅ clean (no output) |
+| `git diff -- contracts/` | ✅ EMPTY (frozen surface untouched, NFR-5) |
+| W3 gate (`go test ./internal/core ./internal/server` + doc readback) | ✅ green (AC-7 matrix + AC-6 readback) |
+
+### Deviations / reconciliations (PR-5)
+
+1. **RED semantics for a frozen seam (by design, not a deviation):** tasks 3.1/3.2 pin EXISTING behavior as permanent regressions; per the contract guard, no production edit is permitted merely to make a new test pass. The matrices were written first and passed immediately against the existing implementation — that IS the contract-guard proof (implementation == FZ-3). The playbook readback tests (3.3/3.4) had a genuine RED (ENOENT before the doc existed). Recorded here for the verify phase; no semantic production edit was made in this slice.
+2. **Revocation applied via the engine's own one-way path** (not raw SQL) in the service matrix: `st.RevokePublicKey(ctx, rawDB, …)` on a second connection satisfies the `Queryer` seam (`*sql.DB`) and exercises the `signing_keys_revoke_only` trigger — the authenticated-cutoff surface FZ-3/FR-8 requires. Verified against the pre-existing `TestVerifyServiceMemoryRemovedEvidence` pattern (second connection to the same WAL DB).
+3. **Whitespace-normalized verbatim pins:** the quoted evidence sentence wraps at ~80 columns in `contracts/verification.md` and in `verify.go`'s doc comment (with `//` prefixes), so the contract guard collapses whitespace and strips `//` tokens before matching — still verbatim modulo line wrapping, never a fragment.
+4. **Playbook honesty about engine limits:** `keys rotate` stamps the rotation instant — the engine does NOT backdate; the exact compromise time is operator-recorded evidence that drives the inventory (Step 7). The playbook says this explicitly rather than inventing a backdating surface. Verification has no "suspend" flag; the playbook describes the automatic FZ-3 cutoff rejection plus operator discipline instead of claiming a nonexistent engine feature.
+5. **@drenyra/pi money guard (stale, per parent):** playbook money words keep "cents" naturally (whole int64 cents invariant, "no cent changes", "no cent value moves"); removed one metaphorical "cost of acting" wording to keep the money-word surface clean. No monetary arithmetic exists anywhere in the response path (IR-1).
+6. **Checkbox scope:** only 3.1–3.4 were checked per the slice instruction; the chain-level cross-cutting checklist and DoD rows remain unchecked for the orchestrator's final reconciliation (the parent owns them per the task-ownership boundary).
+
+### Workload / PR boundary
+
+- ≈ 254 Go test lines (+254) + 1 new test file (~120 lines) + 1 new doc (~265 lines). Well within the W3 estimate (≈550–750). The PR-5 boundary is W3 only — verified: the ONLY changed/added files are the three Go test files, the playbook doc, and the two openspec artifacts. Zero production Go, zero TS, zero store/schema bytes touched.
+
+## Cross-cutting checklist status (PR-5)
+
+- Conventional commits per atomic milestone, no AI attribution — VCS owned by the orchestrator; NOT committed here (slice instruction).
+- Money stays whole int64 cents / BigInt cents — no money value crosses this slice; playbook pins the invariant; no float anywhere (IR-1).
+- Scope structural + fails closed — untouched (verification seams are scope-agnostic; no scope logic changed).
+- Non-authorization boundary — playbook + tests pin "never reopens writes" / "never authorizes recovery"; verification stays read-only; revoked keys never sign (IR-3, FZ-3).
+- No `any` in TS — untouched (typecheck green).
+- Docs-as-code — `docs/security/key-compromise-response.md` lands in the same PR as its readback tests (AC-6).
+- Schema version stays 14 — no store/migration change in this slice.
+
+## Remaining tasks
+
+- **Implementation-owned rows: NONE.** All W1–W4 tasks (1.1–1.7, 2.1–2.7, 3.1–3.4, 4.1–4.11) are `[x]` in `tasks.md`. The chain is complete.
+- Parent-owned rows (deferred lifecycle actions, preserved byte-for-byte in tasks.md): Review Workload Guard decision record; bounded post-apply review per PR boundary; `sdd-verify` against AC-1…AC-11; archive after verify green + full merge.
+- **Next phase: `sdd-verify`** (parent-owned per the SDD dependency graph) — run the full gates in `openspec/config.yaml` verify_order and validate AC-1…AC-11.

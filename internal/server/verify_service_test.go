@@ -12,6 +12,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,5 +245,153 @@ func TestVerifyServiceJudgmentValid(t *testing.T) {
 	}
 	if report.AccountingCorrectness != core.AccountingCorrectnessNotAsserted {
 		t.Fatalf("conclusion = %q, want %q", report.AccountingCorrectness, core.AccountingCorrectnessNotAsserted)
+	}
+}
+
+// TestVerifyServiceSigningKeyCutoffMatrix repeats the FZ-3 before/equal/after
+// comparisons through the FULL verification service path (real store, real
+// keyring signer, real signed receipt chain): a memory signed before the
+// authenticated cutoff keeps passing; a memory signed at/after the cutoff
+// fails the signing-key validity layer ONLY (every other layer unchanged);
+// report construction stays read-only/no-transaction (the report is still
+// built and the receipt chain gains no rows). The revocation is applied
+// through the engine's ONE legal signing_keys update (RevokePublicKey → the
+// revoke-only trigger) on a second connection — never raw SQL. A revoked key
+// then refuses to sign any new receipt (store/signing seam, fail closed).
+func TestVerifyServiceSigningKeyCutoffMatrix(t *testing.T) {
+	ctx := context.Background()
+
+	cases := []struct {
+		name       string
+		revokedAt  func(issuedAt string) string
+		want       core.VerificationOutcome
+		wantDetail string
+	}{
+		{
+			name: "pre-cutoff: issued_at < revoked_at keeps the report passed",
+			revokedAt: func(issuedAt string) string {
+				ts, err := time.Parse(time.RFC3339, issuedAt)
+				if err != nil {
+					t.Fatalf("parse issuedAt %q: %v", issuedAt, err)
+				}
+				return ts.Add(time.Hour).Format(time.RFC3339)
+			},
+			want: core.VerificationOutcomePassed,
+		},
+		{
+			name:       "exact cutoff: issued_at == revoked_at fails signing-key validity only",
+			revokedAt:  func(issuedAt string) string { return issuedAt },
+			want:       core.VerificationOutcomeFailed,
+			wantDetail: "at/after revocation",
+		},
+		{
+			name: "post-cutoff: issued_at > revoked_at fails signing-key validity only",
+			revokedAt: func(issuedAt string) string {
+				ts, err := time.Parse(time.RFC3339, issuedAt)
+				if err != nil {
+					t.Fatalf("parse issuedAt %q: %v", issuedAt, err)
+				}
+				return ts.Add(-time.Hour).Format(time.RFC3339)
+			},
+			want:       core.VerificationOutcomeFailed,
+			wantDetail: "at/after revocation",
+		},
+		{
+			name:       "unparseable revoked_at fails closed (never a guess)",
+			revokedAt:  func(string) string { return "not-a-timestamp" },
+			want:       core.VerificationOutcomeFailed,
+			wantDetail: "not a valid RFC3339 timestamp",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, dbPath := verifyStore(t)
+			id := verifySave(t, st, "t9", "c9", "verify/cutoff")
+
+			chain, err := st.ReceiptsForSubject(ctx, core.SubjectTypeMemory, id)
+			if err != nil || len(chain) != 1 {
+				t.Fatalf("chain before revocation: %v (len %d)", err, len(chain))
+			}
+			issuedAt, keyID := chain[0].IssuedAt, chain[0].KeyID
+
+			baseline, err := VerifyMemory(ctx, st, id)
+			if err != nil || baseline.Outcome != core.VerificationOutcomePassed {
+				t.Fatalf("baseline must pass before revocation: %v (outcome %s)", err, baseline.Outcome)
+			}
+
+			// Apply the ONE legal signing_keys update through the engine's own
+			// revoke path (the revoke-only trigger) via a second connection.
+			raw, err := sql.Open("sqlite", dbPath)
+			if err != nil {
+				t.Fatalf("open second connection: %v", err)
+			}
+			defer func() { _ = raw.Close() }()
+			revokedAt := tc.revokedAt(issuedAt)
+			if err := st.RevokePublicKey(ctx, raw, keyID, revokedAt); err != nil {
+				t.Fatalf("revoke %s at %q: %v", keyID, revokedAt, err)
+			}
+
+			// The verification service must STILL build the full report
+			// (read-only construction), with the FZ-3 outcome.
+			report, err := VerifyMemory(ctx, st, id)
+			if err != nil {
+				t.Fatalf("VerifyMemory after revocation must still build a report (read-only, no transaction): %v", err)
+			}
+			if report.Outcome != tc.want {
+				t.Fatalf("outcome = %s, want %s (layers %+v)", report.Outcome, tc.want, report.Layers)
+			}
+
+			// Only the signing-key validity layer may change vs the baseline.
+			if len(report.Layers) != len(baseline.Layers) {
+				t.Fatalf("layer count changed: %d → %d", len(baseline.Layers), len(report.Layers))
+			}
+			for i := range baseline.Layers {
+				before, after := baseline.Layers[i], report.Layers[i]
+				if before.Name != core.LayerSigningKeyValidity {
+					if before.Status != after.Status || before.Detail != after.Detail {
+						t.Fatalf("layer %q changed: %s %q → %s %q", before.Name, before.Status, before.Detail, after.Status, after.Detail)
+					}
+					continue
+				}
+				if tc.want == core.VerificationOutcomePassed {
+					if after.Status != core.VerificationPassed {
+						t.Fatalf("pre-cutoff signing-key validity must stay passed: %s %q", after.Status, after.Detail)
+					}
+				} else {
+					if after.Status != core.VerificationFailed {
+						t.Fatalf("at/after-cutoff signing-key validity must fail: %s %q", after.Status, after.Detail)
+					}
+					if tc.wantDetail != "" && !strings.Contains(after.Detail, tc.wantDetail) {
+						t.Fatalf("detail %q must contain %q", after.Detail, tc.wantDetail)
+					}
+				}
+			}
+
+			// Read-only proof: verification created no receipt rows.
+			after, err := st.ReceiptsForSubject(ctx, core.SubjectTypeMemory, id)
+			if err != nil || len(after) != 1 || core.ReceiptHash(after[0]) != core.ReceiptHash(chain[0]) {
+				t.Fatalf("verification must not mutate the receipt chain: err=%v len=%d", err, len(after))
+			}
+
+			// Store/signing seam: a revoked key NEVER signs new receipts — a
+			// further covered save fails closed and inserts nothing.
+			if _, err := st.Save(core.SaveInput{
+				TopicKey:     "verify/cutoff/after-revocation",
+				Title:        "post-revocation attempt",
+				Kind:         core.KindException,
+				Scope:        core.Scope{Kind: core.ScopeKindCompany, OrganizationID: "t9", CompanyID: "c9", RUC: "20100039201", Period: "202401"},
+				Content:      core.Content{What: "post-revocation write attempt", Why: "must fail closed", Where: "Peru", Learned: "revoked keys never sign"},
+				FiscalEffect: core.FiscalEffectAdjustment,
+				EffectiveAt:  "2024-01-16T00:00:00.000Z",
+				Source:       core.Source{System: "verify-test", ActorID: "agent-1", ActorKind: core.ActorKindAgent},
+			}); err == nil || !strings.Contains(err.Error(), "revoked") {
+				t.Fatalf("revoked key must refuse to sign new receipts, got %v", err)
+			}
+			after, err = st.ReceiptsForSubject(ctx, core.SubjectTypeMemory, id)
+			if err != nil || len(after) != 1 {
+				t.Fatalf("refused save must not mutate the chain: err=%v len=%d", err, len(after))
+			}
+		})
 	}
 }
