@@ -25,12 +25,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
@@ -340,12 +343,463 @@ func schemaVersionOf(path string) (int, error) {
 	return strconvAtoi(raw)
 }
 
-// strconvAtoi wraps strconv.Atoi (kept local so drill.go needs no extra
-// imports beyond the standard set used above).
+// strconvAtoi strictly parses a FULL integer string via strconv.Atoi. The
+// previous fmt.Sscanf("%d") accepted silent prefix parses — "14abc" became 14,
+// " 14" and "14 " were tolerated, "0xE" silently became 0 — the exact
+// silent-guess pattern PR-4 removed from comprobante.go. Corruption-detection
+// code must NEVER guess: any trailing/embedded/leading garbage is a parse
+// error, so a tampered schema_meta value fails closed instead of being
+// silently misread.
 func strconvAtoi(s string) (int, error) {
-	var n int
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return 0, err
+	return strconv.Atoi(s)
+}
+
+// copyFile copies src bytes to dst and fsyncs the output so evidence survives a
+// crash. Used by the drills for byte-for-byte copies (snapshot → evidence,
+// snapshot → restore candidate).
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
 	}
-	return n, nil
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+	if _, err := io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Corruption drill (design D-8, spec FR-5 / AC-4)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RunCorruptionDrillInput selects the MARKED drill copy (a snapshot produced by
+// CreateDrillSnapshot) to damage and the dedicated evidence output path.
+// The input snapshot MUST be a marked drill copy — the live database is never
+// accepted and never opened.
+type RunCorruptionDrillInput struct {
+	SnapshotPath string
+	EvidencePath string
+}
+
+// CorruptionDrillResult is the byte-preserved evidence of one corruption drill:
+// the corrupted evidence path, its derived marker manifest, the original
+// snapshot identity hash, the corrupted-bytes hash, the full doctor report that
+// detected the damage, and the LATCHED drill store handle — the only handle on
+// which the write-freeze is observable (the latch is per-handle; retry cannot
+// clear it and no unfreeze method exists). The caller MUST Close DrillStore.
+type CorruptionDrillResult struct {
+	EvidencePath    string
+	ManifestPath    string
+	Manifest        DrillManifest
+	SnapshotSHA256  string
+	CorruptedSHA256 string
+	Report          DoctorReport
+	DrillStore      *SQLiteStore
+}
+
+// RunCorruptionDrill executes the AC-4 corruption drill on a MARKED COPY only
+// (never the live database — the mark is enforced): it byte-copies the snapshot
+// to the dedicated evidence path, derives the evidence marker, deterministically
+// damages a non-header b-tree page, hashes the corrupted bytes, opens ONLY that
+// evidence copy through the drill-only store, runs the full doctor surface and
+// REQUIRES detection. Detection sets the monotonic write-freeze latch on the
+// returned drill store handle, so every write entry point returns the typed
+// STORE_WRITE_FROZEN error before any transaction begins (retry-proof, no
+// unfreeze). On no detection the drill fails closed with CORRUPTION_NOT_DETECTED.
+// There is no repair function; the only path back to a usable database is the
+// verified restore drill.
+func RunCorruptionDrill(ctx context.Context, input RunCorruptionDrillInput) (CorruptionDrillResult, error) {
+	snap, err := canonicalPath(input.SnapshotPath)
+	if err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: resolve snapshot: %v", ErrInvalidDrillPath, err)
+	}
+	if _, err := os.Stat(snap + drillMarkerSuffix); err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: the corruption drill operates only on a MARKED drill copy — %s carries no drill marker", ErrDrillCopyRequired, snap)
+	}
+	manifest, err := loadDrillManifest(snap + drillMarkerSuffix)
+	if err != nil {
+		return CorruptionDrillResult{}, err
+	}
+	if !manifest.DrillCopy {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: manifest drillCopy is false — not a drill copy", ErrDrillCopyRequired)
+	}
+	if manifest.CopyPath != snap {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: manifest copyPath %q does not match the snapshot %q", ErrInvalidDrillPath, manifest.CopyPath, snap)
+	}
+
+	evidence, err := canonicalPath(input.EvidencePath)
+	if err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: resolve evidence path: %v", ErrInvalidDrillPath, err)
+	}
+	if evidence == snap {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: evidence path must differ from the snapshot path", ErrInvalidDrillPath)
+	}
+	if _, err := os.Stat(evidence); err == nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: evidence path already exists (never overwrite evidence)", ErrInvalidDrillPath)
+	}
+	if _, err := os.Stat(evidence + drillMarkerSuffix); err == nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: evidence marker already exists (never overwrite evidence)", ErrInvalidDrillPath)
+	}
+
+	// Copy the snapshot bytes to the dedicated evidence path and fsync them.
+	if err := copyFile(snap, evidence); err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: copy evidence: %v", ErrInvalidDrillPath, err)
+	}
+
+	// Derive the evidence marker from the snapshot manifest: SourcePath = the
+	// snapshot, SourceSHA256 = the snapshot identity. The evidence bytes are
+	// corrupted AFTER the marker is written; the corrupted-bytes hash is
+	// reported separately as CorruptedSHA256 so the evidence trail documents
+	// exactly what was damaged.
+	evidenceManifest := manifest
+	evidenceManifest.SourcePath = snap
+	evidenceManifest.CopyPath = evidence
+	evidenceManifest.CreatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := atomicWriteJSON(evidence+drillMarkerSuffix, evidenceManifest); err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: write evidence marker: %v", ErrInvalidDrillPath, err)
+	}
+
+	// Deterministically damage a NON-header database page of the evidence copy.
+	if err := corruptDrillCopyPage(evidence); err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: damage evidence copy: %v", ErrInvalidDrillPath, err)
+	}
+	corruptedSHA, err := fileSHA256(evidence)
+	if err != nil {
+		return CorruptionDrillResult{}, fmt.Errorf("%w: hash corrupted evidence: %v", ErrInvalidDrillPath, err)
+	}
+
+	// Open ONLY the evidence copy through the drill-only store, run the full
+	// doctor surface, and require detection.
+	drillStore, report, err := detectDrillCorruption(ctx, evidence)
+	if err != nil {
+		return CorruptionDrillResult{}, err
+	}
+	return CorruptionDrillResult{
+		EvidencePath:    evidence,
+		ManifestPath:    evidence + drillMarkerSuffix,
+		Manifest:        evidenceManifest,
+		SnapshotSHA256:  manifest.SourceSHA256,
+		CorruptedSHA256: corruptedSHA,
+		Report:          report,
+		DrillStore:      drillStore,
+	}, nil
+}
+
+// detectDrillCorruption opens the MARKED evidence copy through the drill-only
+// store, runs the full doctor surface, and requires detection (design D-8). On
+// an integrity failure the monotonic write-freeze latch is set on the returned
+// handle, which is returned for the operator to observe the write freeze. On NO
+// detection the drill fails closed with CORRUPTION_NOT_DETECTED and the handle
+// is closed — nothing is claimed that the check surface did not prove. If the
+// full doctor cannot build on the copy (schema-level corruption), the drill
+// fails closed with that error and no detection claim.
+func detectDrillCorruption(ctx context.Context, evidencePath string) (*SQLiteStore, DoctorReport, error) {
+	ds, err := OpenDrillCopy(evidencePath, evidencePath+drillMarkerSuffix)
+	if err != nil {
+		return nil, DoctorReport{}, err
+	}
+	report, err := ds.Doctor(ctx, DoctorOptions{Mode: ModeFull})
+	if err != nil {
+		_ = ds.Close()
+		return nil, DoctorReport{}, fmt.Errorf("corruption drill: full doctor could not build on the evidence copy: %w", err)
+	}
+	if report.IntegrityCheck.Status != StatusFailed {
+		_ = ds.Close()
+		return nil, report, ErrCorruptionNotDetected
+	}
+	return ds, report, nil
+}
+
+// corruptDrillCopyPage deterministically damages a NON-header database page of
+// the evidence copy: it flips the page-type byte (byte 0) of the signing_keys
+// b-tree root page, located via sqlite_master so the flip is layout- independent.
+// The page-type byte is structural: PRAGMA integrity_check (and quick_check)
+// report the damaged b-tree page, so detection is deterministic — while schema
+// reads, the schema version and the doctor counts stay healthy so the full
+// report still builds. The page is verified to carry a b-tree page type before
+// the flip; anything unexpected fails closed rather than corrupting blindly.
+func corruptDrillCopyPage(path string) error {
+	ro, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=query_only(1)")
+	if err != nil {
+		return fmt.Errorf("open evidence copy read-only: %w", err)
+	}
+	defer func() { _ = ro.Close() }()
+	var root int
+	if err := ro.QueryRow(`SELECT rootpage FROM sqlite_master WHERE type = 'table' AND name = 'signing_keys'`).Scan(&root); err != nil {
+		return fmt.Errorf("locate signing_keys root page: %w", err)
+	}
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(bytes) < 18 {
+		return fmt.Errorf("database file too small to read the page size")
+	}
+	pageSize := int(binary.BigEndian.Uint16(bytes[16:18]))
+	off := (root - 1) * pageSize
+	if off < 0 || off+1 > len(bytes) {
+		return fmt.Errorf("root page %d out of range", root)
+	}
+	if got := bytes[off]; got != 0x02 && got != 0x05 && got != 0x0a && got != 0x0d {
+		return fmt.Errorf("page %d type byte 0x%02x is not a b-tree page type — refusing to corrupt blindly", root, got)
+	}
+	bytes[off] ^= 0xFF
+	if err := os.WriteFile(path, bytes, 0o600); err != nil {
+		return err
+	}
+	return fsyncFile(path)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Restore drill (design D-7, spec FR-6 / AC-5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const (
+	// restoreManifestVersion is the current RestoreManifest format version.
+	restoreManifestVersion = 1
+	// restoreManifestSuffix is the verified-manifest suffix emitted beside a
+	// successfully restored output. It is DISTINCT from the drill marker suffix
+	// so the restored output opens as a normal usable database (normal store
+	// open only refuses paths carrying the .drenyra-drill.json marker).
+	restoreManifestSuffix = ".drenyra-verified.json"
+)
+
+// ScopeConformanceCheckResult is the third verify-after-restore check (FR-6
+// iii): the restored candidate must contain rows for the EXACT expected company
+// scope. A failure names only the expected scope — foreign rows are never
+// enumerated (cross-tenant invisibility, IR-2).
+type ScopeConformanceCheckResult struct {
+	Status CheckStatus `json:"status"`
+	Detail string      `json:"detail"`
+}
+
+// BackupIdentityCheckResult is the fourth verify-after-restore check (FR-6
+// iii/iv): the candidate bytes and schema metadata must match the snapshot
+// manifest identity.
+type BackupIdentityCheckResult struct {
+	Status         CheckStatus `json:"status"`
+	Detail         string      `json:"detail"`
+	ExpectedSHA256 string      `json:"expectedSHA256,omitempty"`
+	ActualSHA256   string      `json:"actualSHA256,omitempty"`
+}
+
+// RestoreChecks is the ordered verify-after-restore evidence (FR-6 iv):
+// integrity → foreign keys → scope conformance → backup identity.
+type RestoreChecks struct {
+	Integrity      CheckResult                 `json:"integrity"`
+	ForeignKeys    ForeignKeyCheckResult       `json:"foreignKeys"`
+	Scope          ScopeConformanceCheckResult `json:"scope"`
+	BackupIdentity BackupIdentityCheckResult   `json:"backupIdentity"`
+}
+
+// RestoreManifest is the verified-manifest emitted beside a successfully
+// restored output. It records the output path, the source snapshot, the
+// verified identity (source SHA-256 + schema version), the expected scope and
+// the per-check evidence.
+type RestoreManifest struct {
+	FormatVersion int           `json:"formatVersion"`
+	OutputPath    string        `json:"outputPath"`
+	SourcePath    string        `json:"sourcePath"`
+	SourceSHA256  string        `json:"sourceSHA256"`
+	SchemaVersion int           `json:"schemaVersion"`
+	Scope         core.Scope    `json:"scope"`
+	CreatedAt     string        `json:"createdAt"`
+	Checks        RestoreChecks `json:"checks"`
+}
+
+// RunRestoreDrillInput selects the immutable VACUUM INTO snapshot and the
+// separate requested output. ExpectedScope is the exact company scope the
+// scope-conformance check requires (a restore is only verified for the scope
+// the operator names — ambiguity fails closed, IR-2).
+type RunRestoreDrillInput struct {
+	SnapshotPath  string
+	OutputPath    string
+	ExpectedScope core.Scope
+}
+
+// RestoreDrillResult is the published restore evidence: the separate output
+// path, the verified manifest beside it, and the per-check results.
+type RestoreDrillResult struct {
+	OutputPath   string
+	ManifestPath string
+	Manifest     RestoreManifest
+	Checks       RestoreChecks
+}
+
+// RunRestoreDrill restores the immutable snapshot to a SEPARATE output and
+// runs the four verify-after-restore checks in the FIXED order (FR-6 iii):
+// integrity_check → foreign_key_check → exact expected scope-row conformance →
+// expected backup identity (manifest SHA-256 + schema metadata). Only after ALL
+// four pass is the candidate atomically renamed to the requested output and a
+// verified manifest emitted beside it. ANY failure returns a typed rejection
+// (RESTORE_VERIFICATION_FAILED / BACKUP_IDENTITY_MISMATCH), leaves the source
+// snapshot untouched, leaves the rejected candidate quarantined, and never
+// publishes the output. A readable database alone is insufficient.
+func RunRestoreDrill(ctx context.Context, input RunRestoreDrillInput) (RestoreDrillResult, error) {
+	snap, err := canonicalPath(input.SnapshotPath)
+	if err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: resolve snapshot: %v", ErrRestoreVerificationFailed, err)
+	}
+	out, err := canonicalPath(input.OutputPath)
+	if err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: resolve output path: %v", ErrRestoreVerificationFailed, err)
+	}
+	if snap == out {
+		return RestoreDrillResult{}, fmt.Errorf("%w: source and output path must never be shared", ErrRestoreVerificationFailed)
+	}
+	if _, err := os.Stat(out); err == nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: output path already exists (never overwrite evidence)", ErrRestoreVerificationFailed)
+	}
+	if _, err := os.Stat(out + restoreManifestSuffix); err == nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: verified manifest path already exists (never overwrite evidence)", ErrRestoreVerificationFailed)
+	}
+	candidate := out + ".candidate"
+	if _, err := os.Stat(candidate); err == nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: interrupted candidate %s already exists — quarantined evidence; remove it explicitly before retrying", ErrRestoreVerificationFailed, candidate)
+	}
+	// The restore verifies a MARKED drill snapshot: the adjacent marker is the
+	// backup identity the fourth check compares against.
+	if _, err := os.Stat(snap + drillMarkerSuffix); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: snapshot is not a MARKED drill copy (missing %s) — identity cannot be verified", ErrRestoreVerificationFailed, snap+drillMarkerSuffix)
+	}
+	manifest, err := loadDrillManifest(snap + drillMarkerSuffix)
+	if err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: %v", ErrRestoreVerificationFailed, err)
+	}
+	if !manifest.DrillCopy || manifest.CopyPath != snap {
+		return RestoreDrillResult{}, fmt.Errorf("%w: snapshot manifest is not a valid marked drill copy for %s", ErrRestoreVerificationFailed, snap)
+	}
+
+	// Copy the immutable snapshot bytes to the separate candidate and fsync
+	// file and directory so the candidate is durable (and stays quarantined on
+	// any failure).
+	if err := copyFile(snap, candidate); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: copy candidate: %v", ErrRestoreVerificationFailed, err)
+	}
+	if err := fsyncDir(filepath.Dir(candidate)); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: fsync candidate directory: %v", ErrRestoreVerificationFailed, err)
+	}
+
+	cand, err := sql.Open("sqlite", "file:"+candidate+"?mode=ro&_pragma=query_only(1)")
+	if err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: open candidate read-only: %v", ErrRestoreVerificationFailed, err)
+	}
+	defer func() { _ = cand.Close() }()
+
+	var checks RestoreChecks
+
+	// Check 1 — integrity. On corruption the candidate is rejected here; the
+	// typed RESTORE_VERIFICATION_FAILED (not BACKUP_IDENTITY_MISMATCH) proves
+	// the integrity check ran before the identity check.
+	checks.Integrity = scanCheck(ctx, cand, "integrity_check")
+	if checks.Integrity.Status != StatusOk {
+		return RestoreDrillResult{}, fmt.Errorf("%w: integrity_check failed on the restored candidate: %s", ErrRestoreVerificationFailed, checks.Integrity.Detail)
+	}
+
+	// Check 2 — foreign keys (always paired with the integrity check, FZ-4).
+	checks.ForeignKeys = scanFKCheck(ctx, cand)
+	if checks.ForeignKeys.Status != StatusOk {
+		return RestoreDrillResult{}, fmt.Errorf("%w: foreign_key_check failed on the restored candidate: %s", ErrRestoreVerificationFailed, checks.ForeignKeys.Detail)
+	}
+
+	// Check 3 — exact expected scope-row conformance (fails closed on mismatch;
+	// never enumerates foreign rows).
+	checks.Scope = scopeConformanceCheck(ctx, cand, input.ExpectedScope)
+	if checks.Scope.Status != StatusOk {
+		return RestoreDrillResult{}, fmt.Errorf("%w: %s", ErrRestoreVerificationFailed, checks.Scope.Detail)
+	}
+
+	// Check 4 — expected backup identity: candidate bytes and schema metadata
+	// must match the snapshot manifest identity.
+	candHash, err := fileSHA256(candidate)
+	if err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: hash candidate: %v", ErrRestoreVerificationFailed, err)
+	}
+	candSchema, schemaErr := schemaVersionOf(candidate)
+	checks.BackupIdentity = BackupIdentityCheckResult{
+		Status:         StatusOk,
+		Detail:         "candidate bytes and schema version match the snapshot manifest identity",
+		ExpectedSHA256: manifest.SourceSHA256,
+		ActualSHA256:   candHash,
+	}
+	if schemaErr != nil || candHash != manifest.SourceSHA256 || candSchema != manifest.SchemaVersion {
+		checks.BackupIdentity.Status = StatusFailed
+		checks.BackupIdentity.Detail = fmt.Sprintf(
+			"candidate identity does not match the snapshot manifest (expected sha256 %s, got %s; expected schema %d, got %d)",
+			manifest.SourceSHA256, candHash, manifest.SchemaVersion, candSchema)
+		return RestoreDrillResult{}, fmt.Errorf("%w: %s", ErrBackupIdentityMismatch, checks.BackupIdentity.Detail)
+	}
+
+	// All four checks pass → atomically publish the separate output (rename,
+	// never a second copy — the output bytes are exactly the verified bytes)
+	// and emit the verified manifest beside it.
+	if err := os.Rename(candidate, out); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: publish output: %v", ErrRestoreVerificationFailed, err)
+	}
+	if err := fsyncDir(filepath.Dir(out)); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: fsync output directory: %v", ErrRestoreVerificationFailed, err)
+	}
+	verified := RestoreManifest{
+		FormatVersion: restoreManifestVersion,
+		OutputPath:    out,
+		SourcePath:    snap,
+		SourceSHA256:  manifest.SourceSHA256,
+		SchemaVersion: manifest.SchemaVersion,
+		Scope:         input.ExpectedScope,
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		Checks:        checks,
+	}
+	manifestPath := out + restoreManifestSuffix
+	if err := atomicWriteJSON(manifestPath, verified); err != nil {
+		return RestoreDrillResult{}, fmt.Errorf("%w: write verified manifest: %v", ErrRestoreVerificationFailed, err)
+	}
+	return RestoreDrillResult{
+		OutputPath:   out,
+		ManifestPath: manifestPath,
+		Manifest:     verified,
+		Checks:       checks,
+	}, nil
+}
+
+// scopeConformanceCheck verifies the EXACT expected company scope rows are
+// present in the restored candidate (FR-6 iii, task 2.7). It never enumerates
+// foreign rows: a failure names only the expected scope (cross-tenant
+// invisibility, IR-2). An expected scope that is not an exact company scope
+// fails closed.
+func scopeConformanceCheck(ctx context.Context, db *sql.DB, scope core.Scope) ScopeConformanceCheckResult {
+	if scope.Kind != core.ScopeKindCompany || scope.OrganizationID == "" || scope.CompanyID == "" || scope.RUC == "" {
+		return ScopeConformanceCheckResult{
+			Status: StatusFailed,
+			Detail: "scope conformance: expected scope must be an exact company scope (kind=company with organization, company and RUC)",
+		}
+	}
+	var n int
+	err := db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM observations
+		WHERE scope_kind = ? AND organization_id = ? AND company_id = ? AND ruc = ? AND period = ?`,
+		string(core.ScopeKindCompany), scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period,
+	).Scan(&n)
+	if err != nil {
+		return ScopeConformanceCheckResult{
+			Status: StatusFailed,
+			Detail: fmt.Sprintf("scope conformance: candidate scope unreadable: %v", err),
+		}
+	}
+	if n == 0 {
+		return ScopeConformanceCheckResult{
+			Status: StatusFailed,
+			Detail: fmt.Sprintf("scope conformance: 0 rows for the expected company scope (organization %s / company %s / ruc %s / period %s) — the restored candidate does not contain the expected scope",
+				scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period),
+		}
+	}
+	return ScopeConformanceCheckResult{
+		Status: StatusOk,
+		Detail: fmt.Sprintf("scope conformance: %d rows present for the exact expected company scope", n),
+	}
 }

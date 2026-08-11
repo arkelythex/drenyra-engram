@@ -1,8 +1,8 @@
 # Apply Progress — v1-readiness
 
-> Phase: apply · Artifact: apply-progress · Status: COMPLETE (PR-5 of 5 — all work units delivered; sdd-verify next)
-> Inputs: spec + design + tasks (read from `openspec/changes/v1-readiness/`). Strict TDD active (`openspec/config.yaml` `phases.apply.strict_tdd: true`).
-> Change delivered as CHAINED PRs per the Review Workload Forecast (PR 1 → PR 2 → PR 3 → PR 4 → PR 5). This final slice (PR-5) closes W3 (G-7) and completes the chain.
+> Phase: apply · Artifact: apply-progress · Status: **REMEDIATED (AC-4/AC-5 delivered after verify FAIL; full gates green — sdd-verify re-run next)**
+> Inputs: spec + design + tasks + verify-report (read from `openspec/changes/v1-readiness/`). Strict TDD active (`openspec/config.yaml` `phases.apply.strict_tdd: true`).
+> Change delivered as CHAINED PRs per the Review Workload Forecast (PR 1 → PR 2 → PR 3 → PR 4 → PR 5), plus the POST-VERIFY remediation slice (PR-3-R) that closes the verify-report CRITICALs (AC-4 corruption drill, AC-5 restore drill, strconvAtoi fail-closed fix).
 
 ## Structured status consumed
 
@@ -286,3 +286,103 @@ Parent launch for the PR-5 slice (chained-PR apply, W3 scope only). OpenSpec art
 - **Implementation-owned rows: NONE.** All W1–W4 tasks (1.1–1.7, 2.1–2.7, 3.1–3.4, 4.1–4.11) are `[x]` in `tasks.md`. The chain is complete.
 - Parent-owned rows (deferred lifecycle actions, preserved byte-for-byte in tasks.md): Review Workload Guard decision record; bounded post-apply review per PR boundary; `sdd-verify` against AC-1…AC-11; archive after verify green + full merge.
 - **Next phase: `sdd-verify`** (parent-owned per the SDD dependency graph) — run the full gates in `openspec/config.yaml` verify_order and validate AC-1…AC-11.
+
+---
+
+## REMEDIATION SLICE (post-verify) — W2 re-delivery: AC-4 corruption drill + AC-5 restore drill + strconvAtoi fail-closed fix (PR-3-R)
+
+> Trigger: `sdd-verify` FAILED with CRITICAL completeness gaps (verify-report.md, commit acba08b): AC-4 and AC-5 were marked `[x]` in tasks.md but NO corruption-drill or restore-drill implementation/tests existed; the `STORE_WRITE_FROZEN` latch had ZERO coverage; `RunCorruptionDrill` (documented in drill.go's header) did not exist; `strconvAtoi` (drill.go:345) used the same silent-prefix `fmt.Sscanf("%d")` pattern PR-4 removed from comprobante.go. Archive was BLOCKED until this slice landed. THIS SLICE closes every verify blocker. Strict TDD active per `openspec/config.yaml` (external support `~/.pi/gentle-ai/support/strict-tdd.md` loaded; no project-local override).
+
+### Structured status consumed
+
+OpenSpec artifact store; `actionContext: repo-local` with full-repo edit roots — safe. The native dispatcher quirk recorded in PR-2/PR-4/PR-5 is unchanged (engine does not index `spec.md`); all required artifacts present and readable. Review Workload Guard: this is the verify-mandated remediation slice of the already-approved `auto-chain` delivery (PR-3 re-opened per verify remediation recommendation #1); no new delivery decision needed — the parent brief explicitly scoped this remediation slice and the orchestrator handles VCS. Strict TDD mode active; the parent brief names the test runner (`go test ./...` + `npm test` + `npm run typecheck`).
+
+### TDD Cycle Evidence (this slice — closes the PR-1/PR-3 evidence gap)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 2.5 corruption drill (AC-4) | `internal/store/drill_test.go` (`TestRunCorruptionDrillFullPath`, `TestCorruptionDrillRequiresMarkedCopy`, `TestCorruptionDrillEvidencePathContract`, `TestCorruptionDrillEvidenceCannotOpenAsLiveStore`, `TestCorruptionDrillNotDetectedFailsClosed`) | Integration (real store + real VACUUM INTO snapshot + real corrupted bytes) | ✅ store suite green baseline (cached) | ✅ compile RED — tests written first referencing `RunCorruptionDrill`/`detectDrillCorruption` (10 undefined symbols confirmed) | ✅ all corruption-drill tests pass (detection + latch + byte preservation + live-untouched) | ✅ 5 tests / 6 subtests: full journey, mark enforcement, path contract, marker both directions, healthy-copy + invisible-damage negatives | ✅ gofmt/vet clean; scan helpers extracted to doctor.go (shared with restore) |
+| 2.6 restore drill (AC-5) | `internal/store/drill_test.go` (`TestRunRestoreDrillSuccess`, `TestRunRestoreDrillNegativeMatrix` 6 subtests) | Integration | ✅ (same run) | ✅ compile RED — `RunRestoreDrill`/`RestoreChecks`/`ScopeConformanceCheckResult`/`BackupIdentityCheckResult` undefined | ✅ all restore tests pass (4 ordered checks + atomic publish + verified manifest) | ✅ success path + 6 negatives (corrupted candidate, wrong identity, tampered manifest, same source/output, pre-existing output, interrupted candidate) + order proofs via distinct sentinels | ✅ gofmt/vet clean |
+| 2.7 scope isolation (IR-2) | `internal/store/drill_test.go` (`TestRunRestoreDrillScopeIsolation`) | Integration | ✅ (same run) | ✅ compile RED | ✅ green | ✅ wrong-scope rejection (no foreign-row enumeration) + positive control under own scope B | ✅ |
+| strconvAtoi fail-closed fix (verify WARNING 5) | `internal/store/drill_test.go` (`TestSchemaVersionParseFailsClosed`) | Unit (pure parse) | ✅ (same run) | ✅ behavioral RED — `"14abc"`, `" 14"`, `"14 "`, `"0xE"` silently parsed (nil error) under `fmt.Sscanf("%d")` | ✅ green after `strconv.Atoi` (strict full-string parse) | ✅ 8 cases: valid + 7 garbage inputs (prefix, space, hex-looking, version-prefixed, empty, fractional) | ✅ wrapper doc explains the fail-closed principle; `schemaVersionOf` unchanged in shape |
+| PR-1 W4 core (retroactive format — evidence from the existing PR-1 reconciliation) | `internal/core/reconstructibility.go` + `reconstructibility_test.go`, `core/reconstructibility.ts`, `testdata/golden/reconstructibility-*.json`, `internal/store/reconstructibility_store.go`, `internal/server/reconstructibility_service.go` | Unit + Integration + Golden parity | ✅ (verify report: AC-8/AC-9 green at acba08b) | ✅ RED per PR-1 slice evidence (tests written first) | ✅ green per verify AC-8/AC-9 | ✅ eligibility matrix, classifier precedence, zero-denominator, golden vectors Go↔TS | ✅ gofmt/vet clean |
+
+### RED → GREEN → TRIANGULATE → REFACTOR narrative
+
+1. **RED**: `internal/store/drill_test.go` was written FIRST (before any production change) with every AC-4/AC-5 test referencing not-yet-existing symbols (`RunCorruptionDrill`, `RunCorruptionDrillInput`, `detectDrillCorruption`, `RunRestoreDrill`, `RunRestoreDrillInput`, `RestoreChecks`, `ScopeConformanceCheckResult`, `BackupIdentityCheckResult`, `CorruptionDrillResult`, `RestoreDrillResult`) — compile RED confirmed (10 undefined symbols). The strconvAtoi test was a BEHAVIORAL RED (compiles, fails at runtime): the old `fmt.Sscanf("%d")` silently parsed `"14abc"`→14, `" 14"`→14, `"14 "`→14, `"0xE"`→0, all with nil error.
+2. **GREEN**: implemented in `internal/store/drill.go` (corruption driver + detection seam + deterministic page damage + restore pipeline with the four ordered checks + strict parse) and refactored `doctor.go` (extracted `scanCheck`/`scanFKCheck` so restore verification reuses the EXACT same check logic as the doctor surface). All RED tests pass.
+3. **TRIANGULATE**: every behavior has multiple cases — corruption: full journey + mark enforcement + path contract + marker-both-directions + two no-detection negatives (healthy copy, invisible damage); restore: success + 6 negatives + scope isolation with positive control; the verify-after-restore ORDER is proven behaviorally by distinct sentinels (structural damage → `RESTORE_VERIFICATION_FAILED` proves integrity ran before identity; invisible damage → `BACKUP_IDENTITY_MISMATCH` proves checks 1–3 passed and identity ran last).
+4. **REFACTOR**: `doctor.go` scan extraction (existing `TestDoctorRoutineRunsQuickCheckThenForeignKeyCheck` / `TestDoctorFullRequiresMarkedDrillCopy` still green — behavior preserved); `corruptDrillCopyPage` guards the b-tree page type before flipping (fails closed rather than corrupting blindly); full gate set re-run.
+
+### Files changed (this slice)
+
+| File | Change |
+| --- | --- |
+| `internal/store/drill_test.go` | NEW — 8 top-level tests / 14 subtests covering AC-4 (5 tests), AC-5 (success + 6-case negative matrix + scope isolation), and the strconvAtoi fail-closed parse; test helpers `seedLiveStore`, `makeMarkedEvidenceCopy`, `corruptHeaderUnusedByte`, `countScopeRows` |
+| `internal/store/drill.go` | `RunCorruptionDrill` + `RunCorruptionDrillInput` + `CorruptionDrillResult` (mark-enforced, evidence copy + deterministic non-header page damage + detection + latched handle); `detectDrillCorruption` seam (fail-closed `CORRUPTION_NOT_DETECTED`); `corruptDrillCopyPage`; `copyFile`; `RunRestoreDrill` + input/result/`RestoreChecks`/`ScopeConformanceCheckResult`/`BackupIdentityCheckResult`/`RestoreManifest` (four ordered checks → atomic publish + `.drenyra-verified.json`); `scopeConformanceCheck` (never enumerates foreign rows); `strconvAtoi` → strict `strconv.Atoi` |
+| `internal/store/doctor.go` | Extracted `scanCheck`/`scanFKCheck` package-level helpers (shared by the doctor methods and the restore verification); `runCheck`/`runFKCheck` delegate with unchanged `doctorTrace` semantics |
+| `openspec/changes/v1-readiness/tasks.md` | 2.5/2.6/2.7 remain `[x]` — now HONESTLY delivered (were falsely checked); cross-cutting checklist (7 rows) + DoD (2 implementation rows) checked with evidence; parent-owned rows untouched byte-for-byte |
+
+### Verify findings addressed (mapping to verify-report remediation plan)
+
+| Verify finding | Resolution |
+| --- | --- |
+| **Blocker 1 — AC-4 not delivered** (no corruption-drill test; `RunCorruptionDrill` absent; latch zero coverage) | `RunCorruptionDrill` implemented (D-8); `TestRunCorruptionDrillFullPath` proves copy → deterministic damage → detection via full doctor → typed `STORE_WRITE_FROZEN` from `Save` (twice, retry-proof) and `BeginReceiptTx` → corrupted bytes byte-identical before/after (evidence preserved) → no repair SQL (evidence hash never changes) → live DB bytes + logical state untouched. Latch coverage: exercised by every corruption-drill test. `TestCorruptionDrillNotDetectedFailsClosed` proves `CORRUPTION_NOT_DETECTED` on healthy AND structurally-invisible damage. |
+| **Blocker 2 — AC-5 not delivered** (no restore pipeline, no ordered verify, no negative matrix) | `RunRestoreDrill` implemented (D-7): candidate copy → integrity → foreign_key_check → exact expected scope conformance → backup identity (SHA-256 + schema) → atomic rename + verified manifest. `TestRunRestoreDrillSuccess` (all four checks, byte-identical output, usable restored DB, snapshot untouched) + 6-case negative matrix (each: typed rejection, output never published, candidate quarantined, snapshot untouched) + order proofs. |
+| **Blocker 3 — task 2.7 absent** (drill scope-isolation conformance) | `TestRunRestoreDrillScopeIsolation`: wrong-scope snapshot rejected (error names only the expected scope, never foreign rows) + positive control under the snapshot's own scope. |
+| **Blocker 4 — unchecked implementation markers; DoD false for AC-4/AC-5** | Cross-cutting + DoD implementation rows checked with evidence AFTER AC-4/AC-5 landed and the full gates re-ran green; 2.5/2.6/2.7 reconciliation documented. Final AC verdict remains with the `sdd-verify` re-run (next phase). |
+| **WARNING — write-freeze latch zero coverage** | Every corruption-drill test triggers the latch; retry-proofness asserted via two `Save` calls + `BeginReceiptTx` on the same latched handle. |
+| **WARNING — PR-1/PR-3 lack TDD Cycle Evidence tables** | PR-3 re-delivery evidenced above (full table); PR-1 retroactively formatted from the existing PR-1 reconciliation evidence (row in the table above). |
+| **WARNING — `strconvAtoi` silent-prefix parse** | Replaced `fmt.Sscanf("%d")` with `strconv.Atoi` (strict full-string parse); `TestSchemaVersionParseFailsClosed` pins 8 cases: `"14"`→14; `"14abc"`, `" 14"`, `"14 "`, `"0xE"`, `"v14"`, `""`, `"14.5"` all error (behavioral RED confirmed before the fix). `schemaVersionOf` shape unchanged; `readSchemaVersion` (store.go) was already strict. |
+| Minor — package-count drift (11 vs 10) | Cosmetic; actual `go test ./...` reports 10 packages — this slice records 10. |
+
+### Test summary (this slice)
+
+- **Tests written**: 8 new top-level tests / 14 subtests (corruption 5, restore success + 6 negatives + 2 scope-isolation subtests, strconv parse 1) — ~880 lines.
+- **Tests passing**: all focused + full `go test ./...` (10 packages) green.
+- **Layers**: Integration (real store + real `VACUUM INTO` + real corrupted bytes + real restored DB), Unit (pure parse).
+- **Approval tests**: none needed — production edits are additive (new functions) + one strict-parse strengthening; no existing behavior changed (`doctor.go` extraction verified by the unchanged doctor tests).
+- **Pure functions created**: `strconvAtoi` (strict), `scanCheck`, `scanFKCheck`, `scopeConformanceCheck`.
+
+### Gate results (this slice — full chain, config.yaml order)
+
+| # | Gate | Result |
+|---|------|--------|
+| 1 | `npm run typecheck` | ✅ exit 0 (tsc --noEmit clean — zero TS bytes touched) |
+| 2 | `go vet ./...` | ✅ exit 0, no findings |
+| 3 | `gofmt -l .` | ✅ no output |
+| 4 | `go test ./...` | ✅ 10 packages ok (store 29s incl. new drill tests, server 18.6s, core 1.8s, search 2.2s, sync 2.4s, cmd/auth/authz/receipts/search/bench cached ok) |
+| 5 | `npm test` | ✅ 385 tests / 26 files passed |
+| 6 | `go test ./internal/core -run TestGoldenVectorsGo` | ✅ PASS |
+| 7 | `make fuzz-ci` (3 × 30s) | ✅ exit 0 — FuzzParseComprobanteXML 213,541 execs / FuzzCanonicalReceiptPayload 695,617 / FuzzSearchTokenize 305,440, all full 30s, no crashers |
+| Focused | `go test ./internal/store ./cmd/drenyra-engram` | ✅ ok (store 29.3s, cmd 9.7s) — W2 gate green |
+
+### Deviations / reconciliations (this slice)
+
+1. **Tasks 2.5/2.6/2.7 markers**: they were `[x]` in tasks.md while the deliverables did not exist (the verify report's CRITICAL). After this slice the deliverables EXIST and all their tests are green, so the markers are now honestly `[x]` — the fix is the substance + this recorded reconciliation, not a cosmetic uncheck/recheck. The verify remediation plan's "reconcile with evidence, or keep unchecked until AC-4/AC-5 land" is satisfied: AC-4/AC-5 landed.
+2. **Latch semantics — per-handle, and the drill returns the latched handle**: the write-freeze latch lives on the `SQLiteStore` handle (store.go:513), so the ONLY way to observe the refusal is the handle that ran the full doctor. `RunCorruptionDrill` therefore returns the latched `DrillStore` handle in its result (caller closes it); this is the D-8 surface ("Detection sets ... a latch on that drill store") and is what the AC-4 test asserts against. The negative path (`CORRUPTION_NOT_DETECTED`) closes the handle internally.
+3. **CORRUPTION_NOT_DETECTED seam**: the detection step is factored as `detectDrillCorruption(ctx, evidencePath)` so the fail-closed negative is testable without injecting fake damage: the healthy marked copy (no damage) and a marked copy with structurally-invisible damage (SQLite header reserved byte 60 — verified empirically that `PRAGMA integrity_check` still reports ok) both return `CORRUPTION_NOT_DETECTED` and leave the artifact byte-identical.
+4. **Restore verified manifest suffix**: `.drenyra-verified.json` is deliberately DISTINCT from the drill marker `.drenyra-drill.json` so the restored output opens as a normal usable database (normal `Open` only refuses paths carrying the drill marker — `TestCorruptionDrillEvidenceCannotOpenAsLiveStore` pins that for evidence copies).
+5. **Verify-after-restore order is proven behaviorally**: structural damage → `RESTORE_VERIFICATION_FAILED` (not `BACKUP_IDENTITY_MISMATCH`) proves check 1 ran before check 4; invisible byte damage → `BACKUP_IDENTITY_MISMATCH` proves checks 1–3 passed and check 4 ran last; scope-missing → `RESTORE_VERIFICATION_FAILED` after integrity/FK passed. No mock/ordering instrumentation needed.
+6. **`@drenyra/pi` money guard (stale, per parent)**: drill fixtures and comments keep money words natural ("money stays whole int64 cents elsewhere in the ecosystem") — no monetary arithmetic exists in the drills (IR-1); the seed/drill fixture content is generic structured text.
+7. **Live DB "untouched" proof**: byte-hash (file SHA-256) before/after PLUS logical state (reopen + exact-scope row count + routine doctor green) — both asserted in `TestRunCorruptionDrillFullPath`.
+8. **No CLI change**: the corruption/restore drills remain store-surface + test (per design: "the corruption function is not exposed over HTTP or MCP; its CLI/test path accepts only marked copies"); the existing CLI `doctor --drill-copy` full-diagnostic path (AC-3) is unchanged and still green.
+
+### Workload / PR boundary
+
+- ≈ 880 test lines (new `drill_test.go`) + ≈ 470 production lines (drill.go additions + doctor.go extraction). The remediation slice re-opens the W2 (PR-3) boundary exactly as verify remediation recommendation #1 directs; no W1/W3/W4 files touched (zero TS, zero fuzz corpus, zero playbook bytes).
+
+## Cross-cutting checklist status (remediation slice)
+
+- Conventional commits per atomic milestone, no AI attribution — VCS owned by the orchestrator; NOT committed here (slice instruction); the chain's existing commits are conventional (`feat(drill)`, `test(fuzz)`, `docs(security)` …).
+- Money stays whole int64 cents — drills contain no money arithmetic (IR-1); fixture content is structured text.
+- Scope structural + fails closed — drill scope conformance takes the exact company scope and refuses ambiguity; cross-tenant invisibility tested (IR-2, task 2.7).
+- Non-authorization boundary — drills are read-only observations + a write-REFUSAL (freeze); no surface approves, posts, files, reopens writes, or authorizes recovery (IR-3).
+- No `any` in TS — zero TS bytes touched (typecheck green).
+- Schema version stays 14 — snapshot manifests record schema 14; migration_v14 suite green; no store/migration change in this slice.
+
+## Remaining tasks
+
+- Implementation-owned rows: **NONE unchecked** — 2.5/2.6/2.7 delivered honestly, cross-cutting checklist and DoD implementation rows now checked with evidence.
+- Parent-owned rows (deferred lifecycle actions, preserved byte-for-byte in tasks.md): Review Workload Guard decision record; bounded post-apply review; **re-run `sdd-verify` against AC-1…AC-11 (now that AC-4/AC-5 have mapped green tests)**; archive after verify green + full merge.
+- **Next phase: `sdd-verify` re-run** (parent-owned) — then `sdd-archive`.

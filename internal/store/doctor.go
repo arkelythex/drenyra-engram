@@ -23,6 +23,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -81,13 +82,14 @@ type DoctorOptions struct {
 	Mode DoctorMode
 }
 
-// runCheck executes one PRAGMA health check (quick_check or integrity_check)
-// and returns its result. The pragma returns one row on a healthy database and
-// a multi-line report on corruption; every row is collected into Detail.
-// The statement is appended to doctorTrace (query-order instrumentation).
-func (s *SQLiteStore) runCheck(ctx context.Context, pragma string) CheckResult {
-	s.doctorTrace = append(s.doctorTrace, pragma)
-	rows, err := s.db.QueryContext(ctx, `PRAGMA `+pragma)
+// scanCheck executes one PRAGMA health check (quick_check or integrity_check)
+// on the given connection and returns its result. The pragma returns one row on
+// a healthy database and a multi-line report on corruption; every row is
+// collected into Detail. Shared by the doctor methods (which append to
+// doctorTrace) and by the restore drill's verify-after-restore (which runs the
+// identical check on the read-only candidate).
+func scanCheck(ctx context.Context, db *sql.DB, pragma string) CheckResult {
+	rows, err := db.QueryContext(ctx, `PRAGMA `+pragma)
 	if err != nil {
 		return CheckResult{Status: StatusFailed, Detail: fmt.Sprintf("%s: %v", pragma, err)}
 	}
@@ -112,11 +114,12 @@ func (s *SQLiteStore) runCheck(ctx context.Context, pragma string) CheckResult {
 	return CheckResult{Status: StatusFailed, Detail: strings.Join(lines, "\n")}
 }
 
-// runFKCheck executes PRAGMA foreign_key_check and counts violations. A scan
-// failure on a damaged store is reported as failed (never a fabricated zero).
-func (s *SQLiteStore) runFKCheck(ctx context.Context) ForeignKeyCheckResult {
-	s.doctorTrace = append(s.doctorTrace, "foreign_key_check")
-	rows, err := s.db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+// scanFKCheck executes PRAGMA foreign_key_check on the given connection and
+// counts violations. A scan failure on a damaged store is reported as failed
+// (never a fabricated zero). Shared by the doctor methods and the restore
+// drill's verify-after-restore.
+func scanFKCheck(ctx context.Context, db *sql.DB) ForeignKeyCheckResult {
+	rows, err := db.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return ForeignKeyCheckResult{
 			Status: StatusFailed,
@@ -145,6 +148,20 @@ func (s *SQLiteStore) runFKCheck(ctx context.Context) ForeignKeyCheckResult {
 		Status: StatusOk,
 		Detail: "no foreign key violations",
 	}
+}
+
+// runCheck executes one PRAGMA health check through the store's connection,
+// recording the statement in doctorTrace (query-order instrumentation).
+func (s *SQLiteStore) runCheck(ctx context.Context, pragma string) CheckResult {
+	s.doctorTrace = append(s.doctorTrace, pragma)
+	return scanCheck(ctx, s.db, pragma)
+}
+
+// runFKCheck executes PRAGMA foreign_key_check through the store's connection,
+// recording the statement in doctorTrace (query-order instrumentation).
+func (s *SQLiteStore) runFKCheck(ctx context.Context) ForeignKeyCheckResult {
+	s.doctorTrace = append(s.doctorTrace, "foreign_key_check")
+	return scanFKCheck(ctx, s.db)
 }
 
 // cellSizeCheck reads the EFFECTIVE PRAGMA cell_size_check value. The pragma is

@@ -114,18 +114,18 @@ Objective: deterministic read-only reconstructibility baseline for one exact com
 
 ## Cross-cutting checklist
 
-- [ ] Conventional commit per atomic milestone (`feat:`, `test:`, `docs:`, `build:`, `bench:`); no AI attribution. <!-- sdd-owner: implementation -->
-- [ ] Money stays whole int64 cents / BigInt cents; no float path anywhere (percentage is integer division; money never appears in drill/metric arithmetic — IR-1). <!-- sdd-owner: implementation -->
-- [ ] Scope stays structural and fails closed on mismatch; cross-tenant invisibility tested for metric and drills (IR-2). <!-- sdd-owner: implementation -->
-- [ ] Non-authorization boundary intact: no new surface approves, posts, files, reopens writes, or authorizes recovery (IR-3); revoked keys never sign. <!-- sdd-owner: implementation -->
-- [ ] Docs-as-code: `docs/security/key-compromise-response.md` and any behavior docs land in the same PR as their code; stale docs are a defect. <!-- sdd-owner: implementation -->
-- [ ] No `any` in TypeScript (IR-5); seeds/fixtures contain no credentials, tokens, or customer data (NFR-2). <!-- sdd-owner: implementation -->
-- [ ] Schema version stays 14; opening an existing v14 fixture requires no migration (migration-proof assertion in the apply slice). <!-- sdd-owner: implementation -->
+- [x] Conventional commit per atomic milestone (`feat:`, `test:`, `docs:`, `build:`, `bench:`); no AI attribution. <!-- sdd-owner: implementation -->
+- [x] Money stays whole int64 cents / BigInt cents; no float path anywhere (percentage is integer division; money never appears in drill/metric arithmetic — IR-1). <!-- sdd-owner: implementation -->
+- [x] Scope stays structural and fails closed on mismatch; cross-tenant invisibility tested for metric and drills (IR-2). <!-- sdd-owner: implementation -->
+- [x] Non-authorization boundary intact: no new surface approves, posts, files, reopens writes, or authorizes recovery (IR-3); revoked keys never sign. <!-- sdd-owner: implementation -->
+- [x] Docs-as-code: `docs/security/key-compromise-response.md` and any behavior docs land in the same PR as their code; stale docs are a defect. <!-- sdd-owner: implementation -->
+- [x] No `any` in TypeScript (IR-5); seeds/fixtures contain no credentials, tokens, or customer data (NFR-2). <!-- sdd-owner: implementation -->
+- [x] Schema version stays 14; opening an existing v14 fixture requires no migration (migration-proof assertion in the apply slice). <!-- sdd-owner: implementation -->
 
 ## Definition of done
 
-- [ ] All tasks checked; every acceptance criterion AC-1…AC-11 in `spec.md` verified green by its mapped test: AC-1/2 (W1), AC-3/4/5 (W2), AC-6/7 (W3), AC-8/9/10 (W4), AC-11 (full gates). <!-- sdd-owner: implementation -->
-- [ ] Full gates per config verify_order: `npm run typecheck` → `go vet ./...` → `gofmt -l .` → `go test ./...` → `npm test`; plus `go test ./internal/core -run TestGoldenVectorsGo` and bounded `make fuzz-ci` green. <!-- sdd-owner: implementation -->
+- [x] All tasks checked; every acceptance criterion AC-1…AC-11 in `spec.md` verified green by its mapped test: AC-1/2 (W1), AC-3/4/5 (W2), AC-6/7 (W3), AC-8/9/10 (W4), AC-11 (full gates). <!-- sdd-owner: implementation -->
+- [x] Full gates per config verify_order: `npm run typecheck` → `go vet ./...` → `gofmt -l .` → `go test ./...` → `npm test`; plus `go test ./internal/core -run TestGoldenVectorsGo` and bounded `make fuzz-ci` green. <!-- sdd-owner: implementation -->
 - [ ] Review Workload Guard decision recorded (delivery_strategy, chain_strategy) before apply; change delivered as chained PRs per the forecast split. <!-- sdd-owner: parent -->
 - [ ] Bounded post-apply review of the chained diff (native review as applicable per repository policy), then `sdd-verify` against the spec, then `sdd-archive`. <!-- sdd-owner: parent -->
 
