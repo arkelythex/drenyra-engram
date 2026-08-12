@@ -9,6 +9,15 @@
 > Conflict and Judgment · `v0.5.0` Close Intelligence · `v0.6.0` Fiscal Policy
 > Memory · `v1.0.0` Institutional Accounting Brain.
 
+## Program alignment
+
+Drenyra Engram participates in the [Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion), the federated master that fixes vision, authority, contracts, dependencies, gates, and sequencing across the ecosystem. This roadmap is the repository's own implementation sequence; the program's vertical SDDs frame the ecosystem's coordinated release:
+
+| Program SDD | Wave | Alignment with this roadmap |
+| --- | --- | --- |
+| [SDD-080 — Engram Institutional Memory](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion/sdds/sdd-080-engram) | 2 — Fiscal intelligence | Institutional memory that informs but never authorizes — the phases below deliver its slices (memory, receipts, offline verification, close intelligence, fiscal policy memory, evidence objects, review workspace) |
+| [SDD-050 — Peruvian Monthly Close](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion/sdds/sdd-050-monthly-close) | 3 — Flagship product | Consumes Engram's prior-decision context for the monthly close journey — memory informs, never authorizes, and is never evidence |
+
 ## Phase 0 — Identity (current)
 
 - [x] Repository created with identity scaffolding (README, LICENSE, SECURITY, CONTRIBUTING, CODEOWNERS)
