@@ -1,6 +1,8 @@
 <div align="center">
 
-<img width="1024" alt="Drenyra Engram — One brain for fiscal knowledge. Scope-first, audit-grade, agent-agnostic." src="assets/branding/drenyra-engram-banner-1.png" />
+<img width="1200" alt="Drenyra Engram flow — scoped observation → institutional memory/evidence chain → reconstructible context" src="assets/branding/drenyra-engram-flow-banner.svg" />
+
+<p><code>scoped observation → institutional memory/evidence chain → reconstructible context</code></p>
 
 </div>
 

@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="460" viewBox="0 0 1400 460" role="img" aria-label="Drenyra Engram flow — scoped observation, institutional memory and evidence chain, reconstructible context">
+  <!-- brand-system v0.2 flow banner: theme-aware (dark + light via prefers-color-scheme),
+       canonical tokens only (contracts/brand-system/tokens.json), zero embedded text.
+       Flow motif: scoped observation -> institutional memory/evidence chain ->
+       reconstructible context. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop class="g-bg1" offset="0%"/>
+      <stop class="g-bg2" offset="55%"/>
+      <stop class="g-bg3" offset="100%"/>
+    </linearGradient>
+    <linearGradient id="flow-c" x1="0" y1="0" x2="1" y2="0">
+      <stop class="g-c1" offset="0%"/>
+      <stop class="g-c2" offset="100%"/>
+    </linearGradient>
+    <linearGradient id="flow-v" x1="0" y1="0" x2="1" y2="0">
+      <stop class="g-v1" offset="0%"/>
+      <stop class="g-v2" offset="100%"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop class="g-card1" offset="0%"/>
+      <stop class="g-card2" offset="100%"/>
+    </linearGradient>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M 44 0 L 0 0 0 44" fill="none" stroke="var(--grid)" stroke-opacity="0.04" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <style>
+    :root {
+      --bg1: #0B0E11; --bg2: #12161B; --bg3: #1A1F26;
+      --grid: #FFFFFF;
+      --glow-c: #3CE6D8; --glow-v: #9B7FE8;
+      --c: #3CE6D8; --c-bright: #6AEFE4;
+      --v: #9B7FE8; --v-bright: #B8A2F0;
+      --ok: #4ADE94;
+      --n1: #12161B; --n2: #1A1F26; --n3: #20262E;
+      --border: #323A44; --border-subtle: #262C34;
+      --muted: #A8B0BC; --muted-dim: #6B7480;
+      --pending: #6B9FE8;
+      --spark: #6AEFE4;
+    }
+    .g-bg1 { stop-color: var(--bg1); }
+    .g-bg2 { stop-color: var(--bg2); }
+    .g-bg3 { stop-color: var(--bg3); }
+    .g-c1 { stop-color: var(--c); }
+    .g-c2 { stop-color: var(--c-bright); }
+    .g-v1 { stop-color: var(--v); }
+    .g-v2 { stop-color: var(--v-bright); }
+    .g-card1 { stop-color: var(--n1); }
+    .g-card2 { stop-color: var(--n2); }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg1: #FAFAF9; --bg2: #FFFFFF; --bg3: #F2F2F0;
+        --grid: #000000;
+        --glow-c: #2ECFC2; --glow-v: #6B54A8;
+        --c: #2ECFC2; --c-bright: #1F8A80;
+        --v: #6B54A8; --v-bright: #7B66C0;
+        --ok: #1A8F52;
+        --n1: #FFFFFF; --n2: #F2F2F0; --n3: #FFFFFF;
+        --border: #D4D4D0; --border-subtle: #E5E5E2;
+        --muted: #52565D; --muted-dim: #7A7F87;
+        --pending: #2E5FB8;
+        --spark: #1F8A80;
+      }
+    }
+  </style>
+
+  <!-- Background: canvas gradient + blueprint grid + cyan/violet aurora glows -->
+  <rect width="1400" height="460" fill="url(#bg)"/>
+  <rect width="1400" height="460" fill="url(#grid)"/>
+  <circle cx="1150" cy="90" r="280" fill="var(--glow-c)" opacity="0.06"/>
+  <circle cx="150" cy="410" r="320" fill="var(--glow-v)" opacity="0.05"/>
+
+  <!-- Node 1: scoped observation (scope ring + sector arc) -->
+  <g>
+    <circle cx="210" cy="235" r="54" fill="none" stroke="var(--border-subtle)" stroke-opacity="0.85"/>
+    <circle cx="210" cy="235" r="42" fill="none" stroke="var(--c)" stroke-width="3"/>
+    <path d="M 210 193 A 42 42 0 0 1 252 235" fill="none" stroke="var(--c)" stroke-opacity="0.55" stroke-width="2"/>
+    <circle cx="210" cy="235" r="6" fill="var(--c)"/>
+    <path d="M 210 178 L 210 184" fill="none" stroke="var(--muted)" stroke-width="2" stroke-opacity="0.7"/>
+    <circle cx="240" cy="206" r="3.5" fill="var(--spark)"/>
+  </g>
+
+  <!-- Flow: observation -> memory canopy (cyan) -->
+  <path d="M 268 235 C 350 235 420 235 500 235" fill="none" stroke="url(#flow-c)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M 492 228 L 506 235 L 492 242 Z" fill="var(--c)"/>
+  <circle cx="390" cy="235" r="3" fill="var(--spark)" opacity="0.9"/>
+
+  <!-- Node 2: institutional memory/evidence chain (curved canopy over document monolith) -->
+  <g>
+    <circle cx="560" cy="195" r="5" fill="var(--c)"/>
+    <circle cx="610" cy="170" r="5.5" fill="var(--v)"/>
+    <circle cx="665" cy="154" r="6" fill="var(--c)"/>
+    <circle cx="725" cy="150" r="6" fill="var(--v)"/>
+    <circle cx="785" cy="156" r="5.5" fill="var(--muted)"/>
+    <circle cx="840" cy="172" r="5" fill="var(--c)" opacity="0.85"/>
+    <circle cx="888" cy="195" r="4.5" fill="var(--v)" opacity="0.85"/>
+    <path d="M 560 195 C 580 182 595 175 610 170" fill="none" stroke="var(--c)" stroke-opacity="0.5" stroke-width="2"/>
+    <path d="M 610 170 C 632 161 648 156 665 154" fill="none" stroke="var(--v)" stroke-opacity="0.5" stroke-width="2"/>
+    <path d="M 665 154 C 690 151 705 150 725 150" fill="none" stroke="var(--c)" stroke-opacity="0.5" stroke-width="2"/>
+    <path d="M 725 150 C 750 152 770 154 785 156" fill="none" stroke="var(--v)" stroke-opacity="0.45" stroke-width="2"/>
+    <path d="M 785 156 C 805 163 822 168 840 172" fill="none" stroke="var(--c)" stroke-opacity="0.45" stroke-width="2"/>
+    <path d="M 840 172 C 858 180 872 188 888 195" fill="none" stroke="var(--v)" stroke-opacity="0.4" stroke-width="2"/>
+    <path d="M 560 195 C 640 205 760 205 888 195" fill="none" stroke="var(--border-subtle)" stroke-width="1.5" stroke-opacity="0.8"/>
+    <path d="M 640 168 L 638 240" fill="none" stroke="var(--border-subtle)" stroke-width="1.5"/>
+    <path d="M 725 152 L 725 240" fill="none" stroke="var(--border-subtle)" stroke-width="1.5"/>
+    <path d="M 810 162 L 812 240" fill="none" stroke="var(--border-subtle)" stroke-width="1.5"/>
+    <rect x="640" y="240" width="170" height="100" rx="10" fill="var(--n1)" stroke="var(--border)" stroke-width="1.5"/>
+    <rect x="648" y="248" width="154" height="84" rx="8" fill="none" stroke="var(--c)" stroke-opacity="0.35" stroke-width="1.5"/>
+    <rect x="660" y="262" width="120" height="8" rx="4" fill="var(--muted)" opacity="0.5"/>
+    <rect x="660" y="280" width="90" height="8" rx="4" fill="var(--muted)" opacity="0.4"/>
+    <rect x="660" y="298" width="110" height="8" rx="4" fill="var(--muted)" opacity="0.35"/>
+    <circle cx="670" cy="320" r="3.5" fill="var(--muted)" opacity="0.7"/>
+    <circle cx="700" cy="326" r="3.5" fill="var(--muted)" opacity="0.7"/>
+    <circle cx="730" cy="320" r="3.5" fill="var(--muted)" opacity="0.7"/>
+    <circle cx="786" cy="200" r="5" fill="var(--v)"/>
+  </g>
+
+  <!-- Flow: evidence chain -> reconstructible context (green, verified) -->
+  <path d="M 814 260 C 900 256 960 246 1036 235" fill="none" stroke="var(--ok)" stroke-width="3" stroke-linecap="round"/>
+  <path d="M 1028 229 L 1042 235 L 1028 241 Z" fill="var(--ok)"/>
+  <circle cx="920" cy="248" r="3" fill="var(--ok)"/>
+
+  <!-- Node 3: reconstructible context (document monolith + green seal + trail) -->
+  <g>
+    <rect x="1050" y="170" width="200" height="130" rx="12" fill="url(#card)" stroke="var(--border)" stroke-width="1.5"/>
+    <rect x="1062" y="184" width="120" height="8" rx="4" fill="var(--muted)" opacity="0.5"/>
+    <rect x="1062" y="202" width="90" height="8" rx="4" fill="var(--muted)" opacity="0.4"/>
+    <path d="M 1074 272 C 1082 280 1090 286 1100 292" fill="none" stroke="var(--muted)" stroke-opacity="0.5" stroke-width="1.5"/>
+    <circle cx="1076" cy="274" r="3" fill="var(--muted)" opacity="0.8"/>
+    <circle cx="1088" cy="284" r="3" fill="var(--muted)" opacity="0.8"/>
+    <circle cx="1102" cy="292" r="3" fill="var(--muted)" opacity="0.8"/>
+    <circle cx="1180" cy="262" r="34" fill="var(--ok)" opacity="0.14" stroke="var(--ok)" stroke-width="2"/>
+    <path d="M 1163 262 L 1175 274 L 1198 249" fill="none" stroke="var(--ok)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="1236" cy="182" r="3.5" fill="var(--spark)"/>
+  </g>
+</svg>
