@@ -296,7 +296,7 @@ func TestCLIVerifyMemoryRemovedEvidence(t *testing.T) {
 
 	// Link evidence through the CLI (mints an evidence_linked receipt); the
 	// memory still verifies clean.
-	stdout, stderr, code = runCLIEnv(t, env, "link-evidence", id, "--ref", "xml:FA01-0001", "--db", db)
+	stdout, stderr, code = runCLIEnv(t, env, "link-evidence", id, "--ref", "xml:FA01-0001", "--ruc", cliRucA, "--period", "202401", "--db", db)
 	if code != 0 {
 		t.Fatalf("link-evidence failed (exit %d): %s", code, stderr)
 	}

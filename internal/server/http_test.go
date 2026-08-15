@@ -92,7 +92,7 @@ func TestHTTPSaveAndGet(t *testing.T) {
 		t.Fatalf("decode save: %v", err)
 	}
 
-	status, raw = httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/"+result.Memory.Identity.ID, "", nil)
+	status, raw = httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/"+result.Memory.Identity.ID+"?ruc="+testRucA+"&organizationId="+testOrgID+"&companyId=acme&period="+testPeriod, "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("get status = %d, want 200; body %s", status, raw)
 	}
@@ -107,7 +107,7 @@ func TestHTTPSaveAndGet(t *testing.T) {
 
 func TestHTTPGetNotFound(t *testing.T) {
 	ts, _ := newTestHTTPServer(t, "")
-	status, raw := httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/no-such", "", nil)
+	status, raw := httpJSON(t, http.MethodGet, ts.URL+"/v1/observations/no-such?ruc="+testRucA+"&organizationId="+testOrgID+"&companyId=acme", "", nil)
 	if status != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body %s", status, raw)
 	}
@@ -184,7 +184,7 @@ func TestHTTPLifecycleConflict(t *testing.T) {
 
 	// Approving an ACTIVE (informative, never-gated) memory is an illegal
 	// transition → 409.
-	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/observations/"+id+"/approve", "",
+	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/observations/"+id+"/approve?ruc="+testRucA+"&organizationId="+testOrgID+"&companyId=acme&period="+testPeriod, "",
 		map[string]string{"actorId": "maria.torres", "actorKind": "human"})
 	if status != http.StatusConflict {
 		t.Fatalf("approve status = %d, want 409; body %s", status, raw)
@@ -204,7 +204,7 @@ func TestHTTPCompareSupersedes(t *testing.T) {
 		t.Fatalf("supersede: %v", err)
 	}
 
-	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/compare", "",
+	status, raw := httpJSON(t, http.MethodPost, ts.URL+"/v1/compare?ruc="+testRucA+"&organizationId="+testOrgID+"&companyId=acme&period="+testPeriod, "",
 		map[string]string{"idA": old.Identity.ID, "idB": target.Identity.ID})
 	if status != http.StatusOK {
 		t.Fatalf("compare status = %d, want 200; body %s", status, raw)

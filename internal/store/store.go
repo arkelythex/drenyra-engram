@@ -267,6 +267,10 @@ type Store interface {
 	RuleRefs(memoryID string) ([]string, error)
 	Relations() ([]core.RelationRecord, error)
 	TransitionLog() ([]core.StatusTransitionRecord, error)
+	// RelationsForScope / TransitionLogForScope: scope-filtered views for the
+	// HTTP adapter (contracts/scope.md rule 4 — no surface bypasses scope).
+	RelationsForScope(scope core.Scope) ([]core.RelationRecord, error)
+	TransitionLogForScope(scope core.Scope) ([]core.StatusTransitionRecord, error)
 	Doctor(ctx context.Context, opts DoctorOptions) (DoctorReport, error)
 	// FindPeriodClosure returns the period_closures projection row of the exact
 	// company scope, when one exists (v0.5.0 close foundation, design §2.2/§2.3).
@@ -5885,6 +5889,85 @@ func (s *SQLiteStore) Relations() ([]core.RelationRecord, error) {
 // TransitionLog returns every lifecycle audit-trail entry, insertion order.
 func (s *SQLiteStore) TransitionLog() ([]core.StatusTransitionRecord, error) {
 	rows, err := s.db.Query(`SELECT observation_id, from_status, to_status, actor, actor_kind, timestamp FROM transition_log ORDER BY rowid`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	records := make([]core.StatusTransitionRecord, 0)
+	for rows.Next() {
+		var (
+			observationID, from, to, actor, actorKind, timestamp string
+		)
+		if err := rows.Scan(&observationID, &from, &to, &actor, &actorKind, &timestamp); err != nil {
+			return nil, err
+		}
+		records = append(records, core.StatusTransitionRecord{
+			MemoryID:  observationID,
+			From:      core.MemoryStatus(from),
+			To:        core.MemoryStatus(to),
+			Actor:     actor,
+			ActorKind: core.ActorKind(actorKind),
+			Timestamp: timestamp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// RelationsForScope returns only the relations whose FROM memory belongs to
+// the exact scope (contracts/scope.md rule 4: no surface bypasses scope). The
+// HTTP adapter REQUIRES caller scope for /v1/relations; the global Relations()
+// stays for internal use only.
+func (s *SQLiteStore) RelationsForScope(scope core.Scope) ([]core.RelationRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT r.from_id, r.to_id, r.relation, r.actor, r.timestamp
+		FROM relations r
+		JOIN observations o ON o.id = r.from_id
+		WHERE o.scope_kind = ? AND o.organization_id = ? AND o.company_id = ? AND o.ruc = ? AND o.period = ?
+		ORDER BY r.rowid`,
+		scope.Kind, scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	records := make([]core.RelationRecord, 0)
+	for rows.Next() {
+		var (
+			fromID, toID, relation, actor, timestamp string
+		)
+		if err := rows.Scan(&fromID, &toID, &relation, &actor, &timestamp); err != nil {
+			return nil, err
+		}
+		records = append(records, core.RelationRecord{
+			FromID:    fromID,
+			ToID:      toID,
+			Relation:  core.Relation(relation),
+			Actor:     actor,
+			Timestamp: timestamp,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+// TransitionLogForScope returns only the lifecycle audit entries whose memory
+// belongs to the exact scope (contracts/scope.md rule 4). The HTTP adapter
+// REQUIRES caller scope for /v1/transitions; the global TransitionLog() stays
+// for internal use only.
+func (s *SQLiteStore) TransitionLogForScope(scope core.Scope) ([]core.StatusTransitionRecord, error) {
+	rows, err := s.db.Query(`
+		SELECT t.observation_id, t.from_status, t.to_status, t.actor, t.actor_kind, t.timestamp
+		FROM transition_log t
+		JOIN observations o ON o.id = t.observation_id
+		WHERE o.scope_kind = ? AND o.organization_id = ? AND o.company_id = ? AND o.ruc = ? AND o.period = ?
+		ORDER BY t.rowid`,
+		scope.Kind, scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period)
 	if err != nil {
 		return nil, err
 	}

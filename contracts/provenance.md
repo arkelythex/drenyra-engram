@@ -86,7 +86,7 @@ block J).
 > every adapter, including the PostgreSQL authority (ADR-002).
 
 1. **Additive, reversible migrations.** Store layout is versioned
-   (schema_version = 2); migrations ALTER additively and never rewrite or
+   (schema_version); migrations ALTER additively and never rewrite or
    delete history. A store with an unsupported version fails closed.
 2. **Corruption fails closed.** Checksums and schema guards detect corruption;
    silent repair is forbidden.
@@ -97,6 +97,28 @@ block J).
    superseded→superseded, otherwise→active — migrated history is informative
    and never blocked by the gate), and the flat provenance is re-encoded into
    `source_json`. Original v1 columns are preserved for historical reads.
+
+### Migration provenance for schema v14 (frozen)
+
+> Frozen by the migrations audit closure
+> (docs/due-diligence/2026-08-product-architecture-audit.md, block G). The
+> ordered migration code and the final schema version — not a history table
+> — are the authoritative provenance record for this release.
+
+- **Authoritative record.** The ordered migration functions in their
+  reviewed code order (`migrateV1ToV2` … `migrateV13ToV14`), the
+  one-transaction-per-step rule, and the final `schema_version = 14` are
+  the authoritative migration provenance record for this release.
+- **One transaction per step.** Each migration step runs in its own single
+  transaction and advances `schema_version` ONLY after the step succeeded;
+  an interrupted step rolls back to a coherent prior version and the chain
+  re-runs cleanly through the normal `Open` path.
+- **No history table.** No production migration-history table,
+  per-deployment event ledger, or schema v15 is introduced by this change.
+- **What this proves.** Current schema generation and the deterministic
+  code path that produced it.
+- **What this does NOT prove.** Wall-clock execution history, operator
+  identity, or per-deployment migration events.
 
 ## Conformance
 

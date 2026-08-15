@@ -164,6 +164,18 @@ func (a *API) Transitions() ([]core.StatusTransitionRecord, error) {
 	return a.Store.TransitionLog()
 }
 
+// RelationsForScope returns the relations scoped to one exact company/RUC/
+// period (the HTTP /v1/relations surface — contracts/scope.md rule 4).
+func (a *API) RelationsForScope(scope core.Scope) ([]core.RelationRecord, error) {
+	return a.Store.RelationsForScope(scope)
+}
+
+// TransitionLogForScope returns the lifecycle audit entries scoped to one exact
+// company/RUC/period (the HTTP /v1/transitions surface).
+func (a *API) TransitionLogForScope(scope core.Scope) ([]core.StatusTransitionRecord, error) {
+	return a.Store.TransitionLogForScope(scope)
+}
+
 // Doctor returns the store health snapshot (schema guards, counts, and the
 // G-6 SQLite health checks — routine mode: quick_check + foreign_key_check;
 // integrity_check is drill-only and never runs through this API).
@@ -616,9 +628,17 @@ func (a *API) Supersede(memoryID, successorID string, actor core.Source) (Supers
 // AFTER write. The memory itself is never mutated (immutability); links live in
 // the dedicated evidence_links table. Returns the full deduplicated list
 // (write-time refs + links).
-func (a *API) LinkEvidence(memoryID string, refs []string, actor string) ([]string, error) {
+//
+// Scope-first (contracts/scope.md rule 4): a link may only grow on a memory
+// inside the caller's EXACT scope. A foreign-scope memory reads exactly like a
+// missing one (MEMORY_NOT_FOUND, non-enumerating — the same pattern as the
+// HTTP adapter scope fix), and the mutation never runs.
+func (a *API) LinkEvidence(memoryID string, refs []string, actor string, scope core.Scope) ([]string, error) {
 	memory, ok := a.Store.FindByID(memoryID)
 	if !ok {
+		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if !core.ScopeEquals(memory.Scope, scope) {
 		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
 	}
 	if actor == "" {
@@ -646,9 +666,16 @@ func (a *API) LinkEvidence(memoryID string, refs []string, actor string) ([]stri
 
 // LinkRules attaches rule/policy references (e.g. "policy/igv/late-document-v3")
 // to a memory AFTER write. Same immutability contract as LinkEvidence.
-func (a *API) LinkRules(memoryID string, refs []string, actor string) ([]string, error) {
+//
+// Scope-first (contracts/scope.md rule 4): a rule link may only grow on a
+// memory inside the caller's EXACT scope; a foreign-scope memory reads as
+// MEMORY_NOT_FOUND and the mutation never runs.
+func (a *API) LinkRules(memoryID string, refs []string, actor string, scope core.Scope) ([]string, error) {
 	memory, ok := a.Store.FindByID(memoryID)
 	if !ok {
+		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if !core.ScopeEquals(memory.Scope, scope) {
 		return nil, errors.New("MEMORY_NOT_FOUND: " + memoryID)
 	}
 	if actor == "" {
@@ -681,9 +708,16 @@ func (a *API) LinkRules(memoryID string, refs []string, actor string) ([]string,
 // version/date for the same (memoryID, ref) pair fails
 // RULE_LINK_VERSION_CONFLICT). Structured metadata never contributes to the
 // envelope; the bare refs do.
-func (a *API) LinkRuleVersion(memoryID string, link core.RuleLink, actor string) error {
+//
+// Scope-first (contracts/scope.md rule 4): a structured rule link may only
+// pin a memory inside the caller's EXACT scope; a foreign-scope memory reads
+// as MEMORY_NOT_FOUND and the mutation never runs.
+func (a *API) LinkRuleVersion(memoryID string, link core.RuleLink, actor string, scope core.Scope) error {
 	memory, ok := a.Store.FindByID(memoryID)
 	if !ok {
+		return errors.New("MEMORY_NOT_FOUND: " + memoryID)
+	}
+	if !core.ScopeEquals(memory.Scope, scope) {
 		return errors.New("MEMORY_NOT_FOUND: " + memoryID)
 	}
 	if actor == "" {

@@ -148,10 +148,10 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save compras entry: %v", err)
 	}
-	if _, err := api.LinkEvidence(compras.Memory.Identity.ID, []string{invoice947XML.Object.ObjectID}, "test-agent"); err != nil {
+	if _, err := api.LinkEvidence(compras.Memory.Identity.ID, []string{invoice947XML.Object.ObjectID}, "test-agent", fixtureScope()); err != nil {
 		t.Fatalf("link F001-947 XML evidence: %v", err)
 	}
-	if _, err := api.LinkEvidence(compras.Memory.Identity.ID, []string{invoice947CDR.Object.ObjectID}, "test-agent"); err != nil {
+	if _, err := api.LinkEvidence(compras.Memory.Identity.ID, []string{invoice947CDR.Object.ObjectID}, "test-agent", fixtureScope()); err != nil {
 		t.Fatalf("link F001-947 CDR evidence: %v", err)
 	}
 	comprasMem, err := api.Get(compras.Memory.Identity.ID)
@@ -180,10 +180,10 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save late adjustment: %v", err)
 	}
-	if _, err := api.LinkEvidence(lateAdj.Memory.Identity.ID, []string{invoice948XML.Object.ObjectID}, "test-agent"); err != nil {
+	if _, err := api.LinkEvidence(lateAdj.Memory.Identity.ID, []string{invoice948XML.Object.ObjectID}, "test-agent", fixtureScope()); err != nil {
 		t.Fatalf("link F001-948 XML evidence: %v", err)
 	}
-	if _, err := api.LinkEvidence(lateAdj.Memory.Identity.ID, []string{invoice948CDR.Object.ObjectID}, "test-agent"); err != nil {
+	if _, err := api.LinkEvidence(lateAdj.Memory.Identity.ID, []string{invoice948CDR.Object.ObjectID}, "test-agent", fixtureScope()); err != nil {
 		t.Fatalf("link F001-948 CDR evidence: %v", err)
 	}
 	lateMem, err := api.Get(lateAdj.Memory.Identity.ID)

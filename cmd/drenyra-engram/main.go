@@ -2267,12 +2267,15 @@ func cmdLinkEvidence(args []string) int {
 	fs := flag.NewFlagSet("link-evidence", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
 	actor := fs.String("actor", "cli", "actor id recorded on the link (default cli)")
+	ruc := fs.String("ruc", "", "company RUC (exactly 11 digits)")
+	period := fs.String("period", "", "fiscal period YYYYMM (optional; exact scope)")
+	organization := fs.String("organization", "", "organization id (default cli)")
 	var refs multiFlag
 	fs.Var(&refs, "ref", "evidence reference (repeatable)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--actor <name>] [--db <path>]")
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--actor <name>] [--db <path>]")
 	}
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--actor": true, "--ref": true})); err != nil {
+	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--actor": true, "--ref": true, "--ruc": true, "--period": true, "--organization": true})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -2287,6 +2290,13 @@ func cmdLinkEvidence(args []string) int {
 		fs.Usage()
 		return 2
 	}
+	// Scope-first (contracts/scope.md rule 4): the caller must supply the
+	// memory's EXACT company scope; a foreign-scope memory reads
+	// MEMORY_NOT_FOUND (non-enumerating — same as the HTTP adapter fix).
+	scope, err := objectCLIScope(*organization, *ruc, *period)
+	if err != nil {
+		return fail("%v", err)
+	}
 
 	st, err := openStore(*dbPath)
 	if err != nil {
@@ -2295,7 +2305,7 @@ func cmdLinkEvidence(args []string) int {
 	defer func() { _ = st.Close() }()
 
 	api := server.New(st, "cli")
-	out, err := api.LinkEvidence(rest[0], refs, *actor)
+	out, err := api.LinkEvidence(rest[0], refs, *actor, scope)
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -3989,7 +3999,7 @@ Usage:
   drenyra-engram reject <id> [--actor <name>] [--db <path>]    (human gate)
   drenyra-engram void <id> [--actor <name>] [--db <path>]
   drenyra-engram supersede <id> --target <targetId> [--actor <name>] [--db <path>]
-  drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] [--db <path>]
+  drenyra-engram link-evidence <id> --ref <ref> [--ref <ref>...] --ruc <11 digits> [--period <YYYYMM>] [--organization <id>] [--db <path>]
   drenyra-engram object store <file> --ruc <11 digits> [--period <YYYYMM>] [--content-type <mime>] [--objects <dir>] [--db <path>]   (v0.7.0 WORM evidence object; never an approval)
   drenyra-engram object get <sha256> --ruc <11 digits> [--period <YYYYMM>] [--objects <dir>] [--db <path>]   (scope-first read)
   drenyra-engram hold place <object-id> --kind <legal|audit|dispute|fiscalization|other> --reason <text> --owner <subject-id> [--request-id <id>] [--db <path>]   (v0.8 authenticated preservation act; emergency bypass: no closed-period gate)

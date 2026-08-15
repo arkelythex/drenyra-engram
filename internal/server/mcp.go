@@ -784,12 +784,13 @@ func ToolCatalog() []map[string]any {
 		},
 		{
 			"name":        "accounting_link_evidence",
-			"description": "Attach evidence references (XML/PDF/CDR/extracto) to a memory AFTER write — the memory stays immutable, the links grow.",
+			"description": "Attach evidence references (XML/PDF/CDR/extracto) to a memory AFTER write — the memory stays immutable, the links grow. SCOPE-FIRST (contracts/scope.md rule 4): the caller's exact scope must equal the target memory's scope (MEMORY_NOT_FOUND otherwise — non-enumerating).",
 			"inputSchema": objectSchema(map[string]any{
 				"id":    stringSchema("memory id"),
 				"refs":  stringSchema("comma-separated evidence refs"),
 				"actor": stringSchema("actor id recorded on the links (optional)"),
-			}, "id", "refs"),
+				"scope": stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"}`),
+			}, "id", "refs", "scope"),
 		},
 		{
 			"name":        "accounting_period_summary",
@@ -2540,10 +2541,14 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		return textContent(mustJSON(result)), nil
 
 	case "accounting_link_evidence":
+		// Scope-first (contracts/scope.md rule 4): the caller's exact scope must
+		// equal the target memory's scope; a foreign-scope memory reads
+		// MEMORY_NOT_FOUND (non-enumerating — same as the HTTP adapter fix).
 		var args struct {
 			ID    string `json:"id"`
 			Refs  string `json:"refs"`
 			Actor string `json:"actor"`
+			Scope string `json:"scope"`
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
@@ -2554,7 +2559,14 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("refs", args.Refs); err != nil {
 			return nil, err
 		}
-		refs, err := m.api.LinkEvidence(args.ID, splitCSV(args.Refs), args.Actor)
+		if err := requireParams("scope", args.Scope); err != nil {
+			return nil, err
+		}
+		scope, err := decodeScope(args.Scope)
+		if err != nil {
+			return errTextContent(err), nil
+		}
+		refs, err := m.api.LinkEvidence(args.ID, splitCSV(args.Refs), args.Actor, scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}

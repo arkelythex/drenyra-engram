@@ -91,7 +91,7 @@ func TestPeriodSummaryKillerDemo4011(t *testing.T) {
 	if approved.Status != core.StatusApproved {
 		t.Fatalf("ajuste status = %q, want approved", approved.Status)
 	}
-	refs, err := api.LinkEvidence(approved.Identity.ID, []string{"xml:F001-948", "cdr:F001-948"}, "maria.torres")
+	refs, err := api.LinkEvidence(approved.Identity.ID, []string{"xml:F001-948", "cdr:F001-948"}, "maria.torres", demoScope())
 	if err != nil {
 		t.Fatalf("link evidence: %v", err)
 	}

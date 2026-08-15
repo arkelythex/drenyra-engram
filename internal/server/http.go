@@ -461,9 +461,22 @@ func (h *HTTPServer) handleSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPServer) handleGet(w http.ResponseWriter, r *http.Request) {
+	// Scope-first (contracts/scope.md rule 4): a memory is only readable under
+	// its EXACT scope tuple. The caller must supply ?ruc=&period= (same
+	// derivation as GetByTopic/Chain/Context); a scope mismatch is
+	// indistinguishable from a missing memory (no existence disclosure).
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
 	observation, err := h.api.Get(r.PathValue("id"))
 	if err != nil {
 		h.writeError(w, err)
+		return
+	}
+	if !core.ScopeEquals(observation.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+r.PathValue("id")))
 		return
 	}
 	writeJSON(w, http.StatusOK, observation)
@@ -559,6 +572,24 @@ func (h *HTTPServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errors.New("INVALID_COMPARE: idA and idB are required"))
 		return
 	}
+	// Scope-first (contracts/scope.md rule 4): both compared memories must live
+	// inside the caller's exact scope. ?ruc=&period= required; a scope mismatch
+	// is indistinguishable from a missing memory.
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	aMem, getErr := h.api.Get(body.IDA)
+	if getErr != nil || !core.ScopeEquals(aMem.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+body.IDA))
+		return
+	}
+	bMem, getErr := h.api.Get(body.IDB)
+	if getErr != nil || !core.ScopeEquals(bMem.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+body.IDB))
+		return
+	}
 	output, err := h.api.Compare(body.IDA, body.IDB)
 	if err != nil {
 		h.writeError(w, err)
@@ -607,7 +638,25 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, errors.New("INVALID_SUPERSEDE_TARGET: targetId is required"))
 		return
 	}
-	output, err := h.api.Supersede(r.PathValue("id"), body.TargetID, h.httpSource(body.Actor))
+	// Scope-first (contracts/scope.md rule 4): both the superseded memory and its
+	// successor must live inside the caller's exact scope.
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	memory, getErr := h.api.Get(id)
+	if getErr != nil || !core.ScopeEquals(memory.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+id))
+		return
+	}
+	target, getErr := h.api.Get(body.TargetID)
+	if getErr != nil || !core.ScopeEquals(target.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+body.TargetID))
+		return
+	}
+	output, err := h.api.Supersede(id, body.TargetID, h.httpSource(body.Actor))
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -1586,7 +1635,22 @@ func (h *HTTPServer) writeGateTransition(w http.ResponseWriter, r *http.Request,
 			return
 		}
 	}
-	output, err := run(r.PathValue("id"), h.httpSource(body.Actor))
+	// Scope-first (contracts/scope.md rule 4): a lifecycle mutation may only
+	// target a memory inside the caller's exact scope. ?ruc=&period= required
+	// (same derivation as the scope-first reads); a scope mismatch is
+	// indistinguishable from a missing memory.
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	id := r.PathValue("id")
+	memory, getErr := h.api.Get(id)
+	if getErr != nil || !core.ScopeEquals(memory.Scope, scope) {
+		h.writeError(w, errors.New("MEMORY_NOT_FOUND: "+id))
+		return
+	}
+	output, err := run(id, h.httpSource(body.Actor))
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -1595,7 +1659,14 @@ func (h *HTTPServer) writeGateTransition(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *HTTPServer) handleRelations(w http.ResponseWriter, r *http.Request) {
-	relations, err := h.api.Relations()
+	// Scope-first (contracts/scope.md rule 4): relations are only visible under
+	// the caller's exact scope. ?ruc=&period= required (same as GetByTopic).
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	relations, err := h.api.RelationsForScope(scope)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -1604,7 +1675,15 @@ func (h *HTTPServer) handleRelations(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPServer) handleTransitions(w http.ResponseWriter, r *http.Request) {
-	transitions, err := h.api.Transitions()
+	// Scope-first (contracts/scope.md rule 4): the audit trail is only visible
+	// under the caller's exact scope. ?ruc=&period= required (same as
+	// GetByTopic).
+	scope, err := httpQueryScope(r, false)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	transitions, err := h.api.TransitionLogForScope(scope)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -1632,6 +1711,12 @@ func (h *HTTPServer) handleDoctor(w http.ResponseWriter, r *http.Request) {
 // export must resolve the same company scope the stored evidence uses, never
 // the RUC); when companyId is absent the established HTTP/CLI derivation
 // (companyId := ruc) is kept for the other scope-first read surfaces.
+// httpQueryScope derives the caller's scope from query parameters. The scope is
+// CALLER-ASSERTED (pre-existing derivation shared by GetByTopic/Chain/Context,
+// contracts/scope.md rule 4): it is an exact-scope equality boundary, NOT
+// identity-to-scope binding. Binding a verified principal to this scope is a
+// production identity prerequisite (audit block I / OIDC issue #18) and is not
+// claimed by the adapter scope checks.
 func httpQueryScope(r *http.Request, institutional bool) (core.Scope, error) {
 	query := r.URL.Query()
 	if institutional || query.Get("kind") == "institutional" {

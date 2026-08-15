@@ -55,8 +55,13 @@ and the CLI parity test in
 - **OCR / content search over objects** — objects are opaque bytes; the engine
   never parses or executes their content (data, never instructions).
 - **SUNAT/ERP object ingestion** — no integration surface.
-- **Production object-store operations** — backup/restore drills,
-  encryption-at-rest/TDE, recovery objectives are not demonstrated.
+- **Production object-store operations** — split statement: repository-local
+  snapshot/restore and marked-copy corruption drills are DELIVERED
+  (`internal/store/drill.go` `CreateDrillSnapshot`; `internal/store/drill_test.go`
+  `TestRunRestoreDrillSuccess`, `TestRunCorruptionDrillFullPath`; see
+  [operability-evidence.md](operability-evidence.md)); cloud/remote operations,
+  encryption-at-rest/TDE, deployment-owned numerical recovery objectives, and
+  externally run production drills remain explicitly unproven.
 
 Object storage never authorizes anything: storing an object is a
 provenance-recorded act, not an approval (non-authorization boundary).
