@@ -498,3 +498,19 @@ returned Result Contract envelope.
 - [ ] 152–154 Bounded review per PR boundary, verify phase, archive (parent)
 
 Implementation-owned task set is COMPLETE. Parent-owned rows untouched byte-for-byte.
+
+## Delivery — review, merge, push to main (APPENDED by orchestrator, post-apply)
+
+**status:** DELIVERED — the parent-owned lifecycle gates are complete.
+
+**Review (native bounded, one candidate per RDD workspace freeze):**
+
+| Lineage | Candidate | Result |
+|---|---|---|
+| `review-bd7751cd5b4e8293` | Frozen Q/G/Z/evidence-pass workspace candidate (19 files, 3420 lines, high → 4R) | 1 CRITICAL `R1-caller-controlled-scope` → ONE bounded correction (audit Q row bounded PASS wording + caller-asserted scope documented in httpQueryScope + matrix HTTP invocators note + relations seed + 400/404/409 denial tightening + dead-branch removal) → approved, pre-commit gate ALLOW, commit `2f2f251` |
+| `review-114d210a8af75ab0` | Merged candidate after origin advanced (committed range 53e95d9..HEAD, 20 files) | WARNING/SUGGESTION only → approved; delivery range exceeded genesis (ROADMAP) → re-reviewed on the full delivery range |
+| `review-983059cb39d4ef37` | Full delivery range f997abc..HEAD (21 files, 3492 lines, high → 4R) | WARNING/SUGGESTION only → approved, pre-push gate ALLOW |
+
+**Delivery:** chain merged to main as `d7f89d2` (parents `2f2f251` + `f997abc`), pushed to origin/main (fast-forward `f997abc..d7f89d2`, 2026-08-15). Origin had advanced mid-review with `f997abc` (#25 README-align); the user chose merge + re-review (non-destructive) over force-push/RDD-disable.
+
+**Remaining:** verify phase (parent-owned, task 153) → archive (task 154).

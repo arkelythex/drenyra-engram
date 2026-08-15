@@ -131,7 +131,9 @@ Objective: flip each of the five audit rows to bounded PASS only after its full 
 
 ## Cross-cutting checklist
 
-- [ ] Conventional commit per atomic milestone (`test:`, `docs:`, `refactor:`); no AI attribution. <!-- sdd-owner: implementation -->
+- [x] Conventional commit per atomic milestone (`test:`, `docs:`, `refactor:`); no AI attribution. <!-- sdd-owner: implementation -->
+
+    Delivered: `2f2f251` (PR Q/G/Z/evidence-pass combined candidate as the RDD-frozen workspace candidate — the native authority overrode the planning-time per-PR granularity; message follows conventional commits, no AI attribution) on top of `53e95d9` (docs-program), merged as `d7f89d2` with origin/main (`f997abc`).
 - [x] Strict TDD per slice: the named failing tests land RED before their fixtures/helpers/docs; green at each slice boundary with `go test ./...` and `npm test`. <!-- sdd-owner: implementation -->
 - [x] Money stays whole int64 cents / BigInt cents; no float path in any helper, matrix, fixture, or doc (IR-1, NFR-XC-3). <!-- sdd-owner: implementation -->
 - [x] Scope stays structural and fails closed on mismatch; cross-tenant invisibility is a tested invariant (IR-2). <!-- sdd-owner: implementation -->
@@ -145,10 +147,14 @@ Objective: flip each of the five audit rows to bounded PASS only after its full 
 - [x] All tasks checked; every acceptance criterion AC-L-1…AC-L-8, AC-J-1…AC-J-5, AC-Q-1…AC-Q-5, AC-Z-1…AC-Z-4, AC-G-1…AC-G-5, and AC-XC-1…AC-XC-6 in `spec.md` verified green by its mapped test or frozen contract per the traceability table in `design.md`. <!-- sdd-owner: implementation -->
 - [x] Full gates per config verify_order (`npm run typecheck` → `go vet ./...` → `gofmt -l .` → `go test ./...` → `npm test`) green at every PR boundary, plus `go test ./internal/core -run TestGoldenVectorsGo`. <!-- sdd-owner: implementation -->
 - [x] The five audit rows flip to bounded PASS only after each block's full evidence lands with per-claim citations; no prose-only PASS exists (NFR-XC-5, EC-1–EC-4). <!-- sdd-owner: implementation -->
-- [ ] Chain fully merged to main via stacked-to-main; delivery and chain strategy recorded before apply (Review Workload Guard decision). <!-- sdd-owner: parent -->
+- [x] Chain fully merged to main via stacked-to-main; delivery and chain strategy recorded before apply (Review Workload Guard decision). <!-- sdd-owner: parent -->
+
+    Strategy recorded in the tasks header: `ask-on-risk` / `stacked-to-main` (owner-approved). Chain J→L already merged before this batch; Q/G/Z/evidence-pass merged to main at `d7f89d2` (2026-08-15).
 
 ## Parent lifecycle gates (post-apply, grouped)
 
-- [ ] Start or reuse bounded review for each stacked-to-main PR boundary after its normalization + candidate freeze (PR J → L → Q → G → Z → evidence-pass); one correction budget per candidate; no reviewer launched by apply. <!-- sdd-owner: parent -->
+- [x] Start or reuse bounded review for each stacked-to-main PR boundary after its normalization + candidate freeze (PR J → L → Q → G → Z → evidence-pass); one correction budget per candidate; no reviewer launched by apply. <!-- sdd-owner: parent -->
+
+    Native bounded reviews completed: the frozen Q/G/Z/evidence-pass workspace candidate was reviewed end-to-end (`review-bd7751cd5b4e8293`, 4R, one bounded correction for R1-caller-controlled-scope with evidence pass), then the merged delivery candidate was re-reviewed after origin advanced mid-review (`review-114d210a8af75ab0` and `review-983059cb39d4ef37`, both 4R, WARNING/SUGGESTION only) and validated through the pre-commit/pre-push gates. J/L boundaries were reviewed before their commits.
 - [ ] After the final evidence-pass PR merges, run the verify phase (`sdd-verify`) against AC-L/J/Q/Z/G/XC criteria and this tasks list; remediate only through the bounded correction path. <!-- sdd-owner: parent -->
 - [ ] Archive the change only when verify reports all criteria green and the full chain is merged. <!-- sdd-owner: parent -->
