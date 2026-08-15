@@ -91,6 +91,41 @@ and [dominion-integration.md](docs/ecosystem/dominion-integration.md).
 
 Memory is **not** evidence — only a verifiable external response proves — Engram's non-authorization boundary is enforced at every surface (the MCP catalog, CLI, and HTTP API expose no `authorize`/`approve`/`allow` command), and Engram remains the **open** component (Apache-2.0) while the commercial core stays private.
 
+- **AccountingMemory v2** — structured institutional accounting memory with
+  eight kinds (`fact`, `evidence`, `decision`, `rule`, `exception`,
+  `control`, `obligation`, `summary`).
+- **Human approval gate** — memories with a fiscal effect
+  (`journal_entry`, `declaration`, `closing`, `adjustment`,
+  `reclassification`, `approval`, `sunat_filing`) are saved `pending_review`
+  and only a HUMAN actor can approve them (`GATE_REQUIRES_HUMAN` otherwise).
+- **Triple timestamps** — `effectiveAt` (when it happened accounting-wise),
+  `recordedAt` (when it entered the system), `observedAt` (when detected):
+  a late event affecting a previous closed period is visible as such.
+- **Evidence-backed relations** — 17 relations (`supports`, `contradicts`,
+  `explains`, `reconciles`, `reverses`, `approved_by`, …) turn memory into
+  an accounting knowledge graph.
+- **Local-first evidence objects (v0.7.0)** — immutable artifact bytes
+  (XML/PDF/CDR/extracto) stored WRITE-ONCE-READ-MANY under a
+  content-addressed layout (`objects/<sha[0:2]>/<sha[2:4]>/<sha256>`); the
+  object id IS the SHA-256 of the bytes (identical bytes → duplicate NO-OP),
+  schema-v8 immutable metadata, `object_stored` receipts, scoped store/get,
+  and `verify object` re-hashing stored bytes. Deferred: retention, legal
+  hold, export, purge, cloud storage.
+- **Canonical content hashes** — `contentHash` identifies the immutable
+  content; history never mutates, supersession is explicit and atomic.
+- **Institutional knowledge** — policies, conventions, and precedents that
+  outlive sessions.
+- **Mission summaries and learnings** — persisted for cross-session recovery.
+- **Vigencia** — effective/expiry semantics so stale knowledge is visible,
+  not silently trusted.
+- **Scope-first search** — company/RUC/period filters are first-class, not
+  post-filters; cross-tenant isolation is structural.
+- **Explainable period summary** — the killer demo: why did account 4011 end
+  with this balance (facts, approved adjustments, rules applied, evidence,
+  late exceptions — ordered by accounting-effective date).
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (50 MCP tools: 37
+  `accounting_*` + 13 `engram_*`).
+
 ## Quick start
 
 ### Install
@@ -167,6 +202,16 @@ agent**. Reproduced end-to-end in `TestReconstructibleCloseFixture`
 | **accounting_** (44) | record/search/timeline, approve, close, judgments, reconciliations, review queue/detail/reject/return, rule show/history/impact, object store/get/ingest, retention/holds/purge/export, period comparison |
 
 The catalog has **no authorize/approve/allow tool** — memory never authorizes.
+
+### Production identity (OIDC)
+
+`drenyra-engram serve` can validate OpenID Connect access tokens as a first
+production identity slice: stateless RS256 JWT validation with exact
+issuer/audience, a DB membership/scope cross-check, and standard assurance
+only (no MFA elevation, no revocation beyond DB membership). Enable it with
+`DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE`; a partial
+`DRENYRA_OIDC_*` set fails startup. See
+[docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
 
 ### CLI
 

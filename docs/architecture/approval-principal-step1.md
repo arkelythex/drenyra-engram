@@ -18,7 +18,7 @@ Scope: Go engine plus the TypeScript semantic mirror. v0.3.0 hash bytes and exis
 
 Add `internal/auth`:
 
-- `AuthenticationMethod`: `oidc | session | service_assertion | local_dev` (`oidc` recognized but resolver returns `AUTHENTICATION_REQUIRED` in Step 1).
+- `AuthenticationMethod`: `oidc | session | service_assertion | local_dev` (`oidc` recognized but resolver returns `AUTHENTICATION_REQUIRED` in Step 1; the stateless access-token slice now resolves it on the HTTP surface — [oidc-access-token-identity.md](oidc-access-token-identity.md)).
 - `AssuranceLevel`: `low | standard | strong`.
 - `AccountingRole`: `accountant | senior_accountant | controller | tax_reviewer | authorized_tax_professional`.
 - `VerifiedApprovalPrincipal` has unexported fields and read-only getters. There is no struct literal or public arbitrary-input constructor outside this package.
@@ -208,7 +208,7 @@ Test helpers call `store.SeedIdentity` directly on temporary databases; they nev
 - `transition_log` has no unique constraint. Do not retrofit one in v3; approval uniqueness belongs to the new event table.
 - Cross-tenant checks intentionally return `TENANT_SCOPE_MISMATCH` but never title/content/RUC. Logging must also avoid command bodies and credentials.
 - `Validity`/vigencia is not in `ComputeEnvelopeHash`; the current hash covers timestamps but not `Validity` (`internal/core/types.go:441-459`). Step 1 freezes v0.3 hash bytes, so vigencia changes cannot trigger `ENVELOPE_MISMATCH`. Fixing that requires a separately versioned envelope-hash contract and regenerated legacy goldens.
-- Segregation of duties, blocked periods, dual approval, OIDC, signed service assertions, and Ed25519 receipts remain later steps; ADR-003 lists them but the binding Step 1 does not define their data/policy contracts.
+- Segregation of duties, blocked periods, dual approval, MFA/ACR elevation, signed service assertions, and Ed25519 receipts remain later steps; ADR-003 lists them but the binding Step 1 does not define their data/policy contracts. OIDC itself is no longer deferred: the stateless access-token slice (RS256, exact issuer/audience, DB membership/scope cross-check, standard assurance only) is implemented — [oidc-access-token-identity.md](oidc-access-token-identity.md).
 
 ## Resolved decisions (user-confirmed, 2026-08-05)
 

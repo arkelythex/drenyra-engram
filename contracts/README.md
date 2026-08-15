@@ -6,10 +6,17 @@
 
 | Contract                    | Version | Status | Governs                          |
 | --------------------------- | ------- | ------ | -------------------------------- |
-| [memory](memory.md)         | 0.1-draft | Draft | Observation model and storage    |
-| [scope](scope.md)           | 0.1-draft | Draft | Company/RUC/period scoping       |
-| [lifecycle](lifecycle.md)   | 0.1-draft | Draft | Observation lifecycle + vigencia |
-| [provenance](provenance.md) | 0.1-draft | Draft | Audit metadata + non-authorization boundary |
+| [approval](approval.md)     | 0.4.0   | Frozen (Step 1) | Authenticated professional approval: verified principal, atomic H1/H2 transition, versioned policy |
+| [closing](closing.md)       | 0.5.0   | Frozen | Monthly close (cierre) and the enforceable period gate |
+| [judgment](judgment.md)     | 0.4.0   | Frozen (Step 2) | Adjudicable conflicts: propose/confirm/reject/withdraw/supersede, principal-only confirmation |
+| [lifecycle](lifecycle.md)   | 0.5     | Frozen-for-0.5 | Observation lifecycle machine + vigencia |
+| [memory](memory.md)         | 0.2     | Frozen-for-0.2 | AccountingMemory observation model and storage |
+| [period-comparison](period-comparison.md) | 0.5.0 | Frozen | Period-over-period comparison + session context (DRENYRA_DEFAULT_SCOPE) |
+| [provenance](provenance.md) | 0.2     | Frozen-for-0.2 | Audit metadata + non-authorization boundary |
+| [receipts](receipts.md)     | 0.4.0   | Frozen (Step 3) | Ed25519 action receipts + signing-key lifecycle |
+| [reconciliation](reconciliation.md) | 0.5.0 | Frozen | First-class adjudicated reconciliations |
+| [scope](scope.md)           | 0.2     | Frozen-for-0.2 | Company/RUC/period scoping, cross-tenant isolation |
+| [verification](verification.md) | 0.4.0 | Frozen (Step 4) | Offline verification layers; "Accounting correctness: NOT ASSERTED" |
 
 ## Contract requirements
 
