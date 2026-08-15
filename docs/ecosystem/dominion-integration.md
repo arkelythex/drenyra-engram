@@ -72,7 +72,7 @@ readiness as a whole is deployment-owned):
 
 | Item | Status | Evidence / follow-up |
 |---|---|---|
-| OIDC access-token identity | implemented on `feat/oidc-access-token-identity` (RS256 validation, DB membership resolution, fail-closed config, rejection tests) — issue #18 approved | branch + `internal/auth` + `http_oidc*_test.go`; merge is a follow-up slice |
+| OIDC access-token identity | **implemented and merged to main (2026-08-15)** — RS256 validation, DB membership resolution, fail-closed config, rejection tests (issue #18 approved); reviewed natively (review-9908fc2e19c6fb99 code + review-578d333380b33ad7 docs) | `internal/auth/oidc*.go`, `http_oidc*_test.go`; MFA/ACR elevation, token revocation beyond DB membership, membership provisioning remain follow-ups |
 | Signing-key custody (HSM/KMS) | decision frozen | `docs/decisions/ADR-005-signing-key-custody-hsm-kms.md`; compromise-response DRILL (G-7) + playbook in `docs/security` |
 | Remote/cloud object storage | not implemented (deferred) | `docs/architecture/operability-evidence.md` § Operational boundaries — explicitly unproven |
 | Encryption-at-rest / TDE | not implemented (deferred) | same source — explicitly unproven |

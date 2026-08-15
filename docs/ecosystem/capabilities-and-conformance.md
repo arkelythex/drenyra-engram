@@ -12,7 +12,7 @@
 | Field | Value |
 |---|---|
 | Repository | `arkelythex/drenyra-engram` |
-| Verified revision | `e52ff3e` (main, pushed 2026-08-15) |
+| Verified revision | `ccdce72` (main, pushed 2026-08-15) |
 | Package version | `0.0.1-prealpha.1` (npm) / Go module `github.com/arkelythex/drenyra-engram` |
 | License | Apache-2.0 (ADR-004) |
 | Open component | yes — publicly visible, mirrors the proprietary core's contracts |
@@ -50,6 +50,7 @@ explicit approval per `openspec/config.yaml`.
 | Evidence lifecycle (retention, holds, purge, export, v0.8) | versioned retention policies, legal holds, approved purge pipeline, deterministic lifecycle export |
 | Ed25519 receipts + offline verification | kernel protocol + `verify object` (six receipt layers, WORM byte integrity) |
 | Professional memory review (Review Workspace, v0.9) | scope-first review queue, review-detail assembly, reject/return/approve gates (never authorization) |
+| OIDC access-token identity (issue #18, SDD-110) | stateless RS256 validation (exact iss/aud, JWKS cache), DB membership/scope cross-check, fail-closed config, standard assurance only |
 | Reconstructibility + period closing | FZ-1/FZ-2 classifier, `FindPeriodClosure`, period summary |
 | Operability (doctor, snapshot/restore, corruption drills) | `docs/architecture/operability-evidence.md` (qualitative objectives; RTO/RPO owner-owned) |
 | CLI + HTTP API + MCP | `cmd/drenyra-engram`, `internal/server` (HTTP + MCP JSON-RPC) |
@@ -68,13 +69,13 @@ explicit approval per `openspec/config.yaml`.
 
 | Suite | Result |
 |---|---|
-| `go test ./...` | ok — 10/10 packages |
+| `go test ./...` | ok — 10/10 packages (incl. OIDC auth + server suites) |
 | `npm test` | 385/385 (26 files) |
 | `npm run typecheck` | clean |
 | `go vet ./...` | clean |
 | `gofmt -l .` | clean |
 | `go test ./internal/core -run TestGoldenVectorsGo` | ok (Go↔TS parity) |
-| Native bounded reviews | `review-bd7751cd5b4e8293` (one bounded correction) → approved; `review-983059cb39d4ef37` (full delivery range) → approved |
+| Native bounded reviews | `review-bd7751cd5b4e8293` (one bounded correction) → approved; `review-983059cb39d4ef37` (audit chain delivery) → approved; `review-9908fc2e19c6fb99` (OIDC code) + `review-578d333380b33ad7` (OIDC docs) → approved |
 
 ## Release-train relationship
 
