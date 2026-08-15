@@ -12,9 +12,11 @@
 > [!IMPORTANT]
 > **Drenyra Engram is the open component of the Drenyra ecosystem** —
 > licensed under Apache-2.0 and publicly visible, mirroring
-> `Gentleman-Programming/engram`. The commercial core (drenyra-ai,
-> drenyra-command-center, drenyra-pi, drenyra-skills,
-> drenyra-guardian-angel) is **private** and proprietary. Engram informs,
+> `Gentleman-Programming/engram`. The commercial core (drenyra-command-center,
+> drenyra-skills, drenyra-guardian-angel) is **private** and proprietary;
+> drenyra-ai and drenyra-pi are publicly visible source under the Drenyra
+> open-core transition intention (intention, not contractual promise), with
+> commercial artifacts and services remaining contractual. Engram informs,
 > never authorizes — memory is context, not authority.
 
 </div>
