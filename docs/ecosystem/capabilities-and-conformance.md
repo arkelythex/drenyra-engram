@@ -12,7 +12,7 @@
 | Field | Value |
 |---|---|
 | Repository | `arkelythex/drenyra-engram` |
-| Verified revision | `ccdce72` (main, pushed 2026-08-15) |
+| Verified revision | `94417fd` (main, pushed 2026-08-15) |
 | Package version | `0.0.1-prealpha.1` (npm) / Go module `github.com/arkelythex/drenyra-engram` |
 | License | Apache-2.0 (ADR-004) |
 | Open component | yes — publicly visible, mirrors the proprietary core's contracts |
@@ -44,7 +44,7 @@ explicit approval per `openspec/config.yaml`.
 
 | Capability | Evidence |
 |---|---|
-| Scope-first SQLite store (structural, fail-closed) | `internal/store` (schema v14), `contracts/scope.md`; cross-tenant matrix `TestCrossTenantMatrix*` (internal/server/cross_tenant_matrix_test.go) |
+| Scope-first SQLite store (structural, fail-closed) | `internal/store` (schema v14), `contracts/scope.md`; cross-tenant matrix `TestCrossTenantMatrix*` (internal/server/cross_tenant_matrix_test.go); `RelationsForScope` asserts the exact scope on BOTH endpoints (from_id + to_id, hardened 2026-08-15) |
 | Immutable observation history + supersession | lifecycle state machine, `internal/core`; golden parity |
 | EvidenceObject WORM (v0.7) | schema v8 object bytes, `object_stored` receipts, scoped store/get, rehash verification |
 | Evidence lifecycle (retention, holds, purge, export, v0.8) | versioned retention policies, legal holds, approved purge pipeline, deterministic lifecycle export |
@@ -65,7 +65,7 @@ explicit approval per `openspec/config.yaml`.
 | TypeScript SDK reference | implemented (`core/`, `store/`, `search/`, `lifecycle/`, `index.ts`) — reference, not the destination (ADR-001/ADR-002) |
 | SDK (as a consumable package) | not yet (follow-up) |
 
-## Conformance evidence (2026-08-15, revision `e52ff3e`)
+## Conformance evidence (2026-08-15, revision `94417fd`)
 
 | Suite | Result |
 |---|---|
@@ -75,7 +75,7 @@ explicit approval per `openspec/config.yaml`.
 | `go vet ./...` | clean |
 | `gofmt -l .` | clean |
 | `go test ./internal/core -run TestGoldenVectorsGo` | ok (Go↔TS parity) |
-| Native bounded reviews | `review-bd7751cd5b4e8293` (one bounded correction) → approved; `review-983059cb39d4ef37` (audit chain delivery) → approved; `review-9908fc2e19c6fb99` (OIDC code) + `review-578d333380b33ad7` (OIDC docs) → approved |
+| Native bounded reviews | `review-bd7751cd5b4e8293` (one bounded correction) → approved; `review-983059cb39d4ef37` (audit chain delivery) → approved; `review-9908fc2e19c6fb99` (OIDC code) + `review-578d333380b33ad7` (OIDC docs) → approved; `review-73eefefcb9c133b3` (RelationsForScope to_id scope hardening) → approved |
 
 ## Release-train relationship
 
