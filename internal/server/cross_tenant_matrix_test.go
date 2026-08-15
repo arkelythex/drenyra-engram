@@ -440,10 +440,12 @@ func seedMemory(t *testing.T, f *crossTenantFixture) operationState {
 }
 
 // seedRelation creates tenant-A state that includes a REAL relation row (from a
-// tenant-A memory to another tenant-A memory). The Relations cross-tenant row
-// asserts an EMPTY result from tenant B; seeding an actual relation makes that
-// assertion meaningful — an unfiltered/global endpoint would return data here
-// (R3-relations-unseeded).
+// tenant-A memory to another tenant-A memory) PLUS a cross-tenant relation edge
+// whose FROM belongs to tenant B and whose TO belongs to tenant A. The Relations
+// cross-tenant row asserts an EMPTY result from tenant B: the same-scope A edges
+// are excluded by from_id, and the B->A edge must be excluded by the to_id scope
+// assertion (scope.md rules 3/4) — an unfiltered/global endpoint would return
+// data here (R3-relations-unseeded, to_id-scope-assertion).
 func seedRelation(t *testing.T, f *crossTenantFixture) operationState {
 	t.Helper()
 	s := seedMemory(t, f)
@@ -459,6 +461,23 @@ func seedRelation(t *testing.T, f *crossTenantFixture) operationState {
 	})
 	if err := f.st.Relate(s.memoryID, target.Identity.ID, core.RelationRelated, &core.RelationMeta{Actor: "test-agent", Timestamp: "2024-01-16T00:00:00Z"}); err != nil {
 		t.Fatalf("seed relation: %v", err)
+	}
+	// Cross-tenant edge: FROM in tenant B, TO in tenant A. Tenant B's
+	// /v1/relations query must NOT surface it (the to_id endpoint escapes B's
+	// scope). The write path (Relate) intentionally permits the edge so the
+	// read-side assertion is exercised for real.
+	bSource := saveOne(t, f.api, core.SaveInput{
+		TopicKey:     ctTopicKey + "-b-relation-source",
+		Title:        "tenant B relation source",
+		Kind:         core.KindFact,
+		Scope:        f.scopeB,
+		Content:      core.Content{What: "tenant-b relation source content", Why: "fixture", Where: "internal/server", Learned: "n/a"},
+		FiscalEffect: core.FiscalEffectNone,
+		EffectiveAt:  "2024-01-16T00:00:00Z",
+		Source:       testAgentSource,
+	})
+	if err := f.st.Relate(bSource.Identity.ID, target.Identity.ID, core.RelationRelated, &core.RelationMeta{Actor: "test-agent", Timestamp: "2024-01-16T00:00:00Z"}); err != nil {
+		t.Fatalf("seed cross-tenant relation: %v", err)
 	}
 	return s
 }

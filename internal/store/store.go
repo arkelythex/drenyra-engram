@@ -5917,17 +5917,22 @@ func (s *SQLiteStore) TransitionLog() ([]core.StatusTransitionRecord, error) {
 	return records, nil
 }
 
-// RelationsForScope returns only the relations whose FROM memory belongs to
-// the exact scope (contracts/scope.md rule 4: no surface bypasses scope). The
-// HTTP adapter REQUIRES caller scope for /v1/relations; the global Relations()
-// stays for internal use only.
+// RelationsForScope returns only the relations whose FROM AND TO memories both
+// belong to the exact scope (contracts/scope.md rule 4: no surface bypasses
+// scope; rule 3: undeclared cross-scope access is a defect). The to_id endpoint
+// is asserted against the same exact scope as from_id, so a relation edge never
+// discloses a foreign-scope endpoint id. The HTTP adapter REQUIRES caller scope
+// for /v1/relations; the global Relations() stays for internal use only.
 func (s *SQLiteStore) RelationsForScope(scope core.Scope) ([]core.RelationRecord, error) {
 	rows, err := s.db.Query(`
 		SELECT r.from_id, r.to_id, r.relation, r.actor, r.timestamp
 		FROM relations r
-		JOIN observations o ON o.id = r.from_id
+		JOIN observations o  ON o.id  = r.from_id
+		JOIN observations o2 ON o2.id = r.to_id
 		WHERE o.scope_kind = ? AND o.organization_id = ? AND o.company_id = ? AND o.ruc = ? AND o.period = ?
+		  AND o2.scope_kind = ? AND o2.organization_id = ? AND o2.company_id = ? AND o2.ruc = ? AND o2.period = ?
 		ORDER BY r.rowid`,
+		scope.Kind, scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period,
 		scope.Kind, scope.OrganizationID, scope.CompanyID, scope.RUC, scope.Period)
 	if err != nil {
 		return nil, err

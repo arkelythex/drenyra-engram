@@ -554,6 +554,60 @@ func TestRelationBetweenReadsDirectionalRelation(t *testing.T) {
 	})
 }
 
+// TestRelationsForScopeToIDScopeAssertion pins the to_id scope assertion
+// (contracts/scope.md rules 3/4): RelationsForScope must return only edges
+// whose FROM AND TO endpoints both belong to the exact query scope. A relation
+// edge never discloses a foreign-scope endpoint id, so cross-scope edges are
+// excluded in both directions even though the write path (Relate) permits them.
+func TestRelationsForScopeToIDScopeAssertion(t *testing.T) {
+	s := newTestStore(t)
+	scopeA := testScope(testRucA)
+	scopeB := testScope(testRucB)
+
+	saveScoped := func(topicKey, what string, scope core.Scope) string {
+		t.Helper()
+		input := validInput(topicKey, what)
+		input.Scope = scope
+		res, err := s.Save(input)
+		if err != nil {
+			t.Fatalf("save %s: %v", topicKey, err)
+		}
+		return res.Memory.Identity.ID
+	}
+
+	a1 := saveScoped("relations.scope.a1", "tenant A memory 1", scopeA)
+	a2 := saveScoped("relations.scope.a2", "tenant A memory 2", scopeA)
+	b1 := saveScoped("relations.scope.b1", "tenant B memory", scopeB)
+
+	// Same-scope edge (visible to A) + cross-scope edges in both directions
+	// (must be invisible to both tenants).
+	if err := s.Relate(a1, a2, core.RelationRelated, nil); err != nil {
+		t.Fatalf("relate a1->a2: %v", err)
+	}
+	if err := s.Relate(a1, b1, core.RelationRelated, nil); err != nil {
+		t.Fatalf("relate a1->b1: %v", err)
+	}
+	if err := s.Relate(b1, a1, core.RelationRelated, nil); err != nil {
+		t.Fatalf("relate b1->a1: %v", err)
+	}
+
+	gotA, err := s.RelationsForScope(scopeA)
+	if err != nil {
+		t.Fatalf("RelationsForScope(A): %v", err)
+	}
+	if len(gotA) != 1 || gotA[0].FromID != a1 || gotA[0].ToID != a2 {
+		t.Fatalf("RelationsForScope(A) = %+v; want exactly one edge a1->a2", gotA)
+	}
+
+	gotB, err := s.RelationsForScope(scopeB)
+	if err != nil {
+		t.Fatalf("RelationsForScope(B): %v", err)
+	}
+	if len(gotB) != 0 {
+		t.Fatalf("RelationsForScope(B) = %+v; want no edges (b1->a1 to_id escapes scope B)", gotB)
+	}
+}
+
 // ──────────────────────────────────────────────
 // Evidence / rule links
 // ──────────────────────────────────────────────
