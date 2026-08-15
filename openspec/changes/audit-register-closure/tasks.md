@@ -156,5 +156,9 @@ Objective: flip each of the five audit rows to bounded PASS only after its full 
 - [x] Start or reuse bounded review for each stacked-to-main PR boundary after its normalization + candidate freeze (PR J → L → Q → G → Z → evidence-pass); one correction budget per candidate; no reviewer launched by apply. <!-- sdd-owner: parent -->
 
     Native bounded reviews completed: the frozen Q/G/Z/evidence-pass workspace candidate was reviewed end-to-end (`review-bd7751cd5b4e8293`, 4R, one bounded correction for R1-caller-controlled-scope with evidence pass), then the merged delivery candidate was re-reviewed after origin advanced mid-review (`review-114d210a8af75ab0` and `review-983059cb39d4ef37`, both 4R, WARNING/SUGGESTION only) and validated through the pre-commit/pre-push gates. J/L boundaries were reviewed before their commits.
-- [ ] After the final evidence-pass PR merges, run the verify phase (`sdd-verify`) against AC-L/J/Q/Z/G/XC criteria and this tasks list; remediate only through the bounded correction path. <!-- sdd-owner: parent -->
-- [ ] Archive the change only when verify reports all criteria green and the full chain is merged. <!-- sdd-owner: parent -->
+- [x] After the final evidence-pass PR merges, run the verify phase (`sdd-verify`) against AC-L/J/Q/Z/G/XC criteria and this tasks list; remediate only through the bounded correction path. <!-- sdd-owner: parent -->
+
+    Verify PASS (2026-08-15): `verify-report.md` — all 33 ACs green by mapped tests/frozen contracts; full gates green on the exact merged tree; the single CRITICAL (R1) was corrected within the bounded budget in the prior review cycle.
+- [x] Archive the change only when verify reports all criteria green and the full chain is merged. <!-- sdd-owner: parent -->
+
+    Archived 2026-08-15: chain merged at `d7f89d2` on origin/main; verify PASS; `archive-report.md` + `state.yaml` (status: archive).
