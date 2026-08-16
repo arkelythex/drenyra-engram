@@ -86,7 +86,11 @@ jobs:
       # targets (design brief §8.3) and the race detector invalidates those
       # measurements. Its invariant tests (leakage=0, determinism, no crash)
       # still run in the regular go-test job.
+      # -timeout 1500s: the default 600s per-package cap sits at the edge of
+      # internal/store under -race (~590-605s observed), which made the job
+      # flaky (2026-08-15, PR #24 rerun). The 30-minute job timeout still
+      # bounds the whole run.
       - name: Test with race detector
         run: |
           mapfile -t pkgs < <(go list ./... | grep -v /internal/search/bench)
-          go test -race "${pkgs[@]}" -count=1
+          go test -race -timeout 1500s "${pkgs[@]}" -count=1
