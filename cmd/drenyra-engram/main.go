@@ -302,6 +302,13 @@ func cmdSearch(args []string) int {
 		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
 		return 2
 	}
+	// scope-param-rollout FR-SPR-3/D-SPR-4: when a session credential resolves
+	// to a verified approval principal, the derived scope MUST match the
+	// principal's membership before any store data access — typed denial +
+	// non-zero exit otherwise; session-less operation unchanged (FD-SPR-3).
+	if code := cliBindScope(scope, *dbPath); code != 0 {
+		return code
+	}
 
 	st, err := openStore(*dbPath)
 	if err != nil {
@@ -349,6 +356,11 @@ func cmdContext(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drenyra-engram: %v\n", err)
 		return 2
+	}
+	// scope-param-rollout FR-SPR-3/D-SPR-4: session-present commands bind the
+	// derived scope to the principal's membership before store data access.
+	if code := cliBindScope(scope, *dbPath); code != 0 {
+		return code
 	}
 
 	st, err := openStore(*dbPath)

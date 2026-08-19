@@ -195,8 +195,21 @@ func (m *MCPServer) ServeStdio(r io.Reader, w io.Writer) error {
 
 // HandleMessage processes one JSON-RPC message and returns the response bytes,
 // or nil when the message is a notification (no response). It never panics on
-// malformed input — parse failures produce a JSON-RPC error response.
+// malformed input — parse failures produce a JSON-RPC error response. It
+// carries NO request context, so no bound principal is ever present: the
+// stdio/embedded path is unbound reference mode (scope-param-rollout
+// FD-SPR-3).
 func (m *MCPServer) HandleMessage(raw []byte) []byte {
+	return m.HandleMessageContext(context.Background(), raw)
+}
+
+// HandleMessageContext processes one JSON-RPC message with an explicit request
+// context (scope-param-rollout FR-SPR-2/FD-SPR-6). The HTTP /mcp handler
+// passes the request context resolved by the authenticate middleware, so a
+// bound VerifiedApprovalPrincipal present in the context is honored by the
+// identity→scope binding at handleToolsCall (never resolved here — a context
+// without a principal is simply unbound reference mode).
+func (m *MCPServer) HandleMessageContext(ctx context.Context, raw []byte) []byte {
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) > 0 && trimmed[0] == '[' {
 		// JSON-RPC batches are not supported by MCP; respond invalid request.
 		return m.errorResponse(nil, codeInvalidRequest, "invalid request: JSON-RPC batches are not supported")
@@ -211,11 +224,11 @@ func (m *MCPServer) HandleMessage(raw []byte) []byte {
 
 	// A request without an id is a notification: process, never respond.
 	if len(request.ID) == 0 {
-		m.handleNotification(request)
+		m.handleNotification(ctx, request)
 		return nil
 	}
 
-	result, err := m.dispatch(request.Method, request.Params)
+	result, err := m.dispatch(ctx, request.Method, request.Params)
 	if err != nil {
 		if isJSONRPCError(err) {
 			var jerr *jsonrpcError
@@ -262,7 +275,8 @@ func isJSONRPCError(err error) bool {
 
 // handleNotification processes methods that expect no response. Unknown
 // notifications are ignored (spec behavior — notifications have no reply).
-func (m *MCPServer) handleNotification(request jsonrpcRequest) {
+func (m *MCPServer) handleNotification(ctx context.Context, request jsonrpcRequest) {
+	_ = ctx // scope-param-rollout FR-SPR-2: notifications never carry scope-bound tool work.
 	switch request.Method {
 	case "notifications/initialized":
 		// No-op: the client signals it is ready after initialize.
@@ -276,7 +290,7 @@ func (m *MCPServer) handleNotification(request jsonrpcRequest) {
 }
 
 // dispatch routes a method to its handler.
-func (m *MCPServer) dispatch(method string, params json.RawMessage) (any, error) {
+func (m *MCPServer) dispatch(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "initialize":
 		return m.handleInitialize(params)
@@ -285,7 +299,7 @@ func (m *MCPServer) dispatch(method string, params json.RawMessage) (any, error)
 	case "tools/list":
 		return m.handleToolsList()
 	case "tools/call":
-		return m.handleToolsCall(params)
+		return m.handleToolsCall(ctx, params)
 	case "resources/list":
 		return map[string]any{"resources": []any{}}, nil
 	case "prompts/list":
@@ -1041,7 +1055,7 @@ func errTextContent(err error) toolCallOutput {
 	}
 }
 
-func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
+func (m *MCPServer) handleToolsCall(ctx context.Context, params json.RawMessage) (any, error) {
 	var call struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -1053,11 +1067,18 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		return nil, &jsonrpcError{Code: codeInvalidParams, Message: "invalid params: tool name is required"}
 	}
 
+	_ = ctx // scope-param-rollout FR-SPR-2: bound-principal validation lands beside each effective scope.
+
 	switch call.Name {
 	case "engram_save":
 		var input core.SaveInput
 		if err := decodeArguments(call.Arguments, &input); err != nil {
 			return nil, err
+		}
+		// scope-param-rollout FR-SPR-2: a bound principal's save scope MUST be
+		// inside its membership before dispatch (typed denial otherwise).
+		if err := boundScope(ctx, input.Scope); err != nil {
+			return errTextContent(err), nil
 		}
 		result, err := m.api.Save(input)
 		if err != nil {
@@ -1092,6 +1113,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("topicKey", args.TopicKey); err != nil {
 			return nil, err
 		}
+		// scope-param-rollout FR-SPR-2: bound-principal scope binding before
+		// dispatch (typed denial otherwise; FD-SPR-3 unbound unchanged).
+		if err := boundScope(ctx, args.Scope); err != nil {
+			return errTextContent(err), nil
+		}
 		observation, err := m.api.GetByTopic(args.TopicKey, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
@@ -1108,6 +1134,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		if err := requireParams("topicKey", args.TopicKey); err != nil {
 			return nil, err
+		}
+		// scope-param-rollout FR-SPR-2: bound-principal scope binding before
+		// dispatch (typed denial otherwise; FD-SPR-3 unbound unchanged).
+		if err := boundScope(ctx, args.Scope); err != nil {
+			return errTextContent(err), nil
 		}
 		chain, err := m.api.Chain(args.TopicKey, args.Scope)
 		if err != nil {
@@ -1129,6 +1160,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("query", args.Query); err != nil {
 			return nil, err
 		}
+		// scope-param-rollout FR-SPR-2: bound-principal scope binding before
+		// dispatch (typed denial otherwise; FD-SPR-3 unbound unchanged).
+		if err := boundScope(ctx, args.Scope); err != nil {
+			return errTextContent(err), nil
+		}
 		results, err := m.api.Search(search.Input{
 			Query:                args.Query,
 			Scope:                args.Scope,
@@ -1147,6 +1183,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		}
 		if err := decodeArguments(call.Arguments, &args); err != nil {
 			return nil, err
+		}
+		// scope-param-rollout FR-SPR-2: bound-principal scope binding before
+		// dispatch (typed denial otherwise; FD-SPR-3 unbound unchanged).
+		if err := boundScope(ctx, args.Scope); err != nil {
+			return errTextContent(err), nil
 		}
 		observations, err := m.api.Context(args.Scope)
 		if err != nil {
@@ -1280,7 +1321,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("title", args.Title); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1345,7 +1386,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err != nil {
 			return errTextContent(errors.New("INVALID_OBJECT: bytesB64 must be standard padded base64")), nil
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1381,7 +1422,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1479,7 +1520,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("category", args.Category); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1518,7 +1559,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("object_period", args.ObjectPeriod); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1613,7 +1654,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1793,7 +1834,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1820,7 +1861,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1855,7 +1896,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1935,7 +1976,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -1963,7 +2004,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2045,7 +2086,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2069,7 +2110,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2095,7 +2136,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 			return errTextContent(auth.New(auth.CodeAuthenticationRequired,
 				"accounting_rule_impact without an exact scope requires an authenticated session binding; the stdio MCP server has none — tool arguments never supply identity")), nil
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2158,7 +2199,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2562,7 +2603,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2582,7 +2623,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2605,7 +2646,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2633,11 +2674,11 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("to_scope", args.ToScope); err != nil {
 			return nil, err
 		}
-		fromScope, err := decodeScope(args.FromScope)
+		fromScope, err := decodeScope(ctx, args.FromScope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
-		toScope, err := decodeScope(args.ToScope)
+		toScope, err := decodeScope(ctx, args.ToScope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2657,7 +2698,7 @@ func (m *MCPServer) handleToolsCall(params json.RawMessage) (any, error) {
 		if err := requireParams("scope", args.Scope); err != nil {
 			return nil, err
 		}
-		scope, err := decodeScope(args.Scope)
+		scope, err := decodeScope(ctx, args.Scope)
 		if err != nil {
 			return errTextContent(err), nil
 		}
@@ -2717,13 +2758,20 @@ func splitCSV(raw string) []string {
 }
 
 // decodeScope parses a JSON scope string.
-func decodeScope(raw string) (core.Scope, error) {
+func decodeScope(ctx context.Context, raw string) (core.Scope, error) {
 	if strings.TrimSpace(raw) == "" {
 		return core.Scope{}, errors.New("INVALID_SCOPE: scope is required")
 	}
 	var scope core.Scope
 	if err := json.Unmarshal([]byte(raw), &scope); err != nil {
 		return core.Scope{}, fmt.Errorf("INVALID_SCOPE: %v", err)
+	}
+	// scope-param-rollout FR-SPR-2/FD-SPR-5: when a bound principal is present in
+	// the request context, the effective scope MUST exactly match the principal's
+	// membership scope BEFORE dispatch — the frozen typed denial otherwise. The
+	// unbound (shared-token reference) path is unchanged (FD-SPR-3).
+	if err := boundScope(ctx, scope); err != nil {
+		return core.Scope{}, err
 	}
 	return scope, nil
 }
