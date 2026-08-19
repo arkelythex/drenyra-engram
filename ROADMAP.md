@@ -408,12 +408,27 @@ typecheck clean.
       JWKS refresh; signed service assertions; user provisioning; HSM/KMS key
       management. G-4 (v1 gate) stays PARTIAL until these land.
 
-## Phase 7 — Institutional Accounting Brain (v1.0.0)
+    ## Phase 7 — Institutional Accounting Brain (v1.0.0)
+    
+    - [ ] Accounting firms: shared memory with controlled sync
+    - [ ] Authorized anonymized cross-company learning
+    - [ ] Full knowledge graph + pattern detection
+    - [ ] Specialized agents + complete audit
 
-- [ ] Accounting firms: shared memory with controlled sync
-- [ ] Authorized anonymized cross-company learning
-- [ ] Full knowledge graph + pattern detection
-- [ ] Specialized agents + complete audit
+    ## SDD-060 — tenant operator surface (DELIVERED, 2026-08-19)
+
+    > SDD-060 (Drenyra Engram, DRAFT) Fases 1 y 3: the tenant-scoped operator CLI
+    > surface. Phase 5 (LATAM namespacing) stays deferred per the SDD itself; the
+    > encryption slices (at-rest por tenant, sync) land with the Unit C change.
+
+    - [x] **`tenant list` (Fase 1)** — operator enumeration: organizations,
+          companies, periods, counts — ids/counts only, never per-tenant content.
+    - [x] **`tenant consolidate` (Fase 3)** — topic-key drift detection within one
+          RUC (canonical fold with Go↔TS golden parity); `--apply` merges drifted
+          chains into the canonical chain via the audited supersede path
+          (memory_superseded receipts + transition log); dry-run default (ZERO
+          writes); adversarial cross-RUC isolation tested.
+    - [ ] **Cifrado at-rest por tenant + sync encryption** — Unit C (next change).
 
 ## Non-goals (for now)
 

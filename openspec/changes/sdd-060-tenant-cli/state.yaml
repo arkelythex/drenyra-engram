@@ -1,0 +1,35 @@
+# sdd-060-tenant-cli
+
+## Metadata
+
+change: sdd-060-tenant-cli
+status: archive # draft | proposed | in-progress | verify | archive
+artifact_store: openspec
+created: 2026-08-19
+updated: 2026-08-19
+
+## Phase status
+
+proposal: done # pending | done
+spec: done
+design: done
+tasks: done
+apply: done
+verify: done
+archive: done
+
+## Current
+
+next_recommended: none
+blocked_reasons: []
+
+## Links
+
+links:
+  proposal: openspec/changes/sdd-060-tenant-cli/proposal.md
+  spec: openspec/changes/sdd-060-tenant-cli/spec.md
+  design: openspec/changes/sdd-060-tenant-cli/design.md
+  tasks: openspec/changes/sdd-060-tenant-cli/tasks.md
+  apply-progress: openspec/changes/sdd-060-tenant-cli/apply-progress.md
+  verify-report: openspec/changes/sdd-060-tenant-cli/verify-report.md
+  archive-report: openspec/changes/sdd-060-tenant-cli/archive-report.md

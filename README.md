@@ -217,7 +217,7 @@ only (no MFA elevation, no revocation beyond DB membership). Enable it with
 
 ### CLI
 
-`save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · keys · auth · sync · mcp · serve`
+`save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · keys · auth · sync · mcp · serve`
 
 ### HTTP
 
