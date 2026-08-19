@@ -41,11 +41,11 @@ Every memory carries a fiscal scope:
    match mode, limit, or ordering. The reference test lives in
    `search/__tests__/scope-isolation.test.ts` and runs in CI.
 
-    ## Conformance
+   ## Conformance
 
     Vectors cover: scope-first ranking order, cross-company invisibility, institutional declaration, surface parity, scope-in-identity, and the frozen-for-0.2 semantics above (including the REQUIRED cross-tenant negative test).
 
-    ## v1 scope contract — identity→scope binding (scope-param-rollout, effective pre-v1 0.x)
+   ## v1 scope contract — identity→scope binding (scope-param-rollout, effective pre-v1 0.x)
 
     > Version: 0.3 · Status: frozen-for-v1 · Scope-param-rollout slice 3 (AC-SPR-5).
 

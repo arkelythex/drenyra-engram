@@ -10,7 +10,7 @@
 ## Repository identity
 
 | Field | Value |
-|---|---|
+| --- | --- |
 | Repository | `arkelythex/drenyra-engram` |
 | Verified revision | `94417fd` (main, pushed 2026-08-15) |
 | Package version | `0.0.1-prealpha.1` (npm) / Go module `github.com/arkelythex/drenyra-engram` |
@@ -24,7 +24,7 @@ The public contract surface lives in `contracts/` (frozen subset marked
 Dominion program-lock:
 
 | Contract | Version | Status | Governs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `memory` | 0.1-draft | Draft (subset frozen) | Observation model and storage |
 | `scope` | 0.1-draft | Draft (subset frozen) | Company/RUC/period structural scoping |
 | `lifecycle` | 0.1-draft | Draft (subset frozen) | Observation lifecycle + vigencia |
@@ -43,7 +43,7 @@ explicit approval per `openspec/config.yaml`.
 ## Capability matrix (implemented and tested)
 
 | Capability | Evidence |
-|---|---|
+| --- | --- |
 | Scope-first SQLite store (structural, fail-closed) | `internal/store` (schema v14), `contracts/scope.md`; cross-tenant matrix `TestCrossTenantMatrix*` (internal/server/cross_tenant_matrix_test.go); `RelationsForScope` asserts the exact scope on BOTH endpoints (from_id + to_id, hardened 2026-08-15) |
 | Immutable observation history + supersession | lifecycle state machine, `internal/core`; golden parity |
 | EvidenceObject WORM (v0.7) | schema v8 object bytes, `object_stored` receipts, scoped store/get, rehash verification |
@@ -58,7 +58,7 @@ explicit approval per `openspec/config.yaml`.
 ## Runtime compatibility
 
 | Surface | Status |
-|---|---|
+| --- | --- |
 | Go binary CLI | implemented (`drenyra-engram` — save/review/rule/object/verify/mcp/serve/…) |
 | HTTP REST API | implemented (scope-first adapters; caller-asserted scope at unauthenticated surfaces; identity binding = block I / issue #18) |
 | MCP (JSON-RPC) | implemented (`accounting_*` tool catalog) |
@@ -68,7 +68,7 @@ explicit approval per `openspec/config.yaml`.
 ## Conformance evidence (2026-08-15, revision `94417fd`)
 
 | Suite | Result |
-|---|---|
+| --- | --- |
 | `go test ./...` | ok — 10/10 packages (incl. OIDC auth + server suites) |
 | `npm test` | 385/385 (26 files) |
 | `npm run typecheck` | clean |
