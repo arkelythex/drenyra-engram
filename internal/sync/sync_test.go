@@ -6,8 +6,10 @@
 package sync
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
@@ -568,5 +570,79 @@ func TestSyncFailsClosedOnNonAdjacentRecord(t *testing.T) {
 
 	if _, err := Sync(source, to, Options{Actor: "test"}); err == nil {
 		t.Fatal("sync must fail closed on a crafted non-adjacent audit record")
+	}
+}
+
+// newEncryptedTestStore opens a store with the at-rest master key (the same
+// key material both sides use in the both-encrypted rows).
+func newEncryptedTestStore(t *testing.T) *store.SQLiteStore {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "engram.db")
+	st, err := store.OpenWithOptions(path, store.Options{EncryptionKey: bytes.Repeat([]byte{0x42}, 32)})
+	if err != nil {
+		t.Fatalf("open encrypted test store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// TestSyncEncryptionMismatch — AC-ENC-6 (FR-ENC-4): an encryption-enabled
+// source syncing into a plaintext sink fails closed with
+// SYNC_ENCRYPTION_MISMATCH and copies NOTHING.
+func TestSyncEncryptionMismatch(t *testing.T) {
+	from := newEncryptedTestStore(t)
+	to := newTestStore(t)
+	scope := testScope("20100039201")
+	if _, err := from.Save(validInput("topic/encrypted", "Encrypted", "secret", scope)); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	_, err := Sync(from, to, Options{Actor: "test"})
+	if err == nil || !strings.Contains(err.Error(), "SYNC_ENCRYPTION_MISMATCH") {
+		t.Fatalf("mismatch sync err = %v, want SYNC_ENCRYPTION_MISMATCH", err)
+	}
+	// Nothing was copied.
+	list, err := to.List()
+	if err != nil {
+		t.Fatalf("sink list: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("sink has %d observations after a failed mismatch sync — plaintext leak", len(list))
+	}
+}
+
+// TestSyncEncryptionBothEnabled — AC-ENC-6: both stores encrypted → sync
+// succeeds and the target rows are encrypted at rest.
+func TestSyncEncryptionBothEnabled(t *testing.T) {
+	from := newEncryptedTestStore(t)
+	toPath := filepath.Join(t.TempDir(), "target.db")
+	to, err := store.OpenWithOptions(toPath, store.Options{EncryptionKey: bytes.Repeat([]byte{0x42}, 32)})
+	if err != nil {
+		t.Fatalf("open encrypted target: %v", err)
+	}
+	t.Cleanup(func() { _ = to.Close() })
+	scope := testScope("20100039201")
+	if _, err := from.Save(validInput("topic/encrypted", "Encrypted", "secret", scope)); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	report, err := Sync(from, to, Options{Actor: "test", Timestamp: "2026-01-15T12:00:00Z"})
+	if err != nil {
+		t.Fatalf("both-encrypted sync: %v", err)
+	}
+	if report.ObservationsImported != 1 {
+		t.Fatalf("observationsImported = %d, want 1", report.ObservationsImported)
+	}
+	// The target rows are encrypted: reopening the target WITHOUT the master
+	// key fails closed on read (ENCRYPTION_REQUIRED) — a plaintext store would
+	// return the content.
+	_ = to.Close()
+	plain, err := store.Open(toPath)
+	if err != nil {
+		t.Fatalf("reopen target plain: %v", err)
+	}
+	defer func() { _ = plain.Close() }()
+	if _, err := plain.List(); err == nil || !strings.Contains(err.Error(), "ENCRYPTION_REQUIRED") {
+		t.Fatalf("target rows readable without the key (err=%v) — not encrypted at rest", err)
 	}
 }

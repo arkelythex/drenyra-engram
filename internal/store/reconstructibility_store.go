@@ -69,7 +69,7 @@ func (s *SQLiteStore) LatestMaterialDecisionHeads(ctx context.Context, scope cor
 	}
 	memories := make([]core.AccountingMemory, 0)
 	for rows.Next() {
-		memory, err := scanMemory(rows)
+		memory, err := scanMemory(rows, s.encMaster)
 		if err != nil {
 			_ = rows.Close()
 			return nil, err

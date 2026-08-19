@@ -182,7 +182,7 @@ import (
 // idx_rule_links_ref(ref, version, effective_at, memory_id). No existing row
 // is backfilled or re-hashed; the fail-closed migration validates the columns
 // and the index ABSENT before mutation.
-const schemaVersion = 14
+const schemaVersion = 15
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -513,6 +513,13 @@ type SQLiteStore struct {
 	// <dir-of-db>/objects, overridable via OpenWithObjects (the CLI/HTTP/MCP
 	// surfaces surface it as --objects / $DRENYRA_ENGRAM_OBJECTS).
 	objectsRoot string
+	// encMaster is the operator master key for at-rest content encryption
+	// (sdd-060-at-rest-encryption, FR-ENC-1): nil = encryption disabled (the
+	// default — legacy deployments/fixtures unchanged). When set, every
+	// company-scope observation's CONTENT narrative is encrypted with the
+	// tenant's derived key at write time and decrypted at read time (fail
+	// closed without/with a wrong key).
+	encMaster []byte
 
 	// writeFrozen is the process-local, monotonic write-freeze latch (design
 	// D-8). It applies ONLY to a marked drill-store handle whose full doctor
@@ -563,8 +570,25 @@ func defaultObjectsRoot(dbPath string) string {
 // attached at open (nil signer → no receipt emission); the store↔signer
 // construction cycle (the signer needs the opened store) is resolved by the
 // adapter via SetReceiptSigner right after Open.
+// Options configures the store at open. EncryptionKey is the operator master
+// key for at-rest content encryption (sdd-060-at-rest-encryption): nil/empty =
+// disabled (default); must be exactly 32 bytes when set (INVALID_ENCRYPTION_KEY
+// fails closed otherwise).
+type Options struct {
+	EncryptionKey []byte
+}
+
 func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
-	return OpenWithObjects(path, defaultObjectsRoot(path), signers...)
+	return OpenWithOptions(path, Options{}, signers...)
+}
+
+// OpenWithOptions opens the store with explicit Options (encryption master key).
+// All other semantics are identical to Open.
+func OpenWithOptions(path string, opts Options, signers ...ReceiptSigner) (*SQLiteStore, error) {
+	if len(opts.EncryptionKey) != 0 && len(opts.EncryptionKey) != 32 {
+		return nil, errors.New("INVALID_ENCRYPTION_KEY: DRENYRA_ENCRYPTION_MASTER_KEY must be exactly 32 bytes (hex or base64)")
+	}
+	return openInternal(path, defaultObjectsRoot(path), opts, signers...)
 }
 
 // OpenWithObjects opens the SQLite store with an EXPLICIT local WORM objects
@@ -572,6 +596,21 @@ func Open(path string, signers ...ReceiptSigner) (*SQLiteStore, error) {
 // $DRENYRA_ENGRAM_OBJECTS) use this; every other caller keeps Open's safe
 // default. All other semantics are identical to Open.
 func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLiteStore, error) {
+	return OpenWithObjectsAndOptions(path, objectsRoot, Options{}, signers...)
+}
+
+// OpenWithObjectsAndOptions opens the store with BOTH an explicit WORM objects
+// root and explicit Options (at-rest encryption master key). The CLI surface
+// (--objects / $DRENYRA_ENGRAM_OBJECTS + DRENYRA_ENCRYPTION_MASTER_KEY) uses
+// this; every other caller keeps Open/OpenWithOptions/OpenWithObjects.
+func OpenWithObjectsAndOptions(path, objectsRoot string, opts Options, signers ...ReceiptSigner) (*SQLiteStore, error) {
+	if len(opts.EncryptionKey) != 0 && len(opts.EncryptionKey) != 32 {
+		return nil, errors.New("INVALID_ENCRYPTION_KEY: DRENYRA_ENCRYPTION_MASTER_KEY must be exactly 32 bytes (hex or base64)")
+	}
+	return openInternal(path, objectsRoot, opts, signers...)
+}
+
+func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSigner) (*SQLiteStore, error) {
 	// A database carrying the adjacent <path>.drenyra-drill.json marker is a
 	// MARKED drill copy (design D-6): normal open refuses it with the typed
 	// DRILL_COPY_ONLY error so a drill artifact can never be used as a live
@@ -701,6 +740,13 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 			_ = db.Close()
 			return nil, err
 		}
+		version = 14
+	}
+	if version == 14 {
+		if err := migrateV14ToV15(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 		version = schemaVersion
 	}
 	if version != schemaVersion {
@@ -712,7 +758,7 @@ func OpenWithObjects(path, objectsRoot string, signers ...ReceiptSigner) (*SQLit
 		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite store: at most one receipt signer may be attached")
 	}
-	st := &SQLiteStore{db: db, objectsRoot: objectsRoot}
+	st := &SQLiteStore{db: db, objectsRoot: objectsRoot, encMaster: opts.EncryptionKey}
 	if len(signers) == 1 {
 		st.signer = signers[0]
 	}
@@ -2734,16 +2780,28 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		}
 	}
 
+	// At-rest content encryption (sdd-060-at-rest-encryption, FR-ENC-1): when
+	// the master key is configured, the CONTENT narrative of company-scope
+	// observations is encrypted under the tenant's derived key; the plaintext
+	// columns carry "" and the envelope lands in content_cipher/content_nonce/
+	// content_algo. Non-company scopes stay plaintext (structural). Legacy rows
+	// are never rewritten.
+	contentWhat, contentWhy, contentWhere, contentLearned, contentCipher, contentNonce, contentAlgo, encErr :=
+		s.encryptContentForWrite(memory)
+	if encErr != nil {
+		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: encrypt content: %w", encErr)
+	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision,
+			content_cipher, content_nonce, content_algo
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		id, input.TopicKey, memory.Title, string(memory.Kind), string(memory.Kind), string(memory.Scope.Kind),
 		memory.Scope.OrganizationID, memory.Scope.CompanyID, memory.Scope.RUC, memory.Scope.Period,
-		memory.Content.What, memory.Content.Why, memory.Content.Where, memory.Content.Learned,
+		contentWhat, contentWhy, contentWhere, contentLearned,
 		legacyStatusFor(memory.Status), string(memory.Status), string(memory.FiscalEffect),
 		memory.EffectiveAt, memory.RecordedAt, memory.ObservedAt,
 		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
@@ -2751,6 +2809,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
 		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), nullablePolicyRuleJSON(memory.PolicyRule), memory.ReceiptID, memory.SupersedesID,
 		revision,
+		contentCipher, contentNonce, contentAlgo,
 	)
 	if err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: insert: %w", err)
@@ -2829,7 +2888,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 	// the exact envelope a reviewer must sign against. Approval always
 	// recomputes H1 fresh inside its own locked transaction, so this cache is
 	// advisory only — a stale cache can never pass the hash guard.
-	if err := refreshEnvelopeCache(ctx, tx, id); err != nil {
+	if err := s.refreshEnvelopeCache(ctx, tx, id); err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: refresh envelope cache after save: %w", err)
 	}
 
@@ -3023,19 +3082,22 @@ func nullableInt(v *int64) any {
 const memoryColumns = `id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 	what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 	expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-	confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision`
+	confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision,
+	content_cipher, content_nonce, content_algo`
 
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
+func scanMemory(rs rowScanner, encMaster []byte) (core.AccountingMemory, error) {
 	var (
 		id, topicKey, title, typ, scopeKind, orgID, companyID, ruc, period string
 		what, why, whereText, learned, authorityStatus, effAt              string
 		recordedAt, expiresAt, actor, timestamp, source, session           string
 		revision                                                           int
+		contentAlgo                                                        string
+		contentCipher, contentNonce                                        []byte
 	)
 	var (
 		kind, status, fiscalEffect, observedAt, validityEffectiveAtVal, validitySourceVal         sql.NullString
@@ -3049,8 +3111,24 @@ func scanMemory(rs rowScanner) (core.AccountingMemory, error) {
 		&what, &why, &whereText, &learned, &authorityStatus, &status, &fiscalEffect, &effAt, &recordedAt, &observedAt,
 		&expiresAt, &validityEffectiveAtVal, &validitySourceVal, &actor, &timestamp, &source, &session, &sourceJSON, &contentHash, &identityHashVal, &envelopeHashVal, &evidenceRefsJSON, &ruleRefsJSON,
 		&confidence, &materiality, &materialityLevelVal, &closeSnapshotJSON, &policyRuleJSON, &receiptID, &supersedesID, &revision,
+		&contentCipher, &contentNonce, &contentAlgo,
 	); err != nil {
 		return core.AccountingMemory{}, err
+	}
+	// At-rest content decryption (sdd-060-at-rest-encryption, FR-ENC-2): a row
+	// whose content_algo is non-empty carries ciphertext — decrypt it under the
+	// tenant's derived key, failing closed without the master key
+	// (ENCRYPTION_REQUIRED) or on GCM authentication failure (DECRYPTION_FAILED).
+	// Legacy rows (algo = '') are plaintext and pass through in both modes.
+	if contentAlgo != "" {
+		if len(encMaster) == 0 {
+			return core.AccountingMemory{}, errEncryptionRequired
+		}
+		env, err := decryptContent(encMaster, orgID, contentNonce, contentCipher)
+		if err != nil {
+			return core.AccountingMemory{}, err
+		}
+		what, why, whereText, learned = env.What, env.Why, env.Where, env.Learned
 	}
 
 	memoryKind := core.MemoryKind(kind.String)
@@ -3223,7 +3301,7 @@ type Queryer interface {
 // separate pooled connection).
 func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q Queryer, id string) (core.AccountingMemory, bool) {
 	row := q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, id)
-	memory, err := scanMemory(row)
+	memory, err := scanMemory(row, s.encMaster)
 	if err != nil {
 		return core.AccountingMemory{}, false
 	}
@@ -3284,8 +3362,8 @@ func ruleLinksQuery(ctx context.Context, q Queryer, memoryID string) []core.Rule
 // persists it on the given connection. The persisted observations.envelope_hash
 // is a cache only: approval always recomputes H1 fresh inside its own locked
 // transaction (design §5 — the cache is not trusted).
-func refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error {
-	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID))
+func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error {
+	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID), s.encMaster)
 	if err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache read: %w", err)
 	}
@@ -5083,7 +5161,7 @@ func nullableOrNil(v string) any {
 // merged into the read view).
 func (s *SQLiteStore) FindByID(id string) (core.AccountingMemory, bool) {
 	row := s.db.QueryRow(`SELECT `+memoryColumns+` FROM observations WHERE id = ?`, id)
-	memory, err := scanMemory(row)
+	memory, err := scanMemory(row, s.encMaster)
 	if err != nil {
 		return core.AccountingMemory{}, false
 	}
@@ -5095,7 +5173,7 @@ func (s *SQLiteStore) FindByID(id string) (core.AccountingMemory, bool) {
 func (s *SQLiteStore) FindByTopicKey(topicKey string, scope core.Scope) (core.AccountingMemory, bool) {
 	where, args := chainWhere(topicKey, scope)
 	row := s.db.QueryRow(`SELECT `+memoryColumns+` FROM observations WHERE `+where+` ORDER BY revision DESC LIMIT 1`, args...)
-	memory, err := scanMemory(row)
+	memory, err := scanMemory(row, s.encMaster)
 	if err != nil {
 		return core.AccountingMemory{}, false
 	}
@@ -5132,7 +5210,7 @@ func (s *SQLiteStore) queryMemories(suffix string, args ...any) ([]core.Accounti
 
 	memories := make([]core.AccountingMemory, 0)
 	for rows.Next() {
-		memory, err := scanMemory(rows)
+		memory, err := scanMemory(rows, s.encMaster)
 		if err != nil {
 			return nil, err
 		}
@@ -5531,16 +5609,26 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 	}
 
 	built := core.CloneMemory(memory)
+	// Re-encrypt on the target (sdd-060-at-rest-encryption, FR-ENC-1): the
+	// synced memory is the DECRYPTED view from the source; the target must
+	// never persist it plaintext. The envelope/identity hashes are content
+	// hashes of the decrypted memory and stay byte-identical.
+	contentWhat, contentWhy, contentWhere, contentLearned, contentCipher, contentNonce, contentAlgo, encErr :=
+		s.encryptContentForWrite(built)
+	if encErr != nil {
+		return false, fmt.Errorf("persistence error: encrypt imported content: %w", encErr)
+	}
 	if _, err := s.db.ExecContext(ctx, `
 		INSERT INTO observations (
 			id, topic_key, title, type, kind, scope_kind, organization_id, company_id, ruc, period,
 			what, why, where_text, learned, authority_status, status, fiscal_effect, effective_at, recorded_at, observed_at,
 			expires_at, validity_effective_at, validity_source, actor, timestamp, source, session, source_json, content_hash, identity_hash, envelope_hash, evidence_refs_json, rule_refs_json,
-			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			confidence, materiality, materiality_level, close_snapshot_json, policy_rule_json, receipt_id, supersedes_id, revision,
+			content_cipher, content_nonce, content_algo
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		built.Identity.ID, built.Identity.TopicKey, built.Title, string(built.Kind), string(built.Kind), string(built.Scope.Kind),
 		built.Scope.OrganizationID, built.Scope.CompanyID, built.Scope.RUC, built.Scope.Period,
-		built.Content.What, built.Content.Why, built.Content.Where, built.Content.Learned,
+		contentWhat, contentWhy, contentWhere, contentLearned,
 		legacyStatusFor(built.Status), string(built.Status), string(built.FiscalEffect),
 		built.EffectiveAt, built.RecordedAt, built.ObservedAt,
 		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
@@ -5548,6 +5636,7 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
 		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), nullablePolicyRuleJSON(built.PolicyRule), built.ReceiptID, built.SupersedesID,
 		built.Revision,
+		contentCipher, contentNonce, contentAlgo,
 	); err != nil {
 		return false, fmt.Errorf("persistence error: import observation: %w", err)
 	}
@@ -5662,7 +5751,7 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 	// a NEW actual H1 (the stale expected hash then triggers ENVELOPE_MISMATCH).
 	// Ref ordering semantics are unchanged (stored refs first, links in
 	// insertion order; canonical refs dedup + sort inside the hash).
-	if err := refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
+	if err := s.refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
 		return err
 	}
 
@@ -5824,7 +5913,7 @@ func (s *SQLiteStore) AddRuleLinkVersion(memoryID string, link core.RuleLink, ac
 		return fmt.Errorf("persistence error: add structured rule link: %w", err)
 	}
 	if !refAlreadyPresent {
-		if err := refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
+		if err := s.refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
 			return err
 		}
 	}

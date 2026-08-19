@@ -34,6 +34,7 @@
 package sync
 
 import (
+	"errors"
 	"strings"
 	"time"
 
@@ -118,6 +119,20 @@ func Sync(from Source, to Sink, opts Options) (Report, error) {
 	}
 	if opts.Timestamp == "" {
 		opts.Timestamp = nowISO()
+	}
+
+	// At-rest encryption guard (sdd-060-at-rest-encryption, FR-ENC-4): when the
+	// source store is encryption-enabled but the target is not, sync FAILS
+	// CLOSED with SYNC_ENCRYPTION_MISMATCH — institutional memory must never
+	// land in a plaintext store. Both enabled → the source decrypts on read and
+	// the target re-encrypts with ITS own per-tenant keys on write (transparent
+	// through the Source/Sink memory view). Stores without the capability method
+	// (non-SQLite sources) skip the guard.
+	if src, ok := from.(interface{ EncryptionEnabled() bool }); ok && src.EncryptionEnabled() {
+		sink, ok2 := to.(interface{ EncryptionEnabled() bool })
+		if !ok2 || !sink.EncryptionEnabled() {
+			return Report{}, errors.New("SYNC_ENCRYPTION_MISMATCH: the source store is encrypted at rest but the target is not — refusing to copy institutional memory into a plaintext store")
+		}
 	}
 
 	report := Report{Conflicts: []Conflict{}}

@@ -63,8 +63,8 @@ func TestFreshStoreBootstrapsV12Executions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 14 {
-		t.Fatalf("schema_version = %d, want 14 (the chain continues v2→v3→…→v11→v12→v13→v14)", version)
+	if version != 15 {
+		t.Fatalf("schema_version = %d, want 15 (the chain continues v2→v3→…→v11→v12→v13→v14)", version)
 	}
 
 	// The whole v3…v11 surface survives the chain (additive migrations never

@@ -538,7 +538,7 @@ func (s *SQLiteStore) chainRevisionWhere(ctx context.Context, memory core.Accoun
 		memory.Identity.TopicKey, string(memory.Scope.Kind), memory.Scope.OrganizationID, memory.Scope.CompanyID,
 		memory.Scope.RUC, memory.Scope.Period, memory.Revision,
 	)
-	m, err := scanMemory(row)
+	m, err := scanMemory(row, s.encMaster)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil

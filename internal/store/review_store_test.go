@@ -55,8 +55,8 @@ func TestFreshStoreBootstrapsV13ReviewWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 14 {
-		t.Fatalf("schema_version = %d, want 14 (the chain continues v2→…→v13→v14)", version)
+	if version != 15 {
+		t.Fatalf("schema_version = %d, want 15 (the chain continues v2→…→v13→v14)", version)
 	}
 
 	// The three review-workspace tables plus their guards exist on a fresh store.

@@ -199,12 +199,12 @@ func TestMigrationInterruptedRollsBackToPriorVersion(t *testing.T) {
 	assertSeededV13RowsIntact(t, after)
 }
 
-// TestMigrationCrashReopenConvergesToV14 proves the recovery property
+// TestMigrationCrashReopenConvergesToV15 proves the recovery property
 // (AC-G-2, FR-G.2): after the interruption is removed, reopening the SAME
 // store through the normal Open path safely re-runs the chain to v14 with the
 // correct index definition, exact data preservation, and exactly one copy of
 // every seeded row — no duplicate effects from the earlier partial run.
-func TestMigrationCrashReopenConvergesToV14(t *testing.T) {
+func TestMigrationCrashReopenConvergesToV15(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "engram-v13-reopen.db")
 	db := openV13Schema(t, path)
 	seedV13RuleLinksRow(t, db)
@@ -244,8 +244,8 @@ func TestMigrationCrashReopenConvergesToV14(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema_version after reopen: %v", err)
 	}
-	if version != 14 {
-		t.Fatalf("schema_version = %d after reopen, want 14", version)
+	if version != 15 {
+		t.Fatalf("schema_version = %d after reopen, want 15", version)
 	}
 
 	// The migrated layout: both structured-link columns and the reverse lookup
@@ -294,7 +294,7 @@ func TestMigrationCrashReopenConvergesToV14(t *testing.T) {
 		t.Fatalf("read legacy rule link version on v14: %v", err)
 	}
 	if ver != "" || effAt != "" {
-		t.Fatalf("legacy rule link version = (%q, %q) on v14, want unversioned — no backfill, no re-hash", ver, effAt)
+		t.Fatalf("legacy rule link version = (%q, %q) on v15, want unversioned — no backfill, no re-hash", ver, effAt)
 	}
 }
 
@@ -697,10 +697,10 @@ func seedLegacyRows(t *testing.T, db *sql.DB, version int) legacySnapshot {
 	return snap
 }
 
-// TestDirectUpgradeMatrixV1ToV14 proves every legacy schema version v1…v13
+// TestDirectUpgradeMatrixV1ToV15 proves every legacy schema version v1…v13
 // converges to v14 through the normal Open path with exact data preservation
 // and the full structural invariant manifest (AC-G-1, FR-G.1).
-func TestDirectUpgradeMatrixV1ToV14(t *testing.T) {
+func TestDirectUpgradeMatrixV1ToV15(t *testing.T) {
 	for _, fx := range []legacyFixture{
 		{1, func(t *testing.T, p string) *sql.DB { return buildLegacyStore(t, 1, p) }},
 		{2, func(t *testing.T, p string) *sql.DB { return buildLegacyStore(t, 2, p) }},
@@ -717,7 +717,7 @@ func TestDirectUpgradeMatrixV1ToV14(t *testing.T) {
 		{13, func(t *testing.T, p string) *sql.DB { return buildLegacyStore(t, 13, p) }},
 	} {
 		fx := fx
-		t.Run(fmt.Sprintf("v%d_to_v14", fx.version), func(t *testing.T) {
+		t.Run(fmt.Sprintf("v%d_to_v15", fx.version), func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), fmt.Sprintf("legacy-v%d.db", fx.version))
 			db := fx.build(t, path)
 			version, err := readSchemaVersion(db)
@@ -741,8 +741,8 @@ func TestDirectUpgradeMatrixV1ToV14(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read schema_version after migration: %v", err)
 			}
-			if version != 14 {
-				t.Fatalf("schema_version = %d, want 14", version)
+			if version != 15 {
+				t.Fatalf("schema_version = %d, want 15", version)
 			}
 			assertSnapshotPreserved(t, s, before, fx.version)
 			assertV14InvariantManifest(t, s)
