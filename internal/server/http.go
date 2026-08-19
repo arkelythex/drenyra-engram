@@ -434,7 +434,7 @@ func (h *HTTPServer) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/doctor", h.requireToken(h.handleDoctor))
 	// MCP streamable-HTTP JSON mode (tools over HTTP; stdio stays the primary
 	// agent transport via `drenyra-engram mcp`).
-	mux.HandleFunc("POST /mcp", h.requireToken(h.handleMCP))
+	mux.HandleFunc("POST /mcp", h.requireToken(h.authenticate(h.handleMCP)))
 	return mux
 }
 
@@ -514,7 +514,13 @@ func (h *HTTPServer) handleMCP(w http.ResponseWriter, r *http.Request) {
 		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds 1 MiB")
 		return
 	}
-	response := h.mcpServer.HandleMessage(body)
+	// scope-param-rollout FR-SPR-2: the request context (enriched by the
+	// authenticate middleware with a verified approval principal when a session
+	// credential is present) flows into the MCP server so handleToolsCall can
+	// bind every company-kind tool scope to the principal's membership before
+	// dispatch. requireToken stays the shared-token gate (FD-SPR-3): a
+	// shared-token-only call carries no principal and passes through unchanged.
+	response := h.mcpServer.HandleMessageContext(r.Context(), body)
 	if response == nil {
 		// Notification over HTTP: MCP returns an empty 202 Accepted.
 		w.WriteHeader(http.StatusAccepted)
@@ -1797,11 +1803,14 @@ func (h *HTTPServer) handleDoctor(w http.ResponseWriter, r *http.Request) {
 // the RUC); when companyId is absent the established HTTP/CLI derivation
 // (companyId := ruc) is kept for the other scope-first read surfaces.
 // httpQueryScope derives the caller's scope from query parameters. The scope is
-// CALLER-ASSERTED (pre-existing derivation shared by GetByTopic/Chain/Context,
-// contracts/scope.md rule 4): it is an exact-scope equality boundary, NOT
-// identity-to-scope binding. Binding a verified principal to this scope is a
-// production identity prerequisite (audit block I / OIDC issue #18) and is not
-// claimed by the adapter scope checks.
+// CALLER-ASSERTED when no principal is present (shared-token-only reference
+// calls, FD-SPR-3). When a verified approval principal IS present in the request
+// context (resolved by the authenticate middleware), the derived effective scope
+// is BOUND to that principal before the handler proceeds (scope-param-rollout
+// FR-SPR-1/FD-SPR-1): exact-match membership scope, typed scope-denied on
+// mismatch (FD-SPR-5), institutional untouched (FD-SPR-4), no fallback
+// (NFR-SPR-1). The binding never re-derives scope and never resolves a principal
+// where none exists (FD-SPR-6).
 func httpQueryScope(r *http.Request, institutional bool) (core.Scope, error) {
 	query := r.URL.Query()
 	if institutional || query.Get("kind") == "institutional" {
@@ -1822,13 +1831,29 @@ func httpQueryScope(r *http.Request, institutional bool) (core.Scope, error) {
 		// handleLifecycleExport) — it never derives the company id from the RUC.
 		companyID = ruc
 	}
-	return core.Scope{
+	scope := core.Scope{
 		Kind:           core.ScopeKindCompany,
 		OrganizationID: query.Get("organizationId"),
 		CompanyID:      companyID,
 		RUC:            ruc,
 		Period:         period,
-	}, nil
+	}
+	// Identity→scope binding (scope-param-rollout FR-SPR-1/FD-SPR-1/FD-SPR-6):
+	// when a verified approval principal is present in the request context
+	// (resolved by the authenticate middleware — requireToken never resolves
+	// one), the derived effective scope MUST exactly match the principal's
+	// membership scope BEFORE the handler proceeds. The binding never re-derives
+	// scope and never resolves a principal where none exists; shared-token-only
+	// calls (FD-SPR-3) and institutional requests (FD-SPR-4) pass through
+	// unchanged. A mismatch fails closed with the frozen typed scope-denied codes
+	// (FD-SPR-5), mapped to HTTP 403 by the existing error envelopes — no
+	// fallback, no rewrite.
+	if p, ok := PrincipalFromContext(r.Context()); ok {
+		if err := bindScopeToPrincipal(scope, p); err != nil {
+			return core.Scope{}, err
+		}
+	}
+	return scope, nil
 }
 
 // decodeBody reads and unmarshals a JSON request body (bounded, fail closed on
