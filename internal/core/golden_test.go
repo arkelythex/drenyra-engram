@@ -73,6 +73,11 @@ type goldenCase struct {
 	SODCases          []goldenSODCase          `json:"sodCases,omitempty"`
 	ReviewChecksCases []goldenReviewChecksCase `json:"reviewChecksCases,omitempty"`
 
+	// FoldCases (contract "topic-fold") carries the sdd-060-tenant-cli topic-key
+	// fold vectors (FR-TEN-3): raw topic key → pinned folded form. Go and TS must
+	// agree byte-identically (config golden_parity).
+	FoldCases []goldenFoldCase `json:"foldCases,omitempty"`
+
 	// G-10 reconstructibility vectors (contract "reconstructibility"): the pure
 	// FZ-1 eligibility axes, the FZ-2 classifier precedence combinations and the
 	// frozen integer ratio/percentage cases — the SAME files run from TypeScript
@@ -255,6 +260,8 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runSODPolicyGolden(t, tc)
 			case "review-checks":
 				runReviewChecksGolden(t, tc)
+			case "topic-fold":
+				runTopicFoldGolden(t, tc)
 			case "reconstructibility":
 				runReconstructibilityGolden(t, tc)
 			case "judgment":
@@ -509,6 +516,26 @@ func runSODPolicyGolden(t *testing.T, tc goldenCase) {
 // TypeScript (authz/approval-policy.ts reviewChecksRequired +
 // validateReviewChecks). Material/critical demand BOTH checks;
 // REVIEW_CHECKS_REQUIRED fails closed otherwise; normal/NULL never trips it.
+// goldenFoldCase is ONE raw→folded topic-key vector (contract "topic-fold").
+type goldenFoldCase struct {
+	Input    string `json:"input"`
+	Expected string `json:"expected"`
+}
+
+// runTopicFoldGolden runs every fold vector against core.FoldTopicKey (the
+// sdd-060-tenant-cli drift contract).
+func runTopicFoldGolden(t *testing.T, tc goldenCase) {
+	t.Helper()
+	if len(tc.FoldCases) == 0 {
+		t.Fatalf("%s: topic-fold vector requires foldCases", tc.Name)
+	}
+	for i, c := range tc.FoldCases {
+		if got := core.FoldTopicKey(c.Input); got != c.Expected {
+			t.Errorf("%s: foldCases[%d] FoldTopicKey(%q) = %q, want %q", tc.Name, i, c.Input, got, c.Expected)
+		}
+	}
+}
+
 func runReviewChecksGolden(t *testing.T, tc goldenCase) {
 	t.Helper()
 	if len(tc.ReviewChecksCases) == 0 {
