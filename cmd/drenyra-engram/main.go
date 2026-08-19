@@ -131,6 +131,8 @@ func run(args []string) int {
 		return cmdVerify(args[1:])
 	case "tenant":
 		return cmdTenant(args[1:])
+	case "encrypt":
+		return cmdEncrypt(args[1:])
 	case "help", "-h", "--help":
 		printUsage(os.Stdout)
 		return 0
@@ -4155,6 +4157,7 @@ Usage:
   drenyra-engram verify object <sha256> [--db <path>] [--objects <dir>]   (v0.7.0 evidence object)
   drenyra-engram tenant list [--db <path>]                             (operator: ids/counts only, never per-tenant content)
   drenyra-engram tenant consolidate --ruc <11 digits> [--period <YYYYMM>] [--dry-run | --apply] [--db <path>]   (topic-key drift within one RUC; --apply merges via audited supersede)
+  drenyra-engram encrypt [--dry-run | --apply] [--db <path>]   (re-encrypt legacy plaintext rows; requires DRENYRA_ENCRYPTION_MASTER_KEY)
     
 Flags:
   --db <path>      SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)

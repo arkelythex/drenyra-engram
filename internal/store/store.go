@@ -182,7 +182,7 @@ import (
 // idx_rule_links_ref(ref, version, effective_at, memory_id). No existing row
 // is backfilled or re-hashed; the fail-closed migration validates the columns
 // and the index ABSENT before mutation.
-const schemaVersion = 15
+const schemaVersion = 16
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -744,6 +744,13 @@ func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSign
 	}
 	if version == 14 {
 		if err := migrateV14ToV15(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 15
+	}
+	if version == 15 {
+		if err := migrateV15ToV16(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}

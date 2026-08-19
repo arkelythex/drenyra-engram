@@ -107,8 +107,8 @@ func TestFreshStoreBootstrapsV14StructuredRuleLinks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 15 {
-		t.Fatalf("schema_version = %d, want 15 (the chain continues v2→…→v12→v13→v14)", version)
+	if version != 16 {
+		t.Fatalf("schema_version = %d, want 16 (the chain continues v2→…→v12→v13→v14)", version)
 	}
 
 	// The two structured-link columns exist on a fresh store.

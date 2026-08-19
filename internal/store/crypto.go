@@ -10,6 +10,7 @@
 package store
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hkdf"
@@ -18,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
 )
@@ -125,6 +127,118 @@ func (s *SQLiteStore) encryptContentForWrite(memory core.AccountingMemory) (what
 		return "", "", "", "", nil, nil, "", encErr
 	}
 	return "", "", "", "", ciphertext, nonce, a, nil
+}
+
+// LegacyEncryptionCounts reports the per-tenant count of legacy plaintext
+// company-scope rows (content_algo = ” — written before encryption was
+// enabled). Read-only, safe without a key: the operator can see the gap before
+// deciding to re-encrypt (sdd-060-legacy-reencrypt, FR-RE-2).
+func (s *SQLiteStore) LegacyEncryptionCounts(ctx context.Context) (core.ReencryptReport, error) {
+	report := core.ReencryptReport{DryRun: true, PerTenant: []core.ReencryptTenantCount{}}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT organization_id, COUNT(*) FROM observations WHERE scope_kind = ? AND content_algo = '' GROUP BY organization_id ORDER BY organization_id`,
+		string(core.ScopeKindCompany))
+	if err != nil {
+		return report, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var org string
+		var n int
+		if err := rows.Scan(&org, &n); err != nil {
+			return report, err
+		}
+		report.PerTenant = append(report.PerTenant, core.ReencryptTenantCount{OrganizationID: org, LegacyRows: n})
+		report.TotalLegacy += n
+	}
+	return report, rows.Err()
+}
+
+// ReencryptLegacyContent re-encrypts EVERY legacy plaintext company-scope row
+// in ONE transaction (sdd-060-legacy-reencrypt, FR-RE-3/4): each row's content
+// is encrypted under its tenant's derived key (the same envelope semantics as
+// new writes) and the plaintext columns are redacted. Fail-closed: requires
+// the configured master key (ENCRYPTION_REQUIRED otherwise); any failure
+// aborts the whole transaction — never a partial re-encryption; the failing
+// row id is named. Idempotent: rows with content_algo != ” are outside the
+// SELECT (skipped by construction). Hashes, receipts, relations and the
+// transition log are untouched (the decrypted memory is byte-identical).
+func (s *SQLiteStore) ReencryptLegacyContent(ctx context.Context) (core.ReencryptReport, error) {
+	report := core.ReencryptReport{DryRun: false, PerTenant: []core.ReencryptTenantCount{}}
+	if len(s.encMaster) == 0 {
+		return report, errEncryptionRequired
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return report, fmt.Errorf("re-encrypt: begin: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, organization_id, what, why, where_text, learned FROM observations WHERE scope_kind = ? AND content_algo = ''`,
+		string(core.ScopeKindCompany))
+	if err != nil {
+		return report, fmt.Errorf("re-encrypt: select legacy rows: %w", err)
+	}
+	type legacyRow struct {
+		id, org                       string
+		what, why, whereText, learned string
+	}
+	var targets []legacyRow
+	for rows.Next() {
+		var r legacyRow
+		if err := rows.Scan(&r.id, &r.org, &r.what, &r.why, &r.whereText, &r.learned); err != nil {
+			_ = rows.Close()
+			return report, fmt.Errorf("re-encrypt: scan legacy row: %w", err)
+		}
+		targets = append(targets, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return report, fmt.Errorf("re-encrypt: rows: %w", err)
+	}
+	_ = rows.Close()
+
+	counts := map[string]int{}
+	for _, r := range targets {
+		nonce, ciphertext, algo, encErr := encryptContent(s.encMaster, r.org, contentEnvelope{
+			What: r.what, Why: r.why, Where: r.whereText, Learned: r.learned,
+		})
+		if encErr != nil {
+			return report, fmt.Errorf("re-encrypt: row %s: %w", r.id, encErr)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE observations SET content_cipher = ?, content_nonce = ?, content_algo = ?, what = '', why = '', where_text = '', learned = '' WHERE id = ?`,
+			ciphertext, nonce, algo, r.id); err != nil {
+			return report, fmt.Errorf("re-encrypt: update row %s: %w", r.id, err)
+		}
+		counts[r.org]++
+	}
+	if err := tx.Commit(); err != nil {
+		return report, fmt.Errorf("re-encrypt: commit: %w", err)
+	}
+	committed = true
+
+	for _, org := range sortedKeys(counts) {
+		report.PerTenant = append(report.PerTenant, core.ReencryptTenantCount{OrganizationID: org, LegacyRows: counts[org]})
+		report.TotalLegacy += counts[org]
+	}
+	return report, nil
+}
+
+// sortedKeys returns the map keys in sorted order (deterministic report).
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // EncryptionEnabled reports whether

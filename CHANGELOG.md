@@ -90,6 +90,18 @@ chain into the canonical chain through the existing audited supersede path
 (`memory_superseded` receipts + transition log). Dry-run is the default with
 ZERO writes; adversarial cross-RUC isolation tested. No schema change.
 
+### Legacy re-encryption — `encrypt` command (delivered 2026-08-19)
+
+`drenyra-engram encrypt [--dry-run | --apply]` re-encrypts legacy plaintext
+content of company-scope observations under `DRENYRA_ENCRYPTION_MASTER_KEY`
+(per-tenant derived keys, same envelope semantics as new writes). Dry-run is
+the default (ZERO writes, per-tenant report); `--apply` runs in ONE
+transaction (fail closed, no partial batch) and is idempotent. Hashes,
+receipts, relations and the transition log are untouched (the decrypted
+memory is byte-identical). Schema v16 refines the immutability trigger to
+permit ONLY the exact legacy-plaintext → encrypted-at-rest transition —
+institutional and already-encrypted rows are never touched.
+
 ### At-rest content encryption + sync guard (delivered 2026-08-19)
 
 Opt-in per-tenant at-rest content encryption (SDD-060 §5):

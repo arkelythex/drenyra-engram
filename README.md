@@ -222,13 +222,15 @@ CONTENT narrative of company-scope observations at rest with per-tenant
 derived keys (HKDF-SHA256 + AES-256-GCM, schema v15): each tenant's key
 material is separable (right-to-delete posture), reads fail closed without
 the key (`ENCRYPTION_REQUIRED`) or with a wrong one (`DECRYPTION_FAILED`),
-and legacy plaintext rows stay readable. `sync` refuses to copy an encrypted
+and legacy plaintext rows stay readable. `drenyra-engram encrypt --apply`
+    re-encrypts legacy plaintext rows (dry-run default; one transaction, hashes
+    untouched). `sync` refuses to copy an encrypted
 source into a plaintext store (`SYNC_ENCRYPTION_MISMATCH`). Default OFF —
 existing deployments are unchanged. (sdd-060 §5)
 
 ### CLI
 
-`save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · keys · auth · sync · mcp · serve`
+`save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · encrypt · keys · auth · sync · mcp · serve`
 
 ### HTTP
 

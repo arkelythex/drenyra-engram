@@ -368,7 +368,7 @@ func TestDoctorFailsClosedOnMissingTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor: %v", err)
 	}
-	if report.SchemaVersion != 15 {
+	if report.SchemaVersion != 16 {
 		t.Fatalf("schemaVersion = %d, want 14", report.SchemaVersion)
 	}
 }
@@ -430,7 +430,7 @@ func TestDoctorReportsPurgeLifecycleThroughAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doctor must NOT fail closed on a documented purge: %v", err)
 	}
-	if report.SchemaVersion != 15 {
+	if report.SchemaVersion != 16 {
 		t.Fatalf("schemaVersion = %d, want 14", report.SchemaVersion)
 	}
 	if report.PurgeRequests != 1 || report.PurgeApprovals != 1 || report.PurgeExecutions != 1 {

@@ -234,8 +234,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 15 || report.Observations != 2 || report.RevisionChains != 2 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 15, 2 observations, 2 chains", report)
+	if report.SchemaVersion != 16 || report.Observations != 2 || report.RevisionChains != 2 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 16, 2 observations, 2 chains", report)
 	}
 	// G-6 health-check fields (FZ-4/FR-4, design D-5): routine doctor reports
 	// quickCheck + foreignKeyCheck and integrityCheck as explicit not_run —

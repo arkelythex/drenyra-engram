@@ -58,7 +58,8 @@ drenyra-engram <command> [flags]     JSON output · exit codes 0/1/2
 | `keys init\|show\|rotate` | Ed25519 signing-key lifecycle |
 | `auth login` | Session-based authentication (approval principal) |
 | `sync --from <db> --to <db>` | Additive store reconciliation (divergence surfaced, never silently resolved) |
-| `tenant list` | Operator enumeration — ids/counts only, never per-tenant content (sdd-060 Phase 1) |
+| `encrypt [--dry-run | --apply]` | Re-encrypt legacy plaintext rows under `DRENYRA_ENCRYPTION_MASTER_KEY` (one transaction; hashes untouched; dry-run default) |
+    | `tenant list` | Operator enumeration — ids/counts only, never per-tenant content (sdd-060 Phase 1) |
 | `tenant consolidate --ruc <RUC> [--period] [--dry-run | --apply]` | Topic-key drift within one RUC; `--apply` merges drifted chains into the canonical chain via audited supersede (sdd-060 Phase 3) |
 | `mcp` / `serve` | MCP stdio server / HTTP REST + MCP |
 

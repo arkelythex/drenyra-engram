@@ -98,6 +98,7 @@ var cliDispatchPaths = []cliPath{
 	{name: "export lifecycle", path: []string{"export", "lifecycle"}},
 	{name: "tenant list", path: []string{"tenant", "list"}},
 	{name: "tenant consolidate", path: []string{"tenant", "consolidate"}},
+	{name: "encrypt", path: []string{"encrypt"}},
 	{name: "review queue", path: []string{"review", "queue"}},
 	{name: "review detail", path: []string{"review", "detail"}},
 	{name: "review reject", path: []string{"review", "reject"}},

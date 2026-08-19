@@ -432,6 +432,9 @@ typecheck clean.
       `DRENYRA_ENCRYPTION_MASTER_KEY` (per-tenant HKDF-derived keys, AES-256-GCM,
       schema v15 additive, fail-closed reads) + sync encryption-mismatch guard
       (source encrypted → plaintext sink refused). Legacy rows readable; default OFF.
+      Re-encryption de filas legacy: `drenyra-engram encrypt --apply` (dry-run
+      default, one transaction, hashes untouched; schema v16 trigger refinement
+      permits ONLY the exact plaintext→encrypted transition).
 
 ## Non-goals (for now)
 
