@@ -54,17 +54,54 @@ cents), `core.ParseCDRXML`, `server.IngestComprobante` (WORM store), CLI
 `object ingest`. Explicit NON-integration boundary (no SUNAT credentials).
 
 ### Identity — first production slice: stateless OIDC access tokens
-
+    
 `drenyra-engram serve` can now validate OpenID Connect access tokens as a first
 production identity slice on the HTTP surface, alongside the session-based CLI
 path. Implemented but not yet released.
-
+    
 - **Stateless RS256 access-token validation** ([internal/auth/oidc.go](internal/auth/oidc.go)): `alg` pinned to RS256 (no algorithm confusion); `kid` required and resolved from an in-memory JWKS cache (unknown `kid` triggers exactly ONE refresh, then fails closed); the `iss` and `aud` claims must match the configured settings exactly; `sub` and the tenant/company custom claims are required; `exp`, `nbf` and `iat` are enforced with a bounded clock skew. Raw tokens are never persisted, logged or hashed.
 - **DB membership/scope cross-check**: the verified `(sub, tenant, company)` tuple must exist in `memberships` (`LookupMembershipByScope`); missing → `PRINCIPAL_INVALID`, inactive → `MEMBERSHIP_INACTIVE`. Claims alone never mint membership.
 - **Standard assurance only**: no ACR/MFA elevation — `acr` and `amr` are ignored; no ID tokens, no browser/refresh flows, no user provisioning; the engine remains a resource server. Token revocation is bounded to DB membership state.
 - **Fail closed at startup**: a partial or invalid `DRENYRA_OIDC_*` set aborts `serve`; OIDC stays disabled by default (`EnableOIDC`); the shared `--token` guard remains a transport guard, never identity.
 - **Surfaces**: `serve` routes JWT-shaped credentials to OIDC when enabled; session/service credentials keep the existing path. CLI `auth login` is unchanged.
 - **Configuration**: `DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE` enable it; optional `DRENYRA_OIDC_JWKS_URL`, `DRENYRA_OIDC_CLAIM_TENANT`, `DRENYRA_OIDC_CLAIM_COMPANY`, `DRENYRA_OIDC_CLOCK_SKEW`. See [docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
+
+### Scope-param-rollout — identity→scope binding (delivered 2026-08-19)
+    
+Identity→scope binding at the three adapter surfaces (schema-param rollout,
+`contracts/scope.md` v1 section): when a verified approval principal is present,
+the effective scope MUST exactly match the principal's membership scope before
+the operation proceeds — `TENANT_SCOPE_MISMATCH` / `COMPANY_SCOPE_DENIED`, no
+fallback, no rewrite. Shared-token/reference and institutional surfaces are
+unchanged; `requireToken` stays the shared-token guard. HTTP (`httpQueryScope`
+choke point), MCP (`HandleMessageContext` + `decodeScope` + the five
+`core.Scope` tools) and CLI (`cliBindScope` on search/context). No schema,
+policy, store or `DRENYRA_DEFAULT_SCOPE` change; cross-tenant matrix +
+exhaustiveness guard green.
+
+### SDD-060 tenant surface — tenant list + consolidate (delivered 2026-08-19)
+
+Operator tenant CLI (SDD-060 Fases 1 y 3): `tenant list` enumerates tenants
+from identities + observations — ids/counts only, never per-tenant content.
+`tenant consolidate --ruc <RUC> [--period] [--dry-run | --apply]` detects
+topic-key drift within one RUC via the golden-parity `FoldTopicKey` (Go↔TS
+byte-identical vectors, contract `topic-fold`); `--apply` merges each drifted
+chain into the canonical chain through the existing audited supersede path
+(`memory_superseded` receipts + transition log). Dry-run is the default with
+ZERO writes; adversarial cross-RUC isolation tested. No schema change.
+
+### At-rest content encryption + sync guard (delivered 2026-08-19)
+
+Opt-in per-tenant at-rest content encryption (SDD-060 §5):
+`DRENYRA_ENCRYPTION_MASTER_KEY` (32 bytes, hex/base64) derives a per-tenant
+AES-256-GCM key via HKDF-SHA256 (separable keys — right-to-delete posture);
+company-scope CONTENT narrative is encrypted at rest (schema v15 additive:
+`content_cipher`/`content_nonce`/`content_algo`). Reads fail closed: no key →
+`ENCRYPTION_REQUIRED`, wrong key → `DECRYPTION_FAILED` (GCM), never partial.
+Legacy rows stay plaintext and readable in both modes (default OFF — existing
+deployments unchanged). `sync` refuses to copy an encrypted source into a
+plaintext sink (`SYNC_ENCRYPTION_MISMATCH`); both-encrypted sync re-encrypts
+on the target via `ImportObservation`.
 
 ## v0.4.0 — Evidence, Conflict and Judgment (unreleased)
 
