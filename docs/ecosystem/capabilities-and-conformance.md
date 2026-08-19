@@ -87,6 +87,17 @@ explicit approval per `openspec/config.yaml`.
   review approvals; it never produces fiscal authorization (SDD-080 / R14; the
   drenyra-ai boundary rejects memory-shaped evidence channels).
 
+## Pre-v1 breaking change (scope-param-rollout, 0.x)
+
+Authenticated calls whose effective scope differs from the authenticated
+principal's membership scope now FAIL CLOSED with the typed scope-denied
+(`TENANT_SCOPE_MISMATCH` / `COMPANY_SCOPE_DENIED`) instead of proceeding as
+caller-asserted. This applies at the HTTP, MCP, and CLI adapter boundaries when
+identity is present (exact-match binding, `contracts/scope.md` v1 section,
+FD-SPR-1/FD-SPR-5). Unauthenticated/reference surfaces (shared-token,
+session-less) are unchanged (FD-SPR-3). Effective pre-v1 (0.x): no policy
+version, check-order, or contract-version bump (NFR-SPR-6).
+
 ## Maintenance rule
 
 If a cited test or contract path is removed or fails, this manifest's claim for

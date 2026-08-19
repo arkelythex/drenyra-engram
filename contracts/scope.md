@@ -41,6 +41,44 @@ Every memory carries a fiscal scope:
    match mode, limit, or ordering. The reference test lives in
    `search/__tests__/scope-isolation.test.ts` and runs in CI.
 
-## Conformance
+    ## Conformance
 
-Vectors cover: scope-first ranking order, cross-company invisibility, institutional declaration, surface parity, scope-in-identity, and the frozen-for-0.2 semantics above (including the REQUIRED cross-tenant negative test).
+    Vectors cover: scope-first ranking order, cross-company invisibility, institutional declaration, surface parity, scope-in-identity, and the frozen-for-0.2 semantics above (including the REQUIRED cross-tenant negative test).
+
+    ## v1 scope contract — identity→scope binding (scope-param-rollout, effective pre-v1 0.x)
+
+    > Version: 0.3 · Status: frozen-for-v1 · Scope-param-rollout slice 3 (AC-SPR-5).
+
+    When identity is present, the **effective scope is the explicit scope parameters
+    validated against the authenticated principal's membership scope** — exact-match
+    semantics, no fallback, no rewrite (FD-SPR-1). The binding is enforced at the
+    adapter boundary (HTTP, MCP, CLI) only; it grants no authority, it constrains
+    already-authenticated callers' scope.
+
+    1. **Exact-match binding (FD-SPR-1).** A verified approval principal's effective
+       company scope MUST equal its membership scope: `organizationId ==
+       principal.tenantId` and `companyId ∈ principal.companyScopes`. On mismatch the
+       call fails closed BEFORE the operation with the typed denial
+       `TENANT_SCOPE_MISMATCH` / `COMPANY_SCOPE_DENIED` (FD-SPR-5) — the scope is
+       never silently rewritten to the principal's scope.
+    2. **Reference mode is caller-asserted (FD-SPR-3).** Unauthenticated surfaces
+       (shared-token / session-less reference calls) keep the pre-existing
+       caller-asserted scope derivation: the caller declares the scope and the
+       store's exact-scope assertions are the isolation boundary. Reference mode is
+       never a substitute for identity.
+    3. **Institutional is orthogonal (FD-SPR-4).** The binding applies only to
+       company-kind effective scopes; institutional requests pass through unchanged
+       (byte-identical with and without a principal).
+    4. **Multi-company principals (FD-SPR-2).** A principal whose membership carries
+       a set of companies is bound against the full allowed set; expanding the set
+       (e.g. multi-company scopes beyond the current exact tuple) is a future
+       extension, not a contract change.
+    5. **Store boundary (NFR-SPR-5).** The adapter binding is defense-in-depth at
+       the boundary. Direct Go callers of the canonical API are protected by the
+       store-level exact-scope assertions, which remain the authoritative isolation
+       mechanism and are unchanged by this contract.
+
+    Period is not an identity dimension: a principal's membership carries the
+    company, not the fiscal period. The binding therefore compares
+    organization/company only; the period stays part of the exact effective scope
+    as before.
