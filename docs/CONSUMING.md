@@ -123,6 +123,25 @@ Authenticated decisions (`approve`, `review reject|return`) require a session:
 - Save company memory through the surface you intend to query it from, or keep
   `companyId = ruc` for cross-surface visibility.
 
+## What to record (institutional memory guidance)
+
+Engram exists so the WHY survives the person and the session. Record
+**institutional patterns scoped by RUC**, not transient work:
+
+| Kind | Example | Why it matters |
+| --- | --- | --- |
+| Provider/tax patterns | "This provider always applies 12% detracción" | Agents propose the right candidate on the first pass |
+| Past corrections | "This account was reclassified last month by human error" | Avoid repeating a known mistake |
+| Professional criteria | "The accountant prefers criterion X for ambiguous deductible expenses" | Proposals match the professional's judgment |
+| Rule applications | "IGV base rate is 18% — applies to all invoices" | Reconstructible reasoning after the author leaves |
+| Approved precedents | "The 2025-11 close used method Y for provisions" | Consistency across periods |
+
+Boundary: memory records **what to propose and why**. It never records (and
+cannot influence) **how much review a candidate needs** — that is the
+deterministic materiality policy in drenyra-ai (BigInt thresholds, frozen).
+Memory is context for drafting candidates; gates and materiality are never
+decided by memory.
+
 ## Notes
 
 - **Money is whole int64 cents** — never floats. Monetary fields on the API
