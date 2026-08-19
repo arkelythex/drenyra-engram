@@ -206,7 +206,7 @@ agent**. Reproduced end-to-end in `TestReconstructibleCloseFixture`
 The catalog has **no authorize/approve/allow tool** — memory never authorizes.
 
 ### Production identity (OIDC)
-
+    
 `drenyra-engram serve` can validate OpenID Connect access tokens as a first
 production identity slice: stateless RS256 JWT validation with exact
 issuer/audience, a DB membership/scope cross-check, and standard assurance
@@ -215,6 +215,17 @@ only (no MFA elevation, no revocation beyond DB membership). Enable it with
 `DRENYRA_OIDC_*` set fails startup. See
 [docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
 
+### At-rest content encryption (opt-in)
+
+Set `DRENYRA_ENCRYPTION_MASTER_KEY` (32 bytes, hex or base64) to encrypt the
+CONTENT narrative of company-scope observations at rest with per-tenant
+derived keys (HKDF-SHA256 + AES-256-GCM, schema v15): each tenant's key
+material is separable (right-to-delete posture), reads fail closed without
+the key (`ENCRYPTION_REQUIRED`) or with a wrong one (`DECRYPTION_FAILED`),
+and legacy plaintext rows stay readable. `sync` refuses to copy an encrypted
+source into a plaintext store (`SYNC_ENCRYPTION_MISMATCH`). Default OFF —
+existing deployments are unchanged. (sdd-060 §5)
+    
 ### CLI
 
 `save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · keys · auth · sync · mcp · serve`

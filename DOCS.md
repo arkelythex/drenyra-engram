@@ -29,6 +29,7 @@
 | `DRENYRA_ENGRAM_SIGNING_KEY` | `${UserConfigDir}/drenyra-engram/signing-keys.json` | Ed25519 signing keyring path (user-only, 0600) |
 | `DRENYRA_ENGRAM_SESSION` | — | Session store override (auth/session lookup) |
 | `DRENYRA_ENGRAM_TOKEN` | — | HTTP bearer token; when set, every request must present `Authorization: Bearer <token>` |
+| `DRENYRA_ENCRYPTION_MASTER_KEY` | — | 32-byte master key (hex or base64) enabling per-tenant at-rest content encryption (sdd-060): company-scope narrative encrypted with tenant-derived HKDF/AES-256-GCM keys; reads fail closed (`ENCRYPTION_REQUIRED`/`DECRYPTION_FAILED`) without/with a wrong key |
 | `DRENYRA_DEFAULT_SCOPE` | — | Exact scope injected into MCP `initialize` metadata (`drenyra/currentContext`) — never inferred |
 | `DRENYRA_ENV` | — | Environment name (provenance) |
 
