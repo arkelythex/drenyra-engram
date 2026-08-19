@@ -23,7 +23,7 @@
 ## Environment variables
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `DRENYRA_ENGRAM_DB` | `./engram.db` | SQLite database path |
 | `DRENYRA_ENGRAM_OBJECTS` | `./objects` | Evidence-object WORM root (`objects/<ab>/<cd>/<sha256>`) |
 | `DRENYRA_ENGRAM_SIGNING_KEY` | `${UserConfigDir}/drenyra-engram/signing-keys.json` | Ed25519 signing keyring path (user-only, 0600) |
@@ -40,7 +40,7 @@ drenyra-engram <command> [flags]     JSON output · exit codes 0/1/2
 ```
 
 | Command | Purpose |
-|---|---|
+| --- | --- |
 | `save` | Upsert an observation (new immutable revision); fiscal effects → `pending_review` |
 | `search` | Scope-first token-overlap search (`--any` for broader recall) |
 | `context` | Current memory per chain for a scope |
@@ -59,7 +59,7 @@ drenyra-engram <command> [flags]     JSON output · exit codes 0/1/2
 | `auth login` | Session-based authentication (approval principal) |
 | `sync --from <db> --to <db>` | Additive store reconciliation (divergence surfaced, never silently resolved) |
 | `tenant list` | Operator enumeration — ids/counts only, never per-tenant content (sdd-060 Phase 1) |
-| `tenant consolidate --ruc <RUC> [--period] [--dry-run|--apply]` | Topic-key drift within one RUC; `--apply` merges drifted chains into the canonical chain via audited supersede (sdd-060 Phase 3) |
+| `tenant consolidate --ruc <RUC> [--period] [--dry-run | --apply]` | Topic-key drift within one RUC; `--apply` merges drifted chains into the canonical chain via audited supersede (sdd-060 Phase 3) |
 | `mcp` / `serve` | MCP stdio server / HTTP REST + MCP |
 
 ## MCP tools
@@ -70,7 +70,7 @@ authorizes. Domain failures return in-band results (`isError: true`) with
 stable error codes; shape errors are JSON-RPC `-32602`.
 
 | Family | Tools |
-|---|---|
+| --- | --- |
 | `engram_save/get/get_by_topic/chain/search/context/compare/doctor/review/promote/supersede/relations/transitions` | General memory |
 | `accounting_record/get/search/timeline/approve` | Records + human approval |
 | `accounting_close_create/period_reopen` | Monthly close |
@@ -95,7 +95,7 @@ localhost by default; with a token every request must present
 `{"error": {"code", "message"}}` (400/404/409/500).
 
 | Area | Routes |
-|---|---|
+| --- | --- |
 | Memory | `POST /v1/observations` · `GET /v1/observations/{id}` · `GET /v1/topic/{topicKey}` · `GET /v1/chain` · `GET /v1/search` · `GET /v1/context` · `POST /v1/compare` · `GET /v1/relations` · `GET /v1/transitions` · `GET /v1/doctor` |
 | Approval | `POST /accounting/memories/{memoryId}/approve\|reject\|return` (authenticated) |
 | Review | `GET /accounting/review/queue` · `GET /accounting/review/{memoryId}` |

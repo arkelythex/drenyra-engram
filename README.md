@@ -182,7 +182,7 @@ agent**. Reproduced end-to-end in `TestReconstructibleCloseFixture`
 ## What it provides
 
 | Capability | Why it matters |
-|---|---|
+| --- | --- |
 | **Scope-first memory** | RUC / company / period are structural filters, never post-filters — cross-tenant isolation is impossible to bypass, not a convention |
 | **Immutable history** | Revisions never mutate; supersession is explicit and atomic |
 | **Human approval gate** | Only an authenticated professional can approve a fiscally material memory — never an agent, never a caller-declared `"human"` |
@@ -199,14 +199,14 @@ agent**. Reproduced end-to-end in `TestReconstructibleCloseFixture`
 ### MCP (57 tools)
 
 | Family | Tools |
-|---|---|
+| --- | --- |
 | **engram_** (13) | `save`, `get`, `get_by_topic`, `chain`, `search`, `context`, `compare`, `doctor`, `review`, `promote`, `supersede`, `relations`, `transitions` |
 | **accounting_** (44) | record/search/timeline, approve, close, judgments, reconciliations, review queue/detail/reject/return, rule show/history/impact, object store/get/ingest, retention/holds/purge/export, period comparison |
 
 The catalog has **no authorize/approve/allow tool** — memory never authorizes.
 
 ### Production identity (OIDC)
-    
+
 `drenyra-engram serve` can validate OpenID Connect access tokens as a first
 production identity slice: stateless RS256 JWT validation with exact
 issuer/audience, a DB membership/scope cross-check, and standard assurance
@@ -225,7 +225,7 @@ the key (`ENCRYPTION_REQUIRED`) or with a wrong one (`DECRYPTION_FAILED`),
 and legacy plaintext rows stay readable. `sync` refuses to copy an encrypted
 source into a plaintext store (`SYNC_ENCRYPTION_MISMATCH`). Default OFF —
 existing deployments are unchanged. (sdd-060 §5)
-    
+
 ### CLI
 
 `save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · keys · auth · sync · mcp · serve`
@@ -271,7 +271,7 @@ company-B memory — this is a tested invariant, not a filter.
 ## Ecosystem
 
 | Project | Role |
-|---|---|
+| --- | --- |
 | [Drenyra Command Center](https://github.com/arkelythex/drenyra-command-center) | Command Center — web application (consumes memory) |
 | [Drenyra AI](https://github.com/arkelythex/drenyra-ai) | Agent ecosystem (may integrate) |
 | [Drenyra Pi](https://github.com/arkelythex/drenyra-pi) | Pi-native harness (reads context) |

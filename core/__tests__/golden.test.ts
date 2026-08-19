@@ -499,9 +499,7 @@ function buildJudgment(j: GoldenJudgment): AccountingJudgment {
 		status: j.status,
 		proposer: { ...j.proposer },
 		proposalReason: j.proposalReason,
-		...(j.predecessorId === undefined
-			? {}
-			: { predecessorId: j.predecessorId }),
+		...(j.predecessorId === undefined ? {} : { predecessorId: j.predecessorId }),
 		proposedAt: j.proposedAt,
 		updatedAt: j.updatedAt,
 	};
@@ -568,9 +566,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 						...(input.materiality === undefined
 							? {}
 							: { materiality: BigInt(input.materiality) }),
-						...(input.receiptId === undefined
-							? {}
-							: { receiptId: input.receiptId }),
+						...(input.receiptId === undefined ? {} : { receiptId: input.receiptId }),
 						...(input.supersedesId === undefined
 							? {}
 							: { supersedesId: input.supersedesId }),
@@ -609,9 +605,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 						}
 					})();
 
-					expect(initialStatus(input.fiscalEffect)).toBe(
-						tc.expected.initialStatus,
-					);
+					expect(initialStatus(input.fiscalEffect)).toBe(tc.expected.initialStatus);
 					expect(agentApproves).toBe(tc.expected.canApproveAgent);
 					expect(humanApproves).toBe(tc.expected.canApproveHuman);
 
@@ -638,9 +632,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				}
 				case "approval-envelope": {
 					if (tc.memory === undefined) {
-						throw new Error(
-							`${tc.name}: approval-envelope vector requires memory`,
-						);
+						throw new Error(`${tc.name}: approval-envelope vector requires memory`);
 					}
 					const memory = buildGoldenMemory(tc.memory);
 					memory.contentHash = await computeContentHash(memory);
@@ -676,9 +668,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							`${tc.name}: principal-snapshot vector requires principal`,
 						);
 					}
-					expect(
-						principalSnapshot(principalFromVector(tc.principal)).roles,
-					).toEqual(tc.expected.canonicalRoles);
+					expect(principalSnapshot(principalFromVector(tc.principal)).roles).toEqual(
+						tc.expected.canonicalRoles,
+					);
 					break;
 				}
 				case "judgment": {
@@ -729,9 +721,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							);
 						}
 						expect(tc.principal).toBeUndefined();
-						expect(
-							confirmGuardErrorCode(raw.status, tc.resolution, false),
-						).toBe(tc.expected.agentConfirmErrorCode);
+						expect(confirmGuardErrorCode(raw.status, tc.resolution, false)).toBe(
+							tc.expected.agentConfirmErrorCode,
+						);
 					}
 
 					// Confirmed state + policy (only with an authorizing principal).
@@ -875,9 +867,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 					// AC10: Node canonicalizes the vector payload and the unsigned
 					// envelope - byte-identical with Go's pinned bytes.
 					expect(
-						Buffer.from(canonicalReceiptPayload(vec.payload), "utf8").toString(
-							"hex",
-						),
+						Buffer.from(canonicalReceiptPayload(vec.payload), "utf8").toString("hex"),
 					).toBe(vec.canonicalPayloadBytes);
 					expect(receiptPayloadHash(vec.payload)).toBe(vec.payloadHash);
 					expect(
@@ -895,9 +885,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 						vec.payload,
 						seed,
 					);
-					expect(Buffer.from(signedPublicKey).toString("hex")).toBe(
-						vec.publicKey,
-					);
+					expect(Buffer.from(signedPublicKey).toString("hex")).toBe(vec.publicKey);
 					expect(Buffer.from(signed.signature, "base64").toString("hex")).toBe(
 						vec.signature,
 					);
@@ -905,10 +893,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 
 					// Complete receipt bytes, chain digest and key id.
 					expect(
-						Buffer.from(
-							completeReceiptBytes(vec.signedReceipt),
-							"utf8",
-						).toString("hex"),
+						Buffer.from(completeReceiptBytes(vec.signedReceipt), "utf8").toString(
+							"hex",
+						),
 					).toBe(vec.completeReceiptBytes);
 					expect(receiptHash(vec.signedReceipt)).toBe(vec.receiptHash);
 					expect(receiptKeyId(publicKey)).toBe(vec.keyId);
@@ -951,14 +938,9 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							code = err instanceof ApprovalError ? err.code : undefined;
 						}
 						if (c.errorCode === "") {
-							expect(
-								code,
-								`${tc.name}: reviewChecksCases[${i}]`,
-							).toBeUndefined();
+							expect(code, `${tc.name}: reviewChecksCases[${i}]`).toBeUndefined();
 						} else {
-							expect(code, `${tc.name}: reviewChecksCases[${i}]`).toBe(
-								c.errorCode,
-							);
+							expect(code, `${tc.name}: reviewChecksCases[${i}]`).toBe(c.errorCode);
 						}
 					}
 					break;
@@ -966,9 +948,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 				case "reconstructibility": {
 					const data = tc.reconstructibility;
 					if (!data) {
-						throw new Error(
-							`${tc.name}: reconstructibility vector requires data`,
-						);
+						throw new Error(`${tc.name}: reconstructibility vector requires data`);
 					}
 					for (const c of data.eligibilityCases ?? []) {
 						const mem = goldenReconstructibilityMemory(c.memory, c.scope);
@@ -989,10 +969,7 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 						);
 					}
 					for (const c of data.ratioCases ?? []) {
-						const counts = buildReconstructibilityCounts(
-							c.denominator,
-							c.numerator,
-						);
+						const counts = buildReconstructibilityCounts(c.denominator, c.numerator);
 						expect(counts.ratio, `${tc.name}: ratio ${c.name}`).toEqual(
 							c.expectedRatio,
 						);
@@ -1000,30 +977,26 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							counts.zeroDenominator,
 							`${tc.name}: ratio ${c.name} zeroDenominator`,
 						).toBe(c.expectedZeroDenominator);
-						expect(
-							counts.percentage,
-							`${tc.name}: ratio ${c.name} percentage`,
-						).toBe(c.expectedPercentage);
+						expect(counts.percentage, `${tc.name}: ratio ${c.name} percentage`).toBe(
+							c.expectedPercentage,
+						);
 					}
-    					break;
-    				}
-    				case "topic-fold": {
-    					if (!tc.foldCases) {
-    						throw new Error(
-    							`${tc.name}: topic-fold vector requires foldCases`,
-    						);
-    					}
-    					for (const [i, c] of tc.foldCases.entries()) {
-    						expect(
-    							foldTopicKey(c.input),
-    							`${tc.name}: foldCases[${i}]`,
-    						).toBe(c.expected);
-    					}
-    					break;
-    				}
-    				default: {
-    					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
-    				}
+					break;
+				}
+				case "topic-fold": {
+					if (!tc.foldCases) {
+						throw new Error(`${tc.name}: topic-fold vector requires foldCases`);
+					}
+					for (const [i, c] of tc.foldCases.entries()) {
+						expect(foldTopicKey(c.input), `${tc.name}: foldCases[${i}]`).toBe(
+							c.expected,
+						);
+					}
+					break;
+				}
+				default: {
+					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
+				}
 			}
 		});
 	}
