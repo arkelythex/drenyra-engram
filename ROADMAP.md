@@ -428,7 +428,10 @@ typecheck clean.
           chains into the canonical chain via the audited supersede path
           (memory_superseded receipts + transition log); dry-run default (ZERO
           writes); adversarial cross-RUC isolation tested.
-    - [ ] **Cifrado at-rest por tenant + sync encryption** — Unit C (next change).
+    - [x] **Cifrado at-rest por tenant + sync encryption** — opt-in via
+      `DRENYRA_ENCRYPTION_MASTER_KEY` (per-tenant HKDF-derived keys, AES-256-GCM,
+      schema v15 additive, fail-closed reads) + sync encryption-mismatch guard
+      (source encrypted → plaintext sink refused). Legacy rows readable; default OFF.
 
 ## Non-goals (for now)
 

@@ -31,6 +31,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -163,12 +164,42 @@ func openStoreWithRoot(dbPath, objectsRoot string) (*store.SQLiteStore, error) {
 	if objectsRoot == "" {
 		objectsRoot = defaultObjectsRoot(dbPath)
 	}
-	st, err := store.OpenWithObjects(dbPath, objectsRoot)
+	// At-rest content encryption (sdd-060-at-rest-encryption, FR-ENC-5): the
+	// operator master key comes from DRENYRA_ENCRYPTION_MASTER_KEY (hex or
+	// base64 of 32 bytes). When set, company-scope content is encrypted at rest
+	// with per-tenant derived keys and reads fail closed without it. Absent →
+	// encryption disabled (the default — legacy deployments unchanged).
+	opts := store.Options{}
+	if raw := os.Getenv("DRENYRA_ENCRYPTION_MASTER_KEY"); raw != "" {
+		key, err := decodeEncryptionMasterKey(raw)
+		if err != nil {
+			return nil, err
+		}
+		opts.EncryptionKey = key
+	}
+	st, err := store.OpenWithObjectsAndOptions(dbPath, objectsRoot, opts)
 	if err != nil {
 		return nil, err
 	}
 	st.SetReceiptSigner(receipts.NewSigner(st, receipts.DefaultKeyringPath()))
 	return st, nil
+}
+
+// decodeEncryptionMasterKey decodes DRENYRA_ENCRYPTION_MASTER_KEY (hex or
+// base64) into the 32-byte master key; malformed or non-32-byte material fails
+// closed (FR-ENC-5).
+func decodeEncryptionMasterKey(raw string) ([]byte, error) {
+	key, err := hex.DecodeString(strings.TrimSpace(raw))
+	if err != nil {
+		key, err = base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, errors.New("INVALID_ENCRYPTION_KEY: DRENYRA_ENCRYPTION_MASTER_KEY must be hex or base64 of exactly 32 bytes")
+		}
+	}
+	if len(key) != 32 {
+		return nil, errors.New("INVALID_ENCRYPTION_KEY: DRENYRA_ENCRYPTION_MASTER_KEY must decode to exactly 32 bytes")
+	}
+	return key, nil
 }
 
 // defaultObjectsRoot resolves the safe explicit local WORM object root for a

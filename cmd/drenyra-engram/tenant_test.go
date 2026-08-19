@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -367,5 +368,45 @@ func TestCLIConsolidateIsolation(t *testing.T) {
 		if r.Action == core.ReceiptActionMemorySuperseded {
 			t.Fatalf("tenant-B head received a supersede receipt from an A-only consolidate: %+v", r)
 		}
+	}
+}
+
+// TestCLIEncryptionEnvWiring — FR-ENC-5: DRENYRA_ENCRYPTION_MASTER_KEY through
+// openStore: save with the key encrypts at rest; a read without the key fails
+// closed with ENCRYPTION_REQUIRED; malformed key material fails closed.
+func TestCLIEncryptionEnvWiring(t *testing.T) {
+	keyHex := strings.Repeat("42", 32) // 32 bytes of 0x42, hex-encoded
+	db := filepath.Join(t.TempDir(), "engram.db")
+	encEnv := []string{"DRENYRA_ENCRYPTION_MASTER_KEY=" + keyHex}
+
+	// Save a company-scope memory WITH the key (encrypted at rest).
+	fixture := filepath.Join(t.TempDir(), "fixture.json")
+	fixtureJSON := `{"topicKey":"encryption/cli","title":"encrypted cli","kind":"fact","scope":{"kind":"company","organizationId":"cli","companyId":"20100039201","ruc":"20100039201","period":"202401"},"content":{"what":"secret cli content","why":"test","where":"cmd/drenyra-engram","learned":"n/a"},"fiscalEffect":"none","effectiveAt":"2024-01-15T00:00:00Z","source":{"system":"go-test","actorId":"test-agent","actorKind":"agent"}}`
+	if err := os.WriteFile(fixture, []byte(fixtureJSON), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	_, stderr, code := runCLIEnv(t, encEnv, "save", fixture, "--db", db)
+	if code != 0 {
+		t.Fatalf("encrypted save failed (exit %d): %s", code, stderr)
+	}
+
+	// Read WITHOUT the key → fail closed ENCRYPTION_REQUIRED (the exact
+	// period-scoped read actually touches the encrypted row).
+	_, stderr, code = runCLI(t, "context", "20100039201", "--period", "202401", "--db", db)
+	if code == 0 {
+		t.Fatalf("context without key exited 0 — encrypted content readable in plaintext mode")
+	}
+	if !strings.Contains(stderr, "ENCRYPTION_REQUIRED") {
+		t.Fatalf("context stderr = %q, want ENCRYPTION_REQUIRED", stderr)
+	}
+
+	// Malformed key material → store open fails closed.
+	badEnv := []string{"DRENYRA_ENCRYPTION_MASTER_KEY=not-a-key"}
+	_, stderr, code = runCLIEnv(t, badEnv, "context", "20100039201", "--period", "202401", "--db", db)
+	if code == 0 {
+		t.Fatalf("malformed key exited 0")
+	}
+	if !strings.Contains(stderr, "INVALID_ENCRYPTION_KEY") {
+		t.Fatalf("malformed-key stderr = %q, want INVALID_ENCRYPTION_KEY", stderr)
 	}
 }
