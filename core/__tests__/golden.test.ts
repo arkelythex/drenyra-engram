@@ -80,6 +80,7 @@ import {
 	classifyReconstructibility,
 	isMaterialDecision,
 } from "../reconstructibility.js";
+import { foldTopicKey } from "../topic-fold.js";
 import {
 	LAYER_CHAIN_LINK,
 	LAYER_ENVELOPE_INTEGRITY,
@@ -187,7 +188,8 @@ interface GoldenCase {
 		| "review-checks"
 		| "judgment"
 		| "receipt"
-		| "reconstructibility";
+		| "reconstructibility"
+		| "topic-fold";
 	description?: string;
 	input: {
 		id: string;
@@ -236,6 +238,8 @@ interface GoldenCase {
 		required: boolean;
 		errorCode: string;
 	}>;
+	/** sdd-060-tenant-cli topic-fold vectors (contract "topic-fold"). */
+	foldCases?: Array<{ input: string; expected: string }>;
 	/**
 	 * v1-readiness reconstructibility vectors (contract "reconstructibility"):
 	 * the pure FZ-1 eligibility predicate, the FZ-2 classifier precedence and
@@ -1001,11 +1005,25 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 							`${tc.name}: ratio ${c.name} percentage`,
 						).toBe(c.expectedPercentage);
 					}
-					break;
-				}
-				default: {
-					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
-				}
+    					break;
+    				}
+    				case "topic-fold": {
+    					if (!tc.foldCases) {
+    						throw new Error(
+    							`${tc.name}: topic-fold vector requires foldCases`,
+    						);
+    					}
+    					for (const [i, c] of tc.foldCases.entries()) {
+    						expect(
+    							foldTopicKey(c.input),
+    							`${tc.name}: foldCases[${i}]`,
+    						).toBe(c.expected);
+    					}
+    					break;
+    				}
+    				default: {
+    					throw new Error(`${tc.name}: unknown golden contract "${contract}"`);
+    				}
 			}
 		});
 	}

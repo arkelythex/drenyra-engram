@@ -96,6 +96,8 @@ var cliDispatchPaths = []cliPath{
 	{name: "purge withdraw", path: []string{"purge", "withdraw"}},
 	{name: "purge execute", path: []string{"purge", "execute"}},
 	{name: "export lifecycle", path: []string{"export", "lifecycle"}},
+	{name: "tenant list", path: []string{"tenant", "list"}},
+	{name: "tenant consolidate", path: []string{"tenant", "consolidate"}},
 	{name: "review queue", path: []string{"review", "queue"}},
 	{name: "review detail", path: []string{"review", "detail"}},
 	{name: "review reject", path: []string{"review", "reject"}},

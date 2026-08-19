@@ -1,0 +1,19 @@
+{
+  "name": "topic-fold drift vectors",
+  "contract": "topic-fold",
+  "description": "sdd-060-tenant-cli canonical topic-key fold: formatting drift collides, word boundaries survive. Shared Go<->TS golden parity.",
+  "foldCases": [
+    {"input": "rule igv credit", "expected": "rule igv credit"},
+    {"input": "rule/IGV credit", "expected": "rule igv credit"},
+    {"input": "rule/igv-credit", "expected": "rule igv credit"},
+    {"input": "rule.igv.credit", "expected": "rule igv credit"},
+    {"input": "rule//igv//credit", "expected": "rule igv credit"},
+    {"input": "rule_igv_credit", "expected": "rule igv credit"},
+    {"input": "rule\t igv\ncredit", "expected": "rule igv credit"},
+    {"input": "  rule/igv credit  ", "expected": "rule igv credit"},
+    {"input": "policy/v1.2", "expected": "policy v1 2"},
+    {"input": "RULE/IGV/CRÉDITO", "expected": "rule igv crédito"},
+    {"input": "", "expected": ""},
+    {"input": "///---", "expected": ""}
+  ]
+}
