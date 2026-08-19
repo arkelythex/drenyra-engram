@@ -1,0 +1,35 @@
+# scope-param-rollout
+
+## Metadata
+
+change: scope-param-rollout
+status: archive # draft | proposed | in-progress | verify | archive
+artifact_store: openspec
+created: 2026-08-15
+updated: 2026-08-19
+
+## Phase status
+
+proposal: done # pending | done
+spec: done
+design: done
+tasks: done
+apply: done
+verify: done
+archive: done
+
+## Current
+
+next_recommended: none
+blocked_reasons: []
+
+## Links
+
+links:
+  proposal: openspec/changes/scope-param-rollout/proposal.md
+  spec: openspec/changes/scope-param-rollout/spec.md
+  design: openspec/changes/scope-param-rollout/design.md
+  tasks: openspec/changes/scope-param-rollout/tasks.md
+  apply-progress: openspec/changes/scope-param-rollout/apply-progress.md
+  verify-report: openspec/changes/scope-param-rollout/verify-report.md
+  archive-report: openspec/changes/scope-param-rollout/archive-report.md
