@@ -54,11 +54,11 @@ cents), `core.ParseCDRXML`, `server.IngestComprobante` (WORM store), CLI
 `object ingest`. Explicit NON-integration boundary (no SUNAT credentials).
 
 ### Identity — first production slice: stateless OIDC access tokens
-    
+
 `drenyra-engram serve` can now validate OpenID Connect access tokens as a first
 production identity slice on the HTTP surface, alongside the session-based CLI
 path. Implemented but not yet released.
-    
+
 - **Stateless RS256 access-token validation** ([internal/auth/oidc.go](internal/auth/oidc.go)): `alg` pinned to RS256 (no algorithm confusion); `kid` required and resolved from an in-memory JWKS cache (unknown `kid` triggers exactly ONE refresh, then fails closed); the `iss` and `aud` claims must match the configured settings exactly; `sub` and the tenant/company custom claims are required; `exp`, `nbf` and `iat` are enforced with a bounded clock skew. Raw tokens are never persisted, logged or hashed.
 - **DB membership/scope cross-check**: the verified `(sub, tenant, company)` tuple must exist in `memberships` (`LookupMembershipByScope`); missing → `PRINCIPAL_INVALID`, inactive → `MEMBERSHIP_INACTIVE`. Claims alone never mint membership.
 - **Standard assurance only**: no ACR/MFA elevation — `acr` and `amr` are ignored; no ID tokens, no browser/refresh flows, no user provisioning; the engine remains a resource server. Token revocation is bounded to DB membership state.
@@ -67,7 +67,7 @@ path. Implemented but not yet released.
 - **Configuration**: `DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE` enable it; optional `DRENYRA_OIDC_JWKS_URL`, `DRENYRA_OIDC_CLAIM_TENANT`, `DRENYRA_OIDC_CLAIM_COMPANY`, `DRENYRA_OIDC_CLOCK_SKEW`. See [docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
 
 ### Scope-param-rollout — identity→scope binding (delivered 2026-08-19)
-    
+
 Identity→scope binding at the three adapter surfaces (schema-param rollout,
 `contracts/scope.md` v1 section): when a verified approval principal is present,
 the effective scope MUST exactly match the principal's membership scope before
