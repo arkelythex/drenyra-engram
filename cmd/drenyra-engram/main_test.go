@@ -234,8 +234,8 @@ func TestCLISaveSearchContextRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 16 || report.Observations != 2 || report.RevisionChains != 2 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 16, 2 observations, 2 chains", report)
+	if report.SchemaVersion != 17 || report.Observations != 2 || report.RevisionChains != 2 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 17, 2 observations, 2 chains", report)
 	}
 	// G-6 health-check fields (FZ-4/FR-4, design D-5): routine doctor reports
 	// quickCheck + foreignKeyCheck and integrityCheck as explicit not_run —
@@ -433,6 +433,7 @@ func cliSaveInput(topicKey, ruc, period, what, session string) core.SaveInput {
 			ActorKind: core.ActorKindAgent,
 			Session:   session,
 		},
+		Confidence: 0.8,
 	}
 }
 
@@ -1251,6 +1252,7 @@ func cliFixtureJSON(t *testing.T, topicKey, what string, period string) string {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  period[0:4] + "-" + period[4:6] + "-01T00:00:00.000Z",
 		Source:       core.Source{System: "cli", ActorID: "cli-user", ActorKind: core.ActorKindAgent, Session: "compare-" + period},
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("build fixture: %v", err)

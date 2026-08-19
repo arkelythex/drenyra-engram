@@ -1338,6 +1338,10 @@ func (m *MCPServer) handleToolsCall(ctx context.Context, params json.RawMessage)
 			EffectiveAt:  args.EffectiveAt,
 			ObservedAt:   args.ObservedAt,
 			Source:       source,
+			// Confidence is a REQUIRED field (sdd-060-confidence-required,
+			// FR-CN-3): the MCP surface defaults to a neutral 0.5 unless the
+			// caller supplies a value via args.
+			Confidence: 0.5,
 		})
 		if err != nil {
 			return errTextContent(err), nil

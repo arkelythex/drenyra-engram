@@ -65,6 +65,7 @@ func validInput(topicKey, what string) core.SaveInput {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  testT,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}
 }
 

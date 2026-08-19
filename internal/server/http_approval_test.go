@@ -85,6 +85,7 @@ func savePendingApproval(t *testing.T, api *API, topicKey string) core.Accountin
 		FiscalEffect: core.FiscalEffectClosing,
 		EffectiveAt:  "2026-07-31T12:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save pending approval fixture: %v", err)

@@ -58,6 +58,7 @@ func TestRuleImpactEndToEnd(t *testing.T) {
 		Validity:   &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
 		PolicyRule: &core.PolicyRule{Jurisdiction: "PE", Legislation: "NATIONAL-TAX", Authority: "tax authority", Tags: []string{"retention"}},
 		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule v1: %v", err)
@@ -71,6 +72,7 @@ func TestRuleImpactEndToEnd(t *testing.T) {
 		Validity:   &core.Validity{EffectiveAt: "2026-04-01T00:00:00Z", Source: "declared"},
 		PolicyRule: &core.PolicyRule{Jurisdiction: "PE", Legislation: "NATIONAL-TAX", Authority: "tax authority", Tags: []string{"retention"}},
 		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule v2: %v", err)
@@ -82,8 +84,9 @@ func TestRuleImpactEndToEnd(t *testing.T) {
 		Scope:        scope,
 		Content:      core.Content{What: "Retencion febrero 2026", Why: "decision", Where: "fixture", Learned: "pins rule v1"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-02-15T00:00:00Z",
-		RuleLinks: []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-02-15T00:00:00Z"}},
-		Source:    testAgentSource,
+		RuleLinks:  []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-02-15T00:00:00Z"}},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save decision with pinned rule: %v", err)
@@ -153,7 +156,8 @@ func TestRuleImpactChainAmbiguous(t *testing.T) {
 		TopicKey: "policy/ambiguous/shared", Title: "rule A", Kind: core.KindRule,
 		Scope: scopeA, Content: core.Content{What: "A", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule A: %v", err)
@@ -162,7 +166,8 @@ func TestRuleImpactChainAmbiguous(t *testing.T) {
 		TopicKey: "policy/ambiguous/shared", Title: "rule B", Kind: core.KindRule,
 		Scope: scopeB, Content: core.Content{What: "B", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule B: %v", err)
@@ -171,8 +176,9 @@ func TestRuleImpactChainAmbiguous(t *testing.T) {
 		TopicKey: "entry/A", Title: "dec A", Kind: core.KindDecision,
 		Scope: scopeA, Content: core.Content{What: "da", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-01-10T00:00:00Z",
-		RuleLinks: []core.RuleLink{{Ref: "policy/ambiguous/shared", Version: ruleA.Memory.Identity.ID, EffectiveAt: "2026-01-10T00:00:00Z"}},
-		Source:    testAgentSource,
+		RuleLinks:  []core.RuleLink{{Ref: "policy/ambiguous/shared", Version: ruleA.Memory.Identity.ID, EffectiveAt: "2026-01-10T00:00:00Z"}},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save dec A: %v", err)
@@ -181,8 +187,9 @@ func TestRuleImpactChainAmbiguous(t *testing.T) {
 		TopicKey: "entry/B", Title: "dec B", Kind: core.KindDecision,
 		Scope: scopeB, Content: core.Content{What: "db", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-01-10T00:00:00Z",
-		RuleLinks: []core.RuleLink{{Ref: "policy/ambiguous/shared", Version: ruleB.Memory.Identity.ID, EffectiveAt: "2026-01-10T00:00:00Z"}},
-		Source:    testAgentSource,
+		RuleLinks:  []core.RuleLink{{Ref: "policy/ambiguous/shared", Version: ruleB.Memory.Identity.ID, EffectiveAt: "2026-01-10T00:00:00Z"}},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save dec B: %v", err)
 	}
@@ -209,7 +216,8 @@ func TestRuleImpactLegacyUnpinned(t *testing.T) {
 		TopicKey: ruleRetentionV2, Title: "rule", Kind: core.KindRule,
 		Scope: scope, Content: core.Content{What: "r", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save rule: %v", err)
 	}
@@ -217,8 +225,9 @@ func TestRuleImpactLegacyUnpinned(t *testing.T) {
 		TopicKey: "entry/legacy", Title: "legacy", Kind: core.KindDecision,
 		Scope: scope, Content: core.Content{What: "d", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-02-01T00:00:00Z",
-		RuleRefs: []string{ruleRetentionV2},
-		Source:   testAgentSource,
+		RuleRefs:   []string{ruleRetentionV2},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save legacy decision: %v", err)
 	}

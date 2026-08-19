@@ -31,6 +31,7 @@ func seedEncryptedMemory(t *testing.T, st *SQLiteStore, scope core.Scope) string
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-15T00:00:00Z",
 		Source:       core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -200,8 +201,8 @@ func TestMigrationV15Additive(t *testing.T) {
 	if err := st2.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 16 {
-		t.Fatalf("schema version = %d, want 16", version)
+	if version != 17 {
+		t.Fatalf("schema version = %d, want 17", version)
 	}
 	// The store is fully writable post-migration.
 	scope := core.Scope{Kind: core.ScopeKindCompany, OrganizationID: "org-a", CompanyID: "co_a", RUC: "20100039201", Period: "202401"}
@@ -251,7 +252,8 @@ func saveVia(st *SQLiteStore, topic string, scope core.Scope) string {
 		TopicKey: topic, Title: "legacy fixture", Kind: core.KindFact, Scope: scope,
 		Content:      core.Content{What: "legacy what " + topic, Why: "why", Where: "where", Learned: "learned"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2024-01-15T00:00:00Z",
-		Source: core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+		Source:     core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+		Confidence: 0.8,
 	})
 	if err != nil {
 		panic(err)

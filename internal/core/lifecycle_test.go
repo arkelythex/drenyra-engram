@@ -70,6 +70,7 @@ func saveInput(what string) core.SaveInput {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  testTimestamp,
 		Source:       testSource,
+		Confidence:   0.8,
 	}
 }
 
@@ -323,5 +324,6 @@ func gatedInput() core.SaveInput {
 		FiscalEffect: core.FiscalEffectJournalEntry,
 		EffectiveAt:  "2026-01-31",
 		Source:       testSource,
+		Confidence:   0.8,
 	}
 }

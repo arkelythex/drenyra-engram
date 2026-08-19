@@ -264,6 +264,7 @@ func seedTenantAMemory(t *testing.T, f *crossTenantFixture, topicKey string) (st
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-15T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	return mem.Identity.ID, topicKey
 }
@@ -435,6 +436,7 @@ func seedMemory(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-15T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	return operationState{memoryID: mem.Identity.ID, topicKey: ctTopicKey}
 }
@@ -458,6 +460,7 @@ func seedRelation(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-16T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err := f.st.Relate(s.memoryID, target.Identity.ID, core.RelationRelated, &core.RelationMeta{Actor: "test-agent", Timestamp: "2024-01-16T00:00:00Z"}); err != nil {
 		t.Fatalf("seed relation: %v", err)
@@ -475,6 +478,7 @@ func seedRelation(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-16T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err := f.st.Relate(bSource.Identity.ID, target.Identity.ID, core.RelationRelated, &core.RelationMeta{Actor: "test-agent", Timestamp: "2024-01-16T00:00:00Z"}); err != nil {
 		t.Fatalf("seed cross-tenant relation: %v", err)
@@ -495,6 +499,7 @@ func seedPendingMemory(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2024-01-15T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if mem.Status != core.StatusPendingReview {
 		t.Fatalf("fixture status = %q, want pending_review (fiscal-effect gate)", mem.Status)
@@ -688,6 +693,7 @@ func seedRule(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-01T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	return operationState{memoryID: mem.Identity.ID, topicKey: ctTopicKey}
 }
@@ -707,6 +713,7 @@ func seedRuleImpact(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2024-02-15T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}); err != nil {
 		t.Fatalf("seed tenant-A pinned decision: %v", err)
 	}
@@ -729,6 +736,7 @@ func invokeSave(t *testing.T, f *crossTenantFixture, s operationState) (any, err
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-02-15T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 }
 

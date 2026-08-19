@@ -212,6 +212,7 @@ func TestHTTPReviewRejectSODViolation(t *testing.T) {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2026-07-31T12:00:00Z",
 		Source:       core.Source{System: "go-test", ActorID: "maria.torres", ActorKind: core.ActorKindHuman},
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save SoD fixture: %v", err)
@@ -352,6 +353,7 @@ func TestHTTPReviewReturnHappyPathAndSaveReentersPendingReview(t *testing.T) {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2026-07-31T12:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("corrective save: %v", err)

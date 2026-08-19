@@ -37,6 +37,7 @@ func saveInScope(t *testing.T, api *API, scope core.Scope, topicKey, kind, title
 		FiscalEffect: effect,
 		EffectiveAt:  effectiveAt,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save fixture %q in period %s: %v", topicKey, scope.Period, err)

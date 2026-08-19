@@ -323,6 +323,15 @@ vectors: sod-policy, review-checks, memory-returned-receipt-v10.
 - [x] Tests: Go suite green (9/9 packages), TS suite green (352 tests),
 typecheck clean.
 
+## Phase 6g — Required confidence (v17) — DELIVERED (2026-08-19)
+
+Every observation carries a REQUIRED `confidence` 0..1 (SDD-060 criterion 3):
+non-pointer in the core model, range-validated on every write, schema v17 adds
+`observations_confidence_required_insert` / `_update` triggers
+(`CONFIDENCE_REQUIRED` on a NULL-confidence write). Legacy rows preserved
+unchanged (NULLs read back as confidence 0) — additive migration, no re-hash,
+no backfill. Authority boundary unchanged: memory is never evidence.
+
 ## Phase 6d — Reconstructible-close demo fixture (DELIVERED 2026-08-10)
 
 > The deterministic fictional drill proving the design brief §7.1 promise

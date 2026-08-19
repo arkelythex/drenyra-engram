@@ -75,6 +75,7 @@ func TestVerifyMemoryRuleVersionTrace(t *testing.T) {
 		Validity:   &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
 		PolicyRule: &core.PolicyRule{Jurisdiction: "PE", Legislation: "NATIONAL-TAX", Authority: "tax", Tags: []string{"r"}},
 		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule v1: %v", err)
@@ -83,8 +84,9 @@ func TestVerifyMemoryRuleVersionTrace(t *testing.T) {
 		TopicKey: ruleRetentionV2, Title: "Retention rate v2", Kind: core.KindRule,
 		Scope: scope, Content: core.Content{What: "r2", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-04-01T00:00:00Z",
-		Validity: &core.Validity{EffectiveAt: "2026-04-01T00:00:00Z", Source: "declared"},
-		Source:   testAgentSource,
+		Validity:   &core.Validity{EffectiveAt: "2026-04-01T00:00:00Z", Source: "declared"},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save rule v2: %v", err)
 	}
@@ -92,8 +94,9 @@ func TestVerifyMemoryRuleVersionTrace(t *testing.T) {
 		TopicKey: "entry/4011/ret", Title: "dec", Kind: core.KindDecision,
 		Scope: scope, Content: core.Content{What: "d", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-02-15T00:00:00Z",
-		RuleLinks: []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-02-15T00:00:00Z"}},
-		Source:    testAgentSource,
+		RuleLinks:  []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-02-15T00:00:00Z"}},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save decision: %v", err)
@@ -145,7 +148,8 @@ func TestVerifyMemoryRuleVersionLegacySkipped(t *testing.T) {
 		TopicKey: ruleRetentionV2, Title: "rule", Kind: core.KindRule,
 		Scope: scope, Content: core.Content{What: "r", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save rule: %v", err)
 	}
@@ -153,8 +157,9 @@ func TestVerifyMemoryRuleVersionLegacySkipped(t *testing.T) {
 		TopicKey: "entry/legacy", Title: "legacy", Kind: core.KindDecision,
 		Scope: scope, Content: core.Content{What: "d", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-02-01T00:00:00Z",
-		RuleRefs: []string{ruleRetentionV2},
-		Source:   testAgentSource,
+		RuleRefs:   []string{ruleRetentionV2},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save legacy decision: %v", err)
@@ -182,8 +187,9 @@ func TestVerifyMemoryRuleVersionInvalidPin(t *testing.T) {
 		TopicKey: ruleRetentionV2, Title: "rule v1", Kind: core.KindRule,
 		Scope: scope, Content: core.Content{What: "r1", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Validity: &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
-		Source:   testAgentSource,
+		Validity:   &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule v1: %v", err)
@@ -193,8 +199,9 @@ func TestVerifyMemoryRuleVersionInvalidPin(t *testing.T) {
 		TopicKey: "entry/late-pin", Title: "late pin", Kind: core.KindDecision,
 		Scope: scope, Content: core.Content{What: "d", Why: "x", Where: "f", Learned: "x"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-05-15T00:00:00Z",
-		RuleLinks: []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-05-15T00:00:00Z"}},
-		Source:    testAgentSource,
+		RuleLinks:  []core.RuleLink{{Ref: ruleRetentionV2, Version: v1.Memory.Identity.ID, EffectiveAt: "2026-05-15T00:00:00Z"}},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save decision: %v", err)

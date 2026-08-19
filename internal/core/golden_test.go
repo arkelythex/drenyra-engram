@@ -293,7 +293,7 @@ func runLegacyGolden(t *testing.T, tc goldenCase) {
 		Source:       tc.Input.Source,
 		EvidenceRefs: tc.Input.EvidenceRefs,
 		RuleRefs:     tc.Input.RuleRefs,
-		Confidence:   tc.Input.Confidence,
+		Confidence:   confidenceOrZero(tc.Input.Confidence),
 		Materiality:  tc.Input.Materiality,
 		ReceiptID:    tc.Input.ReceiptID,
 		SupersedesID: tc.Input.SupersedesID,
@@ -336,6 +336,17 @@ func runLegacyGolden(t *testing.T, tc goldenCase) {
 
 	// print the computed hashes so the golden files can be pinned
 	t.Logf("HASHES %s content=%s identity=%s envelope=%s", tc.Name, contentHash, identityHash, envelopeHash)
+}
+
+// confidenceOrZero converts a vector's optional confidence pointer into the
+// required float64 field (vectors predate the required-confidence change; the
+// field does NOT participate in content/identity/envelope hashes, so the frozen
+// golden hashes are unaffected).
+func confidenceOrZero(v *float64) float64 {
+	if v == nil {
+		return 0
+	}
+	return *v
 }
 
 // goldenSessionStore is a minimal fake SessionStore that returns the vector's

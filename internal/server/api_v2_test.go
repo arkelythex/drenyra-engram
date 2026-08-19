@@ -37,6 +37,7 @@ func saveDemoFact(t *testing.T, api *API, topicKey, title, what, effectiveAt str
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  effectiveAt,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save fact %q: %v", title, err)
@@ -77,6 +78,7 @@ func TestPeriodSummaryKillerDemo4011(t *testing.T) {
 		EffectiveAt:  "2026-07-31T12:00:00Z",
 		RuleRefs:     []string{"policy/igv/late-document-v3"},
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save ajuste: %v", err)
@@ -112,6 +114,7 @@ func TestPeriodSummaryKillerDemo4011(t *testing.T) {
 		EffectiveAt:  "2026-07-31T00:00:00Z",
 		ObservedAt:   "2026-08-03T09:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save exception: %v", err)
@@ -183,6 +186,7 @@ func TestPeriodSummaryGateCounts(t *testing.T) {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2026-07-25T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}); err != nil {
 		t.Fatalf("save pending: %v", err)
 	}

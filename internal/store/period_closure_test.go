@@ -52,6 +52,7 @@ func closeInputForTest(t *testing.T, scope core.Scope, what string) core.SaveInp
 		FiscalEffect: core.FiscalEffectClosing,
 		EffectiveAt:  testT,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}
 }
 

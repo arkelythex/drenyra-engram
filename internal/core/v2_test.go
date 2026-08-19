@@ -450,7 +450,7 @@ func TestAssertValidMemory(t *testing.T) {
 	t.Run("confidence outside [0,1] rejected", func(t *testing.T) {
 		for _, value := range []float64{-0.1, 1.1} {
 			bad := valid
-			bad.Confidence = &value
+			bad.Confidence = value
 			if err := AssertValidMemory(bad); err == nil || !strings.Contains(err.Error(), "INVALID_CONFIDENCE") {
 				t.Fatalf("confidence %v: expected INVALID_CONFIDENCE, got %v", value, err)
 			}

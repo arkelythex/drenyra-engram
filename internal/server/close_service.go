@@ -182,6 +182,10 @@ func CreateClose(ctx context.Context, store CloseServiceStore, scope core.Scope,
 		EffectiveAt:   effectiveAt,
 		Source:        input.Source,
 		CloseSnapshot: &snapshot,
+		// Confidence is a REQUIRED field (sdd-060-confidence-required,
+		// FR-CN-3): a close summary is an automated computation with
+		// deterministic inputs, scored high.
+		Confidence: 0.9,
 	})
 	if err != nil {
 		return core.AccountingMemory{}, err

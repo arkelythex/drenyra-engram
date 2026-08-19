@@ -33,6 +33,12 @@
 | `DRENYRA_DEFAULT_SCOPE` | — | Exact scope injected into MCP `initialize` metadata (`drenyra/currentContext`) — never inferred |
 | `DRENYRA_ENV` | — | Environment name (provenance) |
 
+> **Required field (sdd-060-confidence-required, v17):** every observation
+> carries a `confidence` probability 0..1 (never money); `SaveInput` and the
+> API/MCP surfaces supply it, range validation runs on every write, and the
+> store aborts `CONFIDENCE_REQUIRED` on a NULL-confidence write. Legacy rows
+> written before v17 are preserved unchanged (NULLs read back as confidence 0).
+
 ## CLI reference
 
 ```text

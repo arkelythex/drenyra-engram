@@ -111,6 +111,7 @@ func verifySave(t *testing.T, st *store.SQLiteStore, tenantID, companyID, topicK
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2024-01-15T00:00:00.000Z",
 		Source:       core.Source{System: "verify-test", ActorID: "agent-1", ActorKind: core.ActorKindAgent},
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -385,6 +386,7 @@ func TestVerifyServiceSigningKeyCutoffMatrix(t *testing.T) {
 				FiscalEffect: core.FiscalEffectAdjustment,
 				EffectiveAt:  "2024-01-16T00:00:00.000Z",
 				Source:       core.Source{System: "verify-test", ActorID: "agent-1", ActorKind: core.ActorKindAgent},
+				Confidence:   0.8,
 			}); err == nil || !strings.Contains(err.Error(), "revoked") {
 				t.Fatalf("revoked key must refuse to sign new receipts, got %v", err)
 			}

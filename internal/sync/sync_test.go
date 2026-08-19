@@ -58,6 +58,7 @@ func validInput(topicKey, title, what string, scope core.Scope) core.SaveInput {
 		Content:      core.Content{What: what, Why: "sync test fixture", Where: "internal/sync", Learned: "n/a"},
 		FiscalEffect: core.FiscalEffectNone,
 		Source:       core.Source{System: "go-test", ActorID: "test", ActorKind: core.ActorKindAgent},
+		Confidence:   0.8,
 	}
 }
 

@@ -54,6 +54,7 @@ func saveMaterialDecision(t *testing.T, api *API, topicKey string, scope core.Sc
 		EffectiveAt:      "2026-01-15T12:00:00.000Z",
 		Source:           core.Source{System: "go-test", ActorID: "agent", ActorKind: core.ActorKindAgent},
 		MaterialityLevel: lvl,
+		Confidence:       0.8,
 	}
 	return saveOne(t, api, input)
 }

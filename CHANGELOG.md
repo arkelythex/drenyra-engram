@@ -102,6 +102,20 @@ memory is byte-identical). Schema v16 refines the immutability trigger to
 permit ONLY the exact legacy-plaintext → encrypted-at-rest transition —
 institutional and already-encrypted rows are never touched.
 
+### Confidence required on every memory (delivered 2026-08-19)
+
+`confidence` is now a REQUIRED 0..1 field on every observation (SDD-060
+criterion 3): `AccountingMemory.Confidence` and `SaveInput.Confidence` are
+non-pointer `float64` (always serialized; `INVALID_CONFIDENCE` range
+validation runs on every write). Schema advances v16->v17 additively with two
+`observations_confidence_required_*` triggers (BEFORE INSERT; BEFORE UPDATE OF
+confidence) that abort `CONFIDENCE_REQUIRED` on a NULL-confidence write -
+defense in depth for writers that bypass core validation. Legacy rows are
+PRESERVED unchanged (NULLs read back as confidence 0; no re-hash, no
+backfill): the column has been nullable since v1->v2, so failing on legacy
+NULLs would strand every pre-v17 store. The authority boundary is unchanged -
+memory is never evidence (already enforced by `drenyra-ai` `MEMORY_SHAPED`).
+
 ### At-rest content encryption + sync guard (delivered 2026-08-19)
 
 Opt-in per-tenant at-rest content encryption (SDD-060 §5):

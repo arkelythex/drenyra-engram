@@ -52,6 +52,7 @@ func seedTenantCLIStore(t *testing.T) string {
 			FiscalEffect: core.FiscalEffectNone,
 			EffectiveAt:  "2024-01-15T00:00:00Z",
 			Source:       core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Confidence:   0.8,
 		}); err != nil {
 			t.Fatalf("save fixture %d: %v", i, err)
 		}
@@ -147,7 +148,8 @@ func seedConsolidateStore(t *testing.T) (string, string) {
 			TopicKey: topic, Title: "drift fixture", Kind: core.KindRule, Scope: scope,
 			Content:      core.Content{What: "drift fixture content", Why: "test", Where: "cmd/drenyra-engram", Learned: "n/a"},
 			FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2024-01-15T00:00:00Z",
-			Source: core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Source:     core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Confidence: 0.8,
 		}); err != nil {
 			t.Fatalf("save %s: %v", topic, err)
 		}

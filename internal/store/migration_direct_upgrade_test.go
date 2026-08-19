@@ -244,8 +244,8 @@ func TestMigrationCrashReopenConvergesToV16(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema_version after reopen: %v", err)
 	}
-	if version != 16 {
-		t.Fatalf("schema_version = %d after reopen, want 16", version)
+	if version != 17 {
+		t.Fatalf("schema_version = %d after reopen, want 17", version)
 	}
 
 	// The migrated layout: both structured-link columns and the reverse lookup
@@ -741,8 +741,8 @@ func TestDirectUpgradeMatrixV1ToV16(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read schema_version after migration: %v", err)
 			}
-			if version != 16 {
-				t.Fatalf("schema_version = %d, want 16", version)
+			if version != 17 {
+				t.Fatalf("schema_version = %d, want 17", version)
 			}
 			assertSnapshotPreserved(t, s, before, fx.version)
 			assertV14InvariantManifest(t, s)

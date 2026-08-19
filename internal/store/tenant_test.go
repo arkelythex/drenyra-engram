@@ -48,6 +48,7 @@ func TestTenantList(t *testing.T) {
 			FiscalEffect: core.FiscalEffectNone,
 			EffectiveAt:  "2024-01-15T00:00:00Z",
 			Source:       core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Confidence:   0.8,
 		}); err != nil {
 			t.Fatalf("save fixture %d: %v", i, err)
 		}

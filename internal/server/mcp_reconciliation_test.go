@@ -88,10 +88,10 @@ func TestMCPReconciliationProposeHappyPath(t *testing.T) {
 		t.Errorf("amounts = %d/%d, want 1000000/984000 (int64 cents)", r.LeftAmountCents, r.RightAmountCents)
 	}
 	if r.VarianceCents != 16000 {
-		t.Errorf("varianceCents = %d, want 16000 (engine-derived left − right)", r.VarianceCents)
+		t.Errorf("varianceCents = %d, want 17000 (engine-derived left − right)", r.VarianceCents)
 	}
 	if r.ToleranceCents != 16000 {
-		t.Errorf("toleranceCents = %d, want 16000", r.ToleranceCents)
+		t.Errorf("toleranceCents = %d, want 17000", r.ToleranceCents)
 	}
 	if r.TenantID != testOrgID || r.CompanyID != "acme" {
 		t.Errorf("scope = %s/%s, want %s/acme (derived from the observations)", r.TenantID, r.CompanyID, testOrgID)

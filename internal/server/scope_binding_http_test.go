@@ -111,6 +111,7 @@ func seedTwoMemories(t *testing.T, f *crossTenantFixture) operationState {
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  "2024-01-16T00:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	s.toID = second.Identity.ID
 	return s

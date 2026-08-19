@@ -82,11 +82,13 @@ func TestCompanyAObservationNeverVisibleFromCompanyB(t *testing.T) {
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 	save(t, s, core.SaveInput{
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
 		Scope: companyScope(testRucB), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 
 	// From company B: exactly one result, and it is B's own observation.
@@ -131,11 +133,13 @@ func TestInstitutionalOnlyOnExplicitIntent(t *testing.T) {
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 	save(t, s, core.SaveInput{
 		TopicKey: "policy.banking-rules", Title: "Banking rules", Kind: core.KindRule,
 		Scope: core.Scope{Kind: core.ScopeKindInstitutional}, Content: institutionalContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 
 	// Plain company-A query: institutional observation must NOT appear.
@@ -190,6 +194,7 @@ func TestMatchModeAllRequiresEveryToken(t *testing.T) {
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
 		Scope: companyScope(testRucB), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 
 	// "payroll" is not in B's observation: all rejects, any accepts.
@@ -216,6 +221,7 @@ func TestSearchUsesOnlyLatestRevisionPerChain(t *testing.T) {
 		TopicKey: "tax.igv.rate", Title: "IGV base rate", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 	save(t, s, core.SaveInput{
 		TopicKey: "tax.igv.rate", Title: "IGV base rate (updated)", Kind: core.KindRule,
@@ -223,6 +229,7 @@ func TestSearchUsesOnlyLatestRevisionPerChain(t *testing.T) {
 		Content:      core.Content{What: "IGV base rate is 18 percent since 2011", Why: "standard rate for goods", Where: "Peru", Learned: "applies to all invoices"},
 		FiscalEffect: core.FiscalEffectNone,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "igv base rate", Scope: companyScope(testRucA), MatchMode: MatchAny})
@@ -245,6 +252,7 @@ func TestStaleFlagOnExpiredObservation(t *testing.T) {
 		FiscalEffect: core.FiscalEffectNone,
 		Validity:     &core.Validity{ExpiresAt: "2000-01-01T00:00:00.000Z"},
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "old igv", Scope: companyScope(testRucA), MatchMode: MatchAny})
@@ -268,11 +276,13 @@ func TestNoStaleFlagForValidOrWindowlessObservations(t *testing.T) {
 		FiscalEffect: core.FiscalEffectNone,
 		Validity:     &core.Validity{ExpiresAt: future},
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	save(t, s, core.SaveInput{
 		TopicKey: "tax.igv.no-window", Title: "IGV rule without window", Kind: core.KindRule,
 		Scope: companyScope(testRucA), Content: igvContent, Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
+		Confidence:   0.8,
 	})
 
 	results, err := ScopeFirst(s, Input{Query: "igv rule", Scope: companyScope(testRucA), MatchMode: MatchAny})

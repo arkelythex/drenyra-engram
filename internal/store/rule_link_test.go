@@ -100,6 +100,7 @@ func TestSaveWithStructuredRuleLinkAtomically(t *testing.T) {
 			Version:     ruleV1.Memory.Identity.ID,
 			EffectiveAt: decisionAt,
 		}},
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save decision with structured link: %v", err)
@@ -162,6 +163,7 @@ func TestSaveRuleLinkValidationFailures(t *testing.T) {
 		Source:       testAgentSource,
 		FiscalEffect: core.FiscalEffectNone,
 		EffectiveAt:  at,
+		Confidence:   0.8,
 	}
 
 	t.Run("malformed link fails closed", func(t *testing.T) {
@@ -224,6 +226,7 @@ func TestSaveRuleLinkValidationFailures(t *testing.T) {
 			TopicKey: "policy/foreign/rule", Title: "foreign rule", Kind: core.KindRule,
 			Scope: otherTenant, Content: ruleContent(), Source: testAgentSource,
 			FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
+			Confidence: 0.8,
 		})
 		if err != nil {
 			t.Fatalf("save foreign rule: %v", err)
@@ -281,7 +284,8 @@ func TestLegacyRuleRefsStayValidWithoutMetadata(t *testing.T) {
 		TopicKey: "decision/legacy", Title: "legacy decision", Kind: core.KindDecision,
 		Scope: testScope(testRucA), Content: ruleContent(), Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: at,
-		RuleRefs: []string{"policy/legacy/rule"},
+		RuleRefs:   []string{"policy/legacy/rule"},
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save legacy decision: %v", err)
@@ -382,6 +386,7 @@ func TestAddRuleLinkVersionPostSave(t *testing.T) {
 		TopicKey: "decision/postsave-predeclared", Title: "predeclared ref", Kind: core.KindDecision,
 		Scope: testScope(testRucA), Content: ruleContent(), Source: testAgentSource,
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: at, RuleRefs: []string{"policy/postsave/rule"},
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save predeclared decision: %v", err)
@@ -536,6 +541,7 @@ func TestRuleLinksReadSurfaceExcludesLegacyRows(t *testing.T) {
 		RuleLinks: []core.RuleLink{{
 			Ref: "policy/surface/rule", Version: rule.Memory.Identity.ID, EffectiveAt: at,
 		}},
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save mixed decision: %v", err)

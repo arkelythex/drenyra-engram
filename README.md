@@ -44,6 +44,10 @@ reasoning, the evidence, the rule that was applied, the professional who
 approved it: unrecoverable. Auditors call this a reconstruction problem. Drenyra
 Engram turns it into a query.
 
+Every observation carries an explicit `confidence` 0..1 (required since
+schema v17) — memory informs proposals, never authorizes; confidence is never
+evidence.
+
 A **single Go binary** with a scope-first SQLite store, Ed25519 receipts and
 offline verification — exposed via CLI, HTTP API, and MCP. Works with **any
 agent** that supports MCP. Agents observe and propose. Professionals approve.

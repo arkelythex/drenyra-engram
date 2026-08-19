@@ -402,6 +402,7 @@ func TestReconstructibilityRealStoreIntegrationReadOnly(t *testing.T) {
 			EffectiveAt:      "2026-01-15T12:00:00.000Z",
 			Source:           core.Source{System: "go-test", ActorID: "agent", ActorKind: core.ActorKindAgent},
 			MaterialityLevel: ptr(core.MaterialityMaterial),
+			Confidence:       0.8,
 		})
 		if err != nil {
 			t.Fatalf("save %s: %v", topic, err)

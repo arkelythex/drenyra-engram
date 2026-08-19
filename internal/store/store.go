@@ -182,7 +182,7 @@ import (
 // idx_rule_links_ref(ref, version, effective_at, memory_id). No existing row
 // is backfilled or re-hashed; the fail-closed migration validates the columns
 // and the index ABSENT before mutation.
-const schemaVersion = 16
+const schemaVersion = 17
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -751,6 +751,13 @@ func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSign
 	}
 	if version == 15 {
 		if err := migrateV15ToV16(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 16
+	}
+	if version == 16 {
+		if err := migrateV16ToV17(db); err != nil {
 			_ = db.Close()
 			return nil, err
 		}
@@ -2814,7 +2821,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		validityExpiresAt(memory.Validity), validityEffectiveAt(memory.Validity), validitySource(memory.Validity),
 		memory.Source.ActorID, memory.RecordedAt, memory.Source.System, memory.Source.Session,
 		encodeSource(memory.Source), memory.ContentHash, memory.IdentityHash, memory.EnvelopeHash, encodeRefs(memory.EvidenceRefs), encodeRefs(memory.RuleRefs),
-		nullableFloat(memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), nullablePolicyRuleJSON(memory.PolicyRule), memory.ReceiptID, memory.SupersedesID,
+		nullableFloat(&memory.Confidence), nullableInt(memory.Materiality), nullableMaterialityLevel(memory.MaterialityLevel), nullableCloseSnapshotJSON(memory.CloseSnapshot), nullablePolicyRuleJSON(memory.PolicyRule), memory.ReceiptID, memory.SupersedesID,
 		revision,
 		contentCipher, contentNonce, contentAlgo,
 	)
@@ -2917,11 +2924,9 @@ func buildMemory(input core.SaveInput, id string, revision int, status core.Memo
 		v := *input.Validity
 		validity = &v
 	}
-	var confidence *float64
-	if input.Confidence != nil {
-		c := *input.Confidence
-		confidence = &c
-	}
+	// Confidence is a REQUIRED field (sdd-060-confidence-required, FR-CN-1):
+	// the caller must supply an explicit 0..1 value; validation enforces range.
+	confidence := input.Confidence
 	var materiality *int64
 	if input.Materiality != nil {
 		m := *input.Materiality
@@ -3201,8 +3206,7 @@ func scanMemory(rs rowScanner, encMaster []byte) (core.AccountingMemory, error) 
 		memory.Validity = &core.Validity{EffectiveAt: validityEffectiveAtVal.String, ExpiresAt: expiresAt, Source: validitySourceVal.String}
 	}
 	if confidence.Valid {
-		v := confidence.Float64
-		memory.Confidence = &v
+		memory.Confidence = confidence.Float64
 	}
 	if materiality.Valid {
 		v := materiality.Int64
@@ -5641,7 +5645,7 @@ func (s *SQLiteStore) ImportObservation(memory core.AccountingMemory) (bool, err
 		validityExpiresAt(built.Validity), validityEffectiveAt(built.Validity), validitySource(built.Validity),
 		built.Source.ActorID, built.RecordedAt, built.Source.System, built.Source.Session,
 		encodeSource(built.Source), built.ContentHash, built.IdentityHash, built.EnvelopeHash, encodeRefs(built.EvidenceRefs), encodeRefs(built.RuleRefs),
-		nullableFloat(built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), nullablePolicyRuleJSON(built.PolicyRule), built.ReceiptID, built.SupersedesID,
+		nullableFloat(&built.Confidence), nullableInt(built.Materiality), nullableMaterialityLevel(built.MaterialityLevel), nullableCloseSnapshotJSON(built.CloseSnapshot), nullablePolicyRuleJSON(built.PolicyRule), built.ReceiptID, built.SupersedesID,
 		built.Revision,
 		contentCipher, contentNonce, contentAlgo,
 	); err != nil {

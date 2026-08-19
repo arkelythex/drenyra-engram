@@ -313,14 +313,14 @@ func TestCloneMemoryCopiesPointersAndSlices(t *testing.T) {
 		Validity:     &Validity{ExpiresAt: "2025-01-01T00:00:00.000Z"},
 		EvidenceRefs: []string{"xml:1"},
 		RuleRefs:     []string{"rule:1"},
-		Confidence:   floatPtr(0.9),
+		Confidence:   0.9,
 		Materiality:  int64Ptr(1000),
 		ContentHash:  "hash",
 		Revision:     1,
 	}
 	cloned := CloneMemory(memory)
 	cloned.Validity.ExpiresAt = "mutated"
-	cloned.Confidence = floatPtr(0.1)
+	cloned.Confidence = 0.1
 	cloned.Materiality = int64Ptr(1)
 	cloned.EvidenceRefs[0] = "mutated"
 	cloned.RuleRefs[0] = "mutated"
@@ -328,8 +328,8 @@ func TestCloneMemoryCopiesPointersAndSlices(t *testing.T) {
 	if memory.Validity.ExpiresAt == "mutated" {
 		t.Fatal("clone must not share the validity pointer")
 	}
-	if *memory.Confidence != 0.9 {
-		t.Fatal("clone must not share the confidence pointer")
+	if memory.Confidence != 0.9 {
+		t.Fatal("clone must not share the confidence value")
 	}
 	if *memory.Materiality != 1000 {
 		t.Fatal("clone must not share the materiality pointer")

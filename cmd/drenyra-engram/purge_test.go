@@ -780,8 +780,8 @@ func TestCLIDoctorReportsPurgeLifecycle(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("doctor output not JSON: %v\n%s", err, stdout)
 	}
-	if report.SchemaVersion != 16 || report.PurgeRequests != 1 || report.PurgeApprovals != 1 || report.PurgeExecutions != 1 {
-		t.Fatalf("doctor report = %+v, want schemaVersion 16 and lifecycle counts (1,1,1)", report)
+	if report.SchemaVersion != 17 || report.PurgeRequests != 1 || report.PurgeApprovals != 1 || report.PurgeExecutions != 1 {
+		t.Fatalf("doctor report = %+v, want schemaVersion 17 and lifecycle counts (1,1,1)", report)
 	}
 	if len(report.PurgeFindings) != 0 {
 		t.Fatalf("purgeFindings = %+v, want none (the execution completed)", report.PurgeFindings)

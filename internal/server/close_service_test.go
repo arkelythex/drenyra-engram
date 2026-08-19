@@ -79,6 +79,7 @@ func saveInPeriod(t *testing.T, api *API, topicKey, kind, title, what, effective
 		FiscalEffect: effect,
 		EffectiveAt:  effectiveAt,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	})
 	if err != nil {
 		t.Fatalf("save fixture %q: %v", topicKey, err)
@@ -314,6 +315,7 @@ func TestCreateCloseValidations(t *testing.T) {
 			TopicKey: "fact/other-scope", Title: "Otra empresa", Kind: core.KindFact,
 			Scope: otherScope, Content: core.Content{What: "x", Why: "y", Where: "z", Learned: "w"},
 			FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-07-01T00:00:00Z", Source: testAgentSource,
+			Confidence: 0.8,
 		})
 		if err != nil {
 			t.Fatalf("save other-scope fixture: %v", err)
@@ -413,6 +415,7 @@ func TestCloseApprovalReopenReCloseCycle(t *testing.T) {
 		TopicKey: "tax.after.close", Title: "Pendiente bloqueado", Kind: core.KindFact,
 		Scope: demoScope(), Content: core.Content{What: "x", Why: "y", Where: "z", Learned: "w"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-07-31T12:00:00Z", Source: testAgentSource,
+		Confidence: 0.8,
 	})
 	if auth.Code(err) != auth.CodePeriodClosed {
 		t.Fatalf("code = %q, want PERIOD_CLOSED (err: %v)", auth.Code(err), err)
@@ -452,6 +455,7 @@ func TestCloseApprovalReopenReCloseCycle(t *testing.T) {
 		TopicKey: "tax.after.reopen", Title: "Correccion admitida", Kind: core.KindFact,
 		Scope: demoScope(), Content: core.Content{What: "x", Why: "y", Where: "z", Learned: "w"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-07-31T12:00:00Z", Source: testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save after reopen must succeed: %v", err)
 	}
@@ -488,6 +492,7 @@ func TestCloseApprovalReopenReCloseCycle(t *testing.T) {
 		TopicKey: "tax.after.reclose", Title: "Bloqueado de nuevo", Kind: core.KindFact,
 		Scope: demoScope(), Content: core.Content{What: "x", Why: "y", Where: "z", Learned: "w"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-07-31T12:00:00Z", Source: testAgentSource,
+		Confidence: 0.8,
 	}); auth.Code(err) != auth.CodePeriodClosed {
 		t.Fatalf("code = %q, want PERIOD_CLOSED after the re-close (err: %v)", auth.Code(err), err)
 	}

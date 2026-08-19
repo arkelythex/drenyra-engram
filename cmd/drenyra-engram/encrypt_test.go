@@ -31,7 +31,8 @@ func seedLegacyCLIStore(t *testing.T) string {
 			TopicKey: topic, Title: "legacy cli", Kind: core.KindFact, Scope: scope,
 			Content:      core.Content{What: "legacy cli content " + string(rune('a'+i)), Why: "why", Where: "where", Learned: "learned"},
 			FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2024-01-15T00:00:00Z",
-			Source: core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Source:     core.Source{System: "go-test", ActorID: "test-agent", ActorKind: core.ActorKindAgent},
+			Confidence: 0.8,
 		}); err != nil {
 			t.Fatalf("save %s: %v", topic, err)
 		}

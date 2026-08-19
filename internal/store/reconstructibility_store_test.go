@@ -33,6 +33,7 @@ func saveDecision(t *testing.T, s *SQLiteStore, topicKey string, scope core.Scop
 		EffectiveAt:      testT,
 		Source:           testAgentSource,
 		MaterialityLevel: &level,
+		Confidence:       0.8,
 	})
 	if err != nil {
 		t.Fatalf("save %s: %v", topicKey, err)
@@ -68,6 +69,7 @@ func saveDecisionRaw(t *testing.T, s *SQLiteStore, topicKey string, scope core.S
 		EffectiveAt:      testT,
 		Source:           testAgentSource,
 		MaterialityLevel: level,
+		Confidence:       0.8,
 	})
 	if err != nil {
 		t.Fatalf("save %s: %v", topicKey, err)

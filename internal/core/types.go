@@ -675,8 +675,9 @@ type AccountingMemory struct {
 	// RuleRefs names the policy/rule paths applied (e.g.
 	// "policy/igv/late-document-v3"). Immutable at write; grows via link records.
 	RuleRefs []string `json:"ruleRefs,omitempty"`
-	// Confidence is an optional 0..1 probability (never money).
-	Confidence *float64 `json:"confidence,omitempty"`
+	// Confidence is a REQUIRED 0..1 probability (never money). Every memory
+	// carries an explicit confidence (sdd-060-confidence-required, FR-CN-1).
+	Confidence float64 `json:"confidence"`
 	// Materiality is an optional monetary threshold in int64 cents (never float).
 	Materiality *int64 `json:"materiality,omitempty"`
 	// MaterialityLevel is the DECLARED classification (normal | material |
@@ -749,7 +750,7 @@ type SaveInput struct {
 	// "policy/igv/late-document-v3"). Written once with the memory; grows via
 	// link records (immutability).
 	RuleRefs    []string `json:"ruleRefs,omitempty"`
-	Confidence  *float64 `json:"confidence,omitempty"`
+	Confidence  float64  `json:"confidence"`
 	Materiality *int64   `json:"materiality,omitempty"`
 	// MaterialityLevel is the DECLARED materiality classification
 	// (normal | material | critical), set by the writing agent; NULL is treated
@@ -909,10 +910,7 @@ func CloneMemory(m AccountingMemory) AccountingMemory {
 		v := *m.Validity
 		cloned.Validity = &v
 	}
-	if m.Confidence != nil {
-		c := *m.Confidence
-		cloned.Confidence = &c
-	}
+	cloned.Confidence = m.Confidence
 	if m.Materiality != nil {
 		mat := *m.Materiality
 		cloned.Materiality = &mat
@@ -1219,8 +1217,8 @@ func AssertValidMemory(m AccountingMemory) error {
 			return fmt.Errorf("INVALID_OBSERVED_AT: observedAt must be a parseable date string, got %q", m.ObservedAt)
 		}
 	}
-	if m.Confidence != nil && (*m.Confidence < 0 || *m.Confidence > 1) {
-		return fmt.Errorf("INVALID_CONFIDENCE: confidence must be in [0,1], got %v", *m.Confidence)
+	if m.Confidence < 0 || m.Confidence > 1 {
+		return fmt.Errorf("INVALID_CONFIDENCE: confidence must be in [0,1], got %v", m.Confidence)
 	}
 	if m.Materiality != nil && *m.Materiality < 0 {
 		return fmt.Errorf("INVALID_MATERIALITY: materiality must be >= 0 (int64 cents), got %d", *m.Materiality)

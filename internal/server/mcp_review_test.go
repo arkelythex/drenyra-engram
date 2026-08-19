@@ -29,6 +29,7 @@ func reviewSaveInput(topicKey, what string, scope core.Scope) core.SaveInput {
 		FiscalEffect: core.FiscalEffectAdjustment,
 		EffectiveAt:  "2026-07-31T12:00:00Z",
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}
 }
 

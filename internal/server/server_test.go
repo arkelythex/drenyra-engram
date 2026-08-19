@@ -70,6 +70,7 @@ func validInput(topicKey, title, what string, scope core.Scope) core.SaveInput {
 		Content:      core.Content{What: what, Why: "test fixture", Where: "internal/server", Learned: "n/a"},
 		FiscalEffect: core.FiscalEffectNone,
 		Source:       testAgentSource,
+		Confidence:   0.8,
 	}
 }
 

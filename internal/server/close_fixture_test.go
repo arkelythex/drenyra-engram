@@ -63,8 +63,9 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		Scope:        fixtureScope(),
 		Content:      core.Content{What: "Retention rate 3 percent from 2026-01", Why: "rule v1", Where: "fixture", Learned: "superseded by v2"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Validity: &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
-		Source:   testAgentSource,
+		Validity:   &core.Validity{EffectiveAt: "2026-01-01T00:00:00Z", ExpiresAt: "2026-03-31T23:59:59Z", Source: "declared"},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save rule v1: %v", err)
 	}
@@ -73,8 +74,9 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		Scope:        fixtureScope(),
 		Content:      core.Content{What: "Retention rate 4 percent from 2026-04", Why: "rule v2 supersedes v1", Where: "fixture", Learned: "current rule"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-04-01T00:00:00Z",
-		Validity: &core.Validity{EffectiveAt: "2026-04-01T00:00:00Z", Source: "declared"},
-		Source:   testAgentSource,
+		Validity:   &core.Validity{EffectiveAt: "2026-04-01T00:00:00Z", Source: "declared"},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save rule v2: %v", err)
@@ -131,7 +133,8 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		Scope:        fixtureScope(),
 		Content:      core.Content{What: "Opening balance account 4011 S/ 31804.50 — " + ledger4011Ref, Why: "ledger opening", Where: "fixture", Learned: "source of truth: " + ledger4011Ref},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-01T00:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	}); err != nil {
 		t.Fatalf("save opening balance: %v", err)
 	}
@@ -142,8 +145,9 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		Scope:        fixtureScope(),
 		Content:      core.Content{What: "IGV purchases S/ 22417.80 — invoice F001-947", Why: "purchases of the period", Where: "fixture", Learned: "evidence F001-947"},
 		FiscalEffect: core.FiscalEffectJournalEntry, EffectiveAt: "2026-01-15T00:00:00Z",
-		RuleRefs: []string{ruleRetentionV2},
-		Source:   testAgentSource,
+		RuleRefs:   []string{ruleRetentionV2},
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save compras entry: %v", err)
@@ -176,6 +180,7 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		MaterialityLevel: &matLvl,
 		RuleRefs:         []string{ruleRetentionV2},
 		Source:           testAgentSource,
+		Confidence:       0.8,
 	})
 	if err != nil {
 		t.Fatalf("save late adjustment: %v", err)
@@ -198,7 +203,8 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		Scope:        fixtureScope(),
 		Content:      core.Content{What: "Comprobante F001-948 arrived after close; credit deferred to 2026-02", Why: "event after the period close", Where: "fixture", Learned: "contradicts the January adjustment"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-31T00:00:00Z", ObservedAt: "2026-02-03T09:00:00Z",
-		Source: testAgentSource,
+		Source:     testAgentSource,
+		Confidence: 0.8,
 	})
 	if err != nil {
 		t.Fatalf("save late exception: %v", err)
@@ -255,6 +261,7 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 		TopicKey: "late/save-after-close", Title: "tarde", Kind: core.KindFact,
 		Scope: fixtureScope(), Content: core.Content{What: "despues del cierre", Why: "x", Where: "fixture", Learned: "x"},
 		FiscalEffect: core.FiscalEffectNone, EffectiveAt: "2026-01-31T23:59:00Z", Source: testAgentSource,
+		Confidence: 0.8,
 	})
 	if err == nil || !strings.Contains(err.Error(), auth.CodePeriodClosed) {
 		t.Fatalf("late save after close = %v, want PERIOD_CLOSED", err)
