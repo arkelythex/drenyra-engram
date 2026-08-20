@@ -2,7 +2,7 @@
 
 > **Normative source:** the Drenyra ecosystem brand contract —
 > [`drenyra-ai/contracts/brand-system.md`](https://github.com/arkelythex/drenyra-ai/blob/main/contracts/brand-system.md)
-> (v0.2 DRAFT) and canonical tokens at `contracts/brand-system/tokens.json`.
+> (v0.3 DRAFT) and canonical tokens at `contracts/brand-system/tokens.json`.
 >
 > The ecosystem design system is **the Dreamcoder Workbench canonical tokens**:
 > Cocoa/Lúcuma Light (warm ivory `#F3EADC`, dark ink `#17120D`) editorial
