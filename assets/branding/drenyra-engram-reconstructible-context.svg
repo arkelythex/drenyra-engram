@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="460" viewBox="0 0 1400 460">
+<rect width="1400" height="460" fill="#f3eadc"/>
+<text x="64" y="50" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="2.1">RECONSTRUCTION</text>
+<text x="64" y="96" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700" text-anchor="start" letter-spacing="0">Why did account 4011 end here?</text>
+<text x="64" y="128" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="500" text-anchor="start" letter-spacing="0">Reconstruct the balance from facts, rules, evidence, approvals, and late exceptions.</text>
+
+<!-- left summary -->
+<g transform="translate(64 168)">
+  <rect width="300" height="224" rx="14" fill="#fff7ea" stroke="#66513b"/>
+  <text x="24" y="34" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.7">ACCOUNT 4011</text>
+  <text x="24" y="84" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="31" font-weight="700" text-anchor="start" letter-spacing="0">S/ 128,450.00</text>
+  <text x="24" y="116" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="500" text-anchor="start" letter-spacing="0">closing balance</text>
+  <line x1="24" y1="140" x2="276" y2="140" stroke="#8a7358"/>
+  <text x="24" y="169" fill="#554638" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">period</text><text x="118" y="169" fill="#17120d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" text-anchor="start" letter-spacing="0">2026-01</text>
+  <text x="24" y="195" fill="#554638" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">scope</text><text x="118" y="195" fill="#17120d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="700" text-anchor="start" letter-spacing="0">RUC / company</text>
+</g>
+
+<!-- timeline -->
+<line x1="420" y1="280" x2="1280" y2="280" stroke="#3e2f20" stroke-width="1.6"/>
+<g transform="translate(470 280)">
+      <circle r="14" fill="#f3eadc" stroke="#824f16" stroke-width="2.4"/><circle r="4" fill="#824f16"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">FACT</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">invoice set</text>
+    </g><g transform="translate(630 280)">
+      <circle r="14" fill="#f3eadc" stroke="#654300" stroke-width="2.4"/><circle r="4" fill="#654300"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">RULE</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">tax treatment</text>
+    </g><g transform="translate(790 280)">
+      <circle r="14" fill="#f3eadc" stroke="#57478b" stroke-width="2.4"/><circle r="4" fill="#57478b"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">ADJUSTMENT</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">approved</text>
+    </g><g transform="translate(950 280)">
+      <circle r="14" fill="#f3eadc" stroke="#0d4a68" stroke-width="2.4"/><circle r="4" fill="#0d4a68"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">EVIDENCE</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">XML / CDR</text>
+    </g><g transform="translate(1110 280)">
+      <circle r="14" fill="#f3eadc" stroke="#a7471c" stroke-width="2.4"/><circle r="4" fill="#a7471c"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">LATE EXCEPTION</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">posted after close</text>
+    </g><g transform="translate(1260 280)">
+      <circle r="14" fill="#f3eadc" stroke="#315b31" stroke-width="2.4"/><circle r="4" fill="#315b31"/>
+      <text x="0" y="-42" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="middle" letter-spacing="0.4">RECEIPT</text>
+      <text x="0" y="50" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">verified</text>
+    </g>
+<!-- evidence chain annotations -->
+<path d="M470 294 C580 346 680 346 790 294" fill="none" stroke="#824f16" stroke-width="1.2" stroke-dasharray="5 5"/>
+<path d="M790 294 C900 346 1020 346 1110 294" fill="none" stroke="#0d4a68" stroke-width="1.2" stroke-dasharray="5 5"/>
+<text x="835" y="382" fill="#315b31" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.4">reconstructible without the original agent</text>
+</svg>

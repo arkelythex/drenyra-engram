@@ -1,6 +1,6 @@
 <div align="center">
 
-<img width="1200" alt="Drenyra Engram flow — scoped observation → institutional memory/evidence chain → reconstructible context" src="assets/branding/drenyra-engram-flow-banner.svg" />
+<img width="1200" alt="Drenyra Engram — the institutional archive: effectiveAt, recordedAt, confidence, approved state, evidence, vigent rule, verifiable seal, reconstructible file" src="assets/branding/drenyra-engram-hero-archive.svg" />
 
 <p><code>scoped observation → institutional memory/evidence chain → reconstructible context</code></p>
 
@@ -80,6 +80,8 @@ reconstructible offline. It is **not** a ledger, it does **not** post journal
 entries, and it does **not** file anything with SUNAT. A signature proves nobody
 altered the act — never that the professional decision was correct.
 
+<img width="1200" alt="Trust boundary — memory guides, evidence demonstrates, a professional authorizes; no authorize, no approve, no journal posting, no SUNAT filing" src="assets/branding/drenyra-engram-trust-boundary.svg" />
+
 ### Drenyra Dominion Program
 
 Drenyra Engram is a participant in the [Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion) — the federated program master that fixes vision, authority, contracts, dependencies, gates, and sequencing across every Drenyra repository. A single master SDD governs the ecosystem while vertical SDDs deliver complete, implementable capabilities across the repositories they need; each repository keeps its own implementation, versioning, and tests and references the master instead of copying its specs.
@@ -129,7 +131,7 @@ Memory is **not** evidence — only a verifiable external response proves — En
 - **Explainable period summary** — the killer demo: why did account 4011 end
   with this balance (facts, approved adjustments, rules applied, evidence,
   late exceptions — ordered by accounting-effective date).
-- **MCP, HTTP, CLI** — same engine, multiple surfaces (50 MCP tools: 37
+- **MCP, HTTP, CLI** — same engine, multiple surfaces (58 MCP tools: 45
   `accounting_*` + 13 `engram_*`).
 
 ## Quick start
@@ -143,6 +145,8 @@ go install github.com/arkelythex/drenyra-engram/cmd/drenyra-engram@latest
 Linux, macOS, Windows binaries and Docker → [docs/INSTALLATION.md](docs/INSTALLATION.md)
 
 ### Save, review, reconstruct
+
+<img width="1200" alt="Reconstructible context — why did account 4011 end here: fact → rule → adjustment → evidence → late exception → receipt" src="assets/branding/drenyra-engram-reconstructible-context.svg" />
 
 ```bash
 # An agent records an observation (scope-first: RUC + period).
@@ -167,6 +171,8 @@ drenyra-engram serve   # HTTP REST /v1 + MCP /mcp (127.0.0.1:8787)
 Full per-agent setup, the HTTP API and the CLI → [docs/CONSUMING.md](docs/CONSUMING.md)
 
 ## How it works
+
+<img width="1200" alt="Memory lifecycle — observe → pending review → review → approve / reject → promote → supersede (never mutate) → reconstruct" src="assets/branding/drenyra-engram-memory-lifecycle.svg" />
 
 ```
 1. An agent observes — a fact, an evidence link, a proposed decision.

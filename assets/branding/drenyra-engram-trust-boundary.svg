@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="460" viewBox="0 0 1400 460">
+<rect width="1400" height="460" fill="#f3eadc"/>
+<text x="64" y="50" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="2.1">TRUST MODEL</text>
+<text x="64" y="96" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700" text-anchor="start" letter-spacing="0">Memory is context, not authority</text>
+<text x="64" y="128" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="500" text-anchor="start" letter-spacing="0">Engram remembers and explains. It never approves, posts, or files.</text>
+
+<g transform="translate(64 178)">
+  <rect width="330" height="188" rx="14" fill="#fff7ea" stroke="#8a7358"/>
+  <text x="24" y="34" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.7">MEMORY</text>
+  <text x="24" y="76" fill="#824f16" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start" letter-spacing="0">Guides proposals</text>
+  <text x="24" y="112" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="500" text-anchor="start" letter-spacing="0">precedent · policy · context</text>
+  <text x="24" y="146" fill="#a7471c" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="0">confidence ≠ evidence</text>
+</g>
+
+<g transform="translate(535 178)">
+  <rect width="330" height="188" rx="14" fill="#fff7ea" stroke="#8a7358"/>
+  <text x="24" y="34" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.7">EVIDENCE</text>
+  <text x="24" y="76" fill="#0d4a68" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start" letter-spacing="0">Demonstrates</text>
+  <text x="24" y="112" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="500" text-anchor="start" letter-spacing="0">XML · CDR · PDF · bank</text>
+  <text x="24" y="146" fill="#315b31" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="0">content-addressed · WORM</text>
+</g>
+
+<g transform="translate(1006 178)">
+  <rect width="330" height="188" rx="14" fill="#decbb1" stroke="#66513b"/>
+  <text x="24" y="34" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.7">AUTHORITY</text>
+  <text x="24" y="76" fill="#57478b" font-family="Arial, Helvetica, sans-serif" font-size="24" font-weight="700" text-anchor="start" letter-spacing="0">Human decision</text>
+  <text x="24" y="112" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="500" text-anchor="start" letter-spacing="0">approve · reject · return</text>
+  <text x="24" y="146" fill="#315b31" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="0">authenticated professional</text>
+</g>
+
+<!-- boundaries -->
+<path d="M394 272 H535" stroke="#824f16" stroke-width="2"/>
+<circle cx="465" cy="272" r="18" fill="#e6d7c4" stroke="#a7471c" stroke-width="1.5"/>
+<text x="465" y="277" fill="#a7471c" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" text-anchor="middle" letter-spacing="0">≠</text>
+<path d="M865 272 H1006" stroke="#0d4a68" stroke-width="2"/>
+<circle cx="936" cy="272" r="18" fill="#e6d7c4" stroke="#57478b" stroke-width="1.5"/>
+<text x="936" y="277" fill="#57478b" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="700" text-anchor="middle" letter-spacing="0">≠</text>
+
+<g transform="translate(64 394)">
+  <text x="0" y="0" fill="#842f24" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" text-anchor="start" letter-spacing="1.0">NO authorize</text>
+  <text x="140" y="0" fill="#842f24" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" text-anchor="start" letter-spacing="1.0">NO approve</text>
+  <text x="275" y="0" fill="#842f24" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" text-anchor="start" letter-spacing="1.0">NO journal posting</text>
+  <text x="470" y="0" fill="#842f24" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" text-anchor="start" letter-spacing="1.0">NO SUNAT filing</text>
+  <text x="655" y="0" fill="#554638" font-family="Arial, Helvetica, sans-serif" font-size="10" font-weight="700" text-anchor="start" letter-spacing="0.5">integrity ≠ accounting correctness</text>
+</g>
+</svg>

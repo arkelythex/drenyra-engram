@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="460" viewBox="0 0 1400 460">
+<rect width="1400" height="460" fill="#f3eadc"/>
+<text x="64" y="50" fill="#725e4c" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700" text-anchor="start" letter-spacing="2.1">MEMORY LIFECYCLE</text>
+<text x="64" y="96" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="40" font-weight="700" text-anchor="start" letter-spacing="0">From observation to institutional memory</text>
+<text x="64" y="128" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="500" text-anchor="start" letter-spacing="0">Material observations require human review before promotion.</text>
+
+<line x1="105" y1="242" x2="1290" y2="242" stroke="#3e2f20" stroke-width="1.7"/>
+<g transform="translate(105 242)">
+      <circle r="18" fill="#fff7ea" stroke="#824f16" stroke-width="2.4"/><circle r="5" fill="#824f16"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">OBSERVE</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">agent / system</text>
+    </g><g transform="translate(300 242)">
+      <circle r="18" fill="#fff7ea" stroke="#a7471c" stroke-width="2.4"/><circle r="5" fill="#a7471c"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">PENDING REVIEW</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">fiscal effect</text>
+    </g><g transform="translate(500 242)">
+      <circle r="18" fill="#fff7ea" stroke="#57478b" stroke-width="2.4"/><circle r="5" fill="#57478b"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">REVIEW</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">human queue</text>
+    </g><g transform="translate(695 242)">
+      <circle r="18" fill="#fff7ea" stroke="#315b31" stroke-width="2.4"/><circle r="5" fill="#315b31"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">APPROVE / REJECT</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">explicit act</text>
+    </g><g transform="translate(900 242)">
+      <circle r="18" fill="#fff7ea" stroke="#315b31" stroke-width="2.4"/><circle r="5" fill="#315b31"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">PROMOTE</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">institutional</text>
+    </g><g transform="translate(1090 242)">
+      <circle r="18" fill="#fff7ea" stroke="#0d4a68" stroke-width="2.4"/><circle r="5" fill="#0d4a68"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">SUPERSEDE</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">never mutate</text>
+    </g><g transform="translate(1265 242)">
+      <circle r="18" fill="#fff7ea" stroke="#0d4a68" stroke-width="2.4"/><circle r="5" fill="#0d4a68"/>
+      <text x="0" y="-48" fill="#100c07" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="0.5">RECONSTRUCT</text>
+      <text x="0" y="56" fill="#352e22" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="500" text-anchor="middle" letter-spacing="0">later context</text>
+    </g>
+<g transform="translate(64 350)">
+  <rect width="1272" height="58" rx="10" fill="#fff7ea" stroke="#8a7358"/>
+  <text x="20" y="25" fill="#824f16" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">MEMORY INFORMS</text>
+  <text x="205" y="25" fill="#654300" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">POLICY RESTRICTS</text>
+  <text x="410" y="25" fill="#0d4a68" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">EVIDENCE DEMONSTRATES</text>
+  <text x="700" y="25" fill="#315b31" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">RECEIPT CERTIFIES</text>
+  <text x="946" y="25" fill="#57478b" font-family="Arial, Helvetica, sans-serif" font-size="11" font-weight="700" text-anchor="start" letter-spacing="1.2">PROFESSIONAL AUTHORIZES</text>
+  <text x="20" y="46" fill="#554638" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="500" text-anchor="start" letter-spacing="0">confidence is context — never authority</text>
+</g>
+</svg>
