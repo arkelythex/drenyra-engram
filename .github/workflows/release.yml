@@ -41,7 +41,7 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Release
-        uses: goreleaser/goreleaser-action@57e184bc5a82be8284323f1ac99a6b188d673f7f # v7.2.3
+        uses: goreleaser/goreleaser-action@73cd4ffe39ceae11aafd47343ff35e8be087f14c # v7.2.3
         with:
           distribution: goreleaser
           version: latest
