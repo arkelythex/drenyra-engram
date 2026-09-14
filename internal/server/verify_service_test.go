@@ -211,6 +211,103 @@ func TestVerifyServiceMemoryRemovedEvidence(t *testing.T) {
 	}
 }
 
+// ──────────────────────────────────────────────
+// Delivery Slice 4 — fiscal scope binding layer wiring (design.md
+// "Verification and audit"): VerifyMemory/VerifyEvidenceObject additively
+// classify each subject's persisted fiscal binding evidence.
+// ──────────────────────────────────────────────
+
+func TestVerifyServiceMemoryFiscalLayerLegacySkipped(t *testing.T) {
+	// A legacy memory (no fiscal intent ever supplied — the overwhelming
+	// majority of existing data) yields a SKIPPED fiscal layer and the
+	// existing "passed" outcome is UNCHANGED (spec.md "Legacy rows remain
+	// readable but are not upgraded by inference").
+	st, _ := verifyStore(t)
+	id := verifySave(t, st, "t9", "c9", "verify/fiscal-legacy")
+
+	report, err := VerifyMemory(context.Background(), st, id)
+	if err != nil {
+		t.Fatalf("VerifyMemory: %v", err)
+	}
+	if report.Outcome != core.VerificationOutcomePassed {
+		t.Fatalf("outcome = %s, want passed", report.Outcome)
+	}
+	fiscal := findLayer(t, report.Layers, core.LayerFiscalScopeBinding)
+	if fiscal.Status != core.VerificationSkipped {
+		t.Fatalf("fiscal layer = %+v, want skipped (legacy/unbound)", fiscal)
+	}
+}
+
+func TestVerifyServiceMemoryFiscalLayerV1BoundPasses(t *testing.T) {
+	// A genuinely v1-bound memory save's fiscal layer PASSES with a
+	// deterministic act count and the report ends with the mandatory
+	// non-authorization conclusion (spec.md "Offline v1 verification is
+	// complete").
+	st, _ := verifyStore(t)
+	saved, err := st.Save(core.SaveInput{
+		TopicKey: "verify/fiscal-bound",
+		Title:    "bound save",
+		Kind:     core.KindException,
+		Scope: core.Scope{
+			Kind:           core.ScopeKindCompany,
+			OrganizationID: "t9",
+			CompanyID:      "c9",
+			RUC:            "20100070970", // checksum-valid SUNAT RUC
+			Period:         "202401",
+		},
+		Content:      core.Content{What: "w", Why: "y", Where: "Peru", Learned: "l"},
+		FiscalEffect: core.FiscalEffectAdjustment,
+		EffectiveAt:  "2024-01-15T00:00:00.000Z",
+		Source:       core.Source{System: "verify-test", ActorID: "agent-1", ActorKind: core.ActorKindAgent},
+		Confidence:   0.8,
+		FiscalIntent: &core.FiscalWriteIntent{Binding: core.FiscalScopeBinding{
+			Version:        "v1",
+			Tenant:         "t9",
+			Organization:   "c9",
+			Company:        "20100070970",
+			FiscalPeriod:   "202401",
+			LedgerBook:     "purchases",
+			OperationType:  "memory.save",
+			SourceSnapshot: strings.Repeat("a", 64),
+			PolicyVersion:  "fiscal-v1",
+			Actor:          "agent-1",
+			AuthorityLevel: core.AuthorityLevelPrepare,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("bound save: %v", err)
+	}
+
+	report, err := VerifyMemory(context.Background(), st, saved.Memory.Identity.ID)
+	if err != nil {
+		t.Fatalf("VerifyMemory: %v", err)
+	}
+	if report.Outcome != core.VerificationOutcomePassed {
+		t.Fatalf("outcome = %s, want passed (%+v)", report.Outcome, report.Layers)
+	}
+	fiscal := findLayer(t, report.Layers, core.LayerFiscalScopeBinding)
+	if fiscal.Status != core.VerificationPassed || !strings.Contains(fiscal.Detail, "1 act(s)") {
+		t.Fatalf("fiscal layer = %+v, want passed with 1 act", fiscal)
+	}
+	if report.AccountingCorrectness != core.AccountingCorrectnessNotAsserted {
+		t.Fatalf("conclusion = %q, want %q", report.AccountingCorrectness, core.AccountingCorrectnessNotAsserted)
+	}
+}
+
+// findLayer returns the named top-level layer or fails the test — every
+// assertion here is on a layer that the report contract guarantees is always
+// present.
+func findLayer(t *testing.T, layers []core.VerificationLayer, name string) core.VerificationLayer {
+	t.Helper()
+	for _, l := range layers {
+		if l.Name == name {
+			return l
+		}
+	}
+	t.Fatalf("layer %q not found in report (%+v)", name, layers)
+	return core.VerificationLayer{}
+}
+
 func TestVerifyServiceJudgmentValid(t *testing.T) {
 	st, _ := verifyStore(t)
 	token := verifyIdentity(t, st, "t9", "c9", []auth.AccountingRole{auth.RoleController})

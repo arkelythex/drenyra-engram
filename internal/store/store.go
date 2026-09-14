@@ -2886,13 +2886,45 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		}
 	}
 
+	// Slice 3: a brand-new subject has NO prior fiscal links, so appending the
+	// FIRST one is always the (explicit, intent-carrying) upgrade moment —
+	// never a bypass. This MUST run BEFORE receipt emission below: it sets
+	// memory.FiscalLinks on the SAME in-memory value the memory_recorded
+	// receipt's ResultingEnvelopeHash is computed from, so the receipt commits
+	// to the memory's TRUE final envelope hash (Delivery Slice 4 bug fix — see
+	// apply-progress.md: computing the receipt's envelope hash before this
+	// block populated FiscalLinks silently minted a receipt whose committed
+	// envelope could never again match the reloaded memory's recomputed
+	// envelope, permanently failing the evidence/rule-availability layers for
+	// every v1-fiscal-bound save).
+	if input.FiscalIntent != nil {
+		bindingHash, err := storeFiscalScopeBindingTx(ctx, tx, input.FiscalIntent.Binding, recordedAt)
+		if err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+		}
+		actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+		memory.FiscalLinks = []core.FiscalBindingLinkContribution{{Sequence: 1, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}}
+		resultingEnvelope := core.ComputeEnvelopeHash(memory)
+		linkID, err := newUUID()
+		if err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			linkID, "memory", id, 1, bindingHash, actEvidenceHash, "", resultingEnvelope, nil, nil, "observation", id, recordedAt,
+		); err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
+		}
+	}
+
 	// Atomic receipt emission (v0.4.0 Step 3): inside the SAME transaction, before
 	// COMMIT, with the captured recordedAt — never a fresh time call. A signing
 	// failure returns an error and rolls the whole save back (no act, no receipt).
 	// If auto-supersession changed the prior observation, memory_superseded for the
 	// prior subject is emitted FIRST (it chains on the prior's own receipts), then
 	// memory_recorded for the new subject. The new memory's envelope hash is
-	// recomputed fresh (the stored envelope cache is not trusted).
+	// recomputed fresh (the stored envelope cache is not trusted) and — for a
+	// bound save — the fiscal block above has ALREADY populated memory.FiscalLinks,
+	// so this recompute is the memory's true final envelope hash.
 	if autoSuperseded {
 		if _, err := s.emitReceipt(ctx, tx, core.SubjectTypeMemory, prevID, core.ReceiptActionMemorySuperseded, core.ReceiptPayload{
 			TenantID:         memory.Scope.OrganizationID,
@@ -2916,31 +2948,6 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		PolicyVersion:         kernelPolicyVersion,
 	}, recordedAt); err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: emit recorded receipt: %w", err)
-	}
-
-	// Slice 3: a brand-new subject has NO prior fiscal links, so appending the
-	// FIRST one is always the (explicit, intent-carrying) upgrade moment —
-	// never a bypass. resultingEnvelope is computed from the LOCAL memory
-	// value carrying the pending link so the persisted resulting_envelope_hash
-	// and the cache refreshEnvelopeCache computes just below (which re-reads
-	// the just-inserted link row from the DB) agree exactly.
-	if input.FiscalIntent != nil {
-		bindingHash, err := storeFiscalScopeBindingTx(ctx, tx, input.FiscalIntent.Binding, recordedAt)
-		if err != nil {
-			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
-		}
-		actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
-		memory.FiscalLinks = []core.FiscalBindingLinkContribution{{Sequence: 1, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}}
-		resultingEnvelope := core.ComputeEnvelopeHash(memory)
-		linkID, err := newUUID()
-		if err != nil {
-			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			linkID, "memory", id, 1, bindingHash, actEvidenceHash, "", resultingEnvelope, nil, nil, "observation", id, recordedAt,
-		); err != nil {
-			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
-		}
 	}
 
 	// v0.9.0 review workspace (docs/architecture/review-workspace-v0.9.md §3):

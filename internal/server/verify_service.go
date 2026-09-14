@@ -62,6 +62,11 @@ type VerificationStore interface {
 	GetJudgment(ctx context.Context, id string) (core.AccountingJudgment, bool)
 	SuccessorOf(memoryID string) (core.AccountingMemory, bool)
 	JudgmentSuccessorOf(ctx context.Context, judgmentID string) (core.AccountingJudgment, bool)
+	// FiscalBindingEvidence resolves one subject's persisted, audit-anchor-
+	// resolved fiscal binding evidence (Delivery Slice 4 — design.md
+	// "Verification and audit"), in sequence order, nil for a legacy/unbound
+	// subject.
+	FiscalBindingEvidence(ctx context.Context, subjectType, subjectID string) ([]core.FiscalBindingLinkEvidence, error)
 }
 
 // Sentinels distinguish reportable verification failures (exit 1 evidence)
@@ -163,6 +168,16 @@ func VerifyMemory(ctx context.Context, st VerificationStore, memoryID string) (c
 			Detail: fmt.Sprintf("%d structured links, %d traces", len(structuredRuleLinks(memory)), len(report.RuleVersions)),
 		})
 	}
+
+	// 13. fiscal scope binding (Delivery Slice 4 — design.md "Verification and
+	// audit"): additive read-only classification of this subject's persisted
+	// fiscal binding evidence. A legacy/unbound memory (the overwhelming
+	// majority today) yields a SKIPPED instance and changes no outcome.
+	fiscalLayer, err := FiscalScopeBindingLayer(ctx, st, "memory", memoryID, core.ComputeEnvelopeHash(memory))
+	if err != nil {
+		return core.VerificationReport{}, fmt.Errorf("verify memory %s: read fiscal binding evidence: %w", memoryID, err)
+	}
+	report.Layers = append(report.Layers, fiscalLayer)
 
 	core.Finalize(&report)
 	return report, nil
@@ -434,6 +449,16 @@ func VerifyEvidenceObject(ctx context.Context, st VerificationStore, objectID st
 
 	// 8. WORM byte integrity — the stored bytes re-hash to the content address.
 	report.Layers = append(report.Layers, core.VerifyObjectBytesIntegrity(st.VerifyObjectBytes(ctx, objectID)))
+
+	// 9. fiscal scope binding (Delivery Slice 4): the object's content address
+	// (ObjectID) IS its resulting envelope/content-address hash — the same
+	// value Slice 3's StoreObjectWithFiscalIntent recorded as the link's
+	// resultingEnvelopeHash.
+	fiscalLayer, err := FiscalScopeBindingLayer(ctx, st, "evidence_object", objectID, obj.ObjectID)
+	if err != nil {
+		return core.VerificationReport{}, fmt.Errorf("verify evidence object %s: read fiscal binding evidence: %w", objectID, err)
+	}
+	report.Layers = append(report.Layers, fiscalLayer)
 
 	core.Finalize(&report)
 	return report, nil

@@ -21,6 +21,7 @@
 package core
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -114,6 +115,12 @@ const (
 	LayerRuleAvailability        = "rule availability"
 	LayerRuleVersionVigencia     = "rule version/vigencia"
 	LayerJudgmentHash            = "judgment hash"
+	// LayerFiscalScopeBinding is the Delivery Slice 4 read-only fiscal-binding
+	// verification layer (design.md "Verification and audit"). It is additive:
+	// a legacy/unbound subject (no persisted fiscal_binding_links) always
+	// yields a SKIPPED instance, so every pre-existing report's outcome stays
+	// unchanged beyond the addition of this one extra layer.
+	LayerFiscalScopeBinding = "fiscal scope binding"
 )
 
 // ReceiptLayerNames returns the six receipt-layer names in the stable order —
@@ -684,6 +691,101 @@ func VerifyJudgmentHash(currentHash, resultingJudgmentHash, recordedEventHash st
 		return layerFailed(LayerJudgmentHash, fmt.Sprintf("committed resultingJudgmentHash %s differs from the immutable decision event hash %s", resultingJudgmentHash, recordedEventHash))
 	}
 	return layerPassed(LayerJudgmentHash, "judgment hash matches the current row and the immutable decision event")
+}
+
+// ──────────────────────────────────────────────
+// Fiscal scope binding (design.md "Verification and audit", Delivery Slice 4)
+// ──────────────────────────────────────────────
+
+// FiscalBindingLinkEvidence is the pure, already-loaded verification view of
+// one persisted fiscal_binding_links row joined with its fiscal_scope_bindings
+// row (design.md "Immutable act evidence and envelope linkage"). The STORE
+// resolves it — including whether the link's logical audit reference exists —
+// this layer only judges the resolved evidence. It carries no authority: a
+// complete, hash-consistent binding never authorizes a business act.
+type FiscalBindingLinkEvidence struct {
+	// Sequence is the link's persisted subject-local sequence (1-based,
+	// contiguous).
+	Sequence int
+	// Binding is the joined, decoded fiscal_scope_bindings row.
+	Binding FiscalScopeBinding
+	// BindingHash is the persisted fiscal_scope_bindings primary key (the
+	// binding's canonical hash at write time).
+	BindingHash string
+	// CanonicalBytes is the persisted canonical_bytes column, or nil when the
+	// caller does not resolve it (the bytes/hash check is then skipped —
+	// BindingHash vs. the recomputed FiscalScopeHash(Binding) still runs).
+	CanonicalBytes []byte
+	// ActEvidenceHash is the persisted act-evidence hash of this one act.
+	ActEvidenceHash string
+	// ReviewedEnvelopeHash is H1 (empty for every non-approval act in this
+	// slice — the design's frame includes it, so recomputation only stays
+	// correct if the empty case is preserved exactly here too).
+	ReviewedEnvelopeHash string
+	// ResultingEnvelopeHash is the resulting envelope/content-address hash the
+	// act committed (a memory envelope hash, or an evidence object's content
+	// address).
+	ResultingEnvelopeHash string
+	// EvidenceInspected/RuleInspected are the persisted tri-state review
+	// acknowledgements this act recorded (omitted/false/true for every
+	// non-approval act in this slice).
+	EvidenceInspected ReviewAcknowledgement
+	RuleInspected     ReviewAcknowledgement
+	// AuditAnchorResolved reports whether the link's logical audit reference
+	// (audit_ref_type/audit_ref_id) resolves to a persisted record of its
+	// declared type. The STORE performs that lookup (I/O); this pure layer
+	// only trusts the resolved boolean.
+	AuditAnchorResolved bool
+}
+
+// VerifyFiscalScopeBinding is the pure fiscal-binding verification layer
+// (design.md "Verification and audit"):
+//   - no links: SKIPPED — "legacy/unbound: no v1 fiscal binding evidence"
+//     (spec.md "Legacy rows remain readable but are not upgraded by
+//     inference");
+//   - a missing/invalid binding, a canonical-bytes/hash mismatch, a sequence
+//     gap, an act-evidence-hash mismatch, an unresolved audit anchor, or an
+//     envelope mismatch: FAILED (spec.md "Missing evidence is not a pass" and
+//     "Reload detects binding tampering" — never a silent repair);
+//   - every link verifies completely AND the terminal link's resulting
+//     envelope hash matches the subject's current envelope hash: PASSED, with
+//     a deterministic act count (spec.md "Offline v1 verification is
+//     complete").
+//
+// currentEnvelopeHash is the subject's own, ALREADY recomputed envelope/
+// content-address hash (core.ComputeEnvelopeHash for a memory; the object id
+// for an evidence object) — the same authority the evidence/rule availability
+// layers compare a committed result against. No network access, no store
+// call, no mutation: this function is pure.
+func VerifyFiscalScopeBinding(links []FiscalBindingLinkEvidence, currentEnvelopeHash string) VerificationLayer {
+	if len(links) == 0 {
+		return layerSkipped(LayerFiscalScopeBinding, "legacy/unbound: no v1 fiscal binding evidence")
+	}
+	for i, link := range links {
+		if link.Sequence != i+1 {
+			return layerFailed(LayerFiscalScopeBinding, fmt.Sprintf("fiscal binding link sequence gap: expected sequence %d, found %d", i+1, link.Sequence))
+		}
+		if err := ValidateFiscalScopeBinding(link.Binding); err != nil {
+			return layerFailed(LayerFiscalScopeBinding, "fiscal binding is missing or invalid: "+err.Error())
+		}
+		if FiscalScopeHash(link.Binding) != link.BindingHash {
+			return layerFailed(LayerFiscalScopeBinding, "fiscal binding hash does not match the recomputed canonical hash")
+		}
+		if link.CanonicalBytes != nil && !bytes.Equal(link.CanonicalBytes, CanonicalFiscalScopeBytes(link.Binding)) {
+			return layerFailed(LayerFiscalScopeBinding, "fiscal binding canonical bytes do not match the recomputed canonical bytes")
+		}
+		wantAct := ComputeActEvidenceHash(link.BindingHash, link.ReviewedEnvelopeHash, link.EvidenceInspected, link.RuleInspected)
+		if wantAct != link.ActEvidenceHash {
+			return layerFailed(LayerFiscalScopeBinding, "fiscal act-evidence hash does not match the recomputed hash")
+		}
+		if !link.AuditAnchorResolved {
+			return layerFailed(LayerFiscalScopeBinding, "fiscal binding link audit anchor does not resolve to a persisted record")
+		}
+	}
+	if last := links[len(links)-1]; last.ResultingEnvelopeHash != currentEnvelopeHash {
+		return layerFailed(LayerFiscalScopeBinding, "fiscal binding resulting envelope hash differs from the current envelope hash")
+	}
+	return layerPassed(LayerFiscalScopeBinding, fmt.Sprintf("v1 fiscal binding evidence is complete and hash-consistent across %d act(s)", len(links)))
 }
 
 // ──────────────────────────────────────────────
