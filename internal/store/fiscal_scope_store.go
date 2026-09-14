@@ -203,3 +203,150 @@ func (mode FiscalRuntimeMode) CheckProtectedWrite(class FiscalScopeClass) error 
 	}
 	return auth.New(auth.CodeFiscalWriteGateClosed, "fiscal protected writes are disabled by runtime mode")
 }
+
+// ──────────────────────────────────────────────
+// Delivery Slice 3 — envelope linkage and store-authoritative enforcement
+// ──────────────────────────────────────────────
+//
+// The helpers below are the store-authoritative primitives that let
+// Save/SupersedeExplicit/AddEvidenceLinksBound/AddRuleLinksBound/
+// StoreObjectWithFiscalIntent persist ONE immutable fiscal act-evidence link
+// atomically with the protected act (design.md "Immutable act evidence and
+// envelope linkage" and "Enforcement and data flow"). They never authorize
+// anything: a core.FiscalWriteIntent only proves the caller's SHAPE-correct
+// command intent; authentication, membership, role, assurance, separation of
+// duties and the closed-period gate remain independently enforced exactly as
+// before.
+
+// fiscalBindingLinkContributionsTx returns a subject's persisted fiscal
+// binding links in sequence order, on the caller's connection/transaction.
+// Callers that gate mutation on the result (bypass/tamper enforcement) MUST
+// use this error-propagating form; fiscalBindingLinkContributionsBestEffort
+// below is for envelope-hash population only (mirrors the tolerant
+// linkRefsQuery style already used for evidence/rule refs).
+func fiscalBindingLinkContributionsTx(ctx context.Context, q Queryer, subjectType, subjectID string) ([]core.FiscalBindingLinkContribution, error) {
+	rows, err := q.QueryContext(ctx, `SELECT sequence, binding_hash, act_evidence_hash FROM fiscal_binding_links WHERE subject_type = ? AND subject_id = ? ORDER BY sequence`, subjectType, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []core.FiscalBindingLinkContribution
+	for rows.Next() {
+		var c core.FiscalBindingLinkContribution
+		if err := rows.Scan(&c.Sequence, &c.BindingHash, &c.ActEvidenceHash); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// fiscalBindingLinkContributionsBestEffort is the tolerant read used to
+// populate AccountingMemory.FiscalLinks for envelope-hash computation
+// (readMemoryWithLinks / refreshEnvelopeCache): a read failure degrades to
+// "no links" (legacy contribution), mirroring linkRefsQuery's existing
+// tolerance for evidence/rule refs. It is NEVER used to decide whether a
+// protected mutation may proceed — that decision always uses the
+// error-propagating form above.
+func fiscalBindingLinkContributionsBestEffort(ctx context.Context, q Queryer, subjectType, subjectID string) []core.FiscalBindingLinkContribution {
+	links, err := fiscalBindingLinkContributionsTx(ctx, q, subjectType, subjectID)
+	if err != nil {
+		return nil
+	}
+	return links
+}
+
+// storeFiscalScopeBindingTx persists (or reuses) the content-addressed
+// fiscal_scope_bindings row for one binding, on the caller's
+// connection/transaction, and returns its canonical hash. The binding is
+// structurally validated first — an invalid binding is never persisted.
+func storeFiscalScopeBindingTx(ctx context.Context, q Queryer, binding core.FiscalScopeBinding, createdAt string) (string, error) {
+	if err := core.ValidateFiscalScopeBinding(binding); err != nil {
+		return "", err
+	}
+	hash := core.FiscalScopeHash(binding)
+	var exists int
+	if err := q.QueryRowContext(ctx, `SELECT COUNT(*) FROM fiscal_scope_bindings WHERE binding_hash = ?`, hash).Scan(&exists); err != nil {
+		return "", err
+	}
+	if exists == 0 {
+		if _, err := q.ExecContext(ctx, `INSERT INTO fiscal_scope_bindings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			hash, binding.Version, binding.Tenant, binding.Organization, binding.Company, binding.FiscalPeriod,
+			binding.LedgerBook, binding.OperationType, binding.SourceSnapshot, binding.PolicyVersion, binding.Actor,
+			binding.AuthorityLevel, core.CanonicalFiscalScopeBytes(binding), createdAt,
+		); err != nil {
+			return "", err
+		}
+	}
+	return hash, nil
+}
+
+// verifyFiscalIntentAxes validates a caller-supplied intent's SHAPE (a nil
+// intent is always accepted — the legacy path) and, when present, that it
+// names the exact protected boundary being invoked and that its trusted
+// company axes (tenant, organization, company/RUC, fiscal period) agree with
+// the subject's OWN immutable scope. It never inspects or requires any prior
+// binding history — operationType/actor/authorityLevel MAY legitimately
+// differ across acts on the same subject (design.md).
+func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation string, scope core.Scope) error {
+	if intent == nil {
+		return nil
+	}
+	if err := core.ValidateFiscalScopeBinding(intent.Binding); err != nil {
+		return err
+	}
+	if intent.Binding.OperationType != expectedOperation {
+		return &core.FiscalScopeError{Code: core.ScopeBindingInvalid, Message: "operationType does not match the invoked protected boundary"}
+	}
+	if intent.Binding.Tenant != scope.OrganizationID ||
+		intent.Binding.Organization != scope.CompanyID ||
+		intent.Binding.Company != scope.RUC ||
+		(scope.Period != "" && intent.Binding.FiscalPeriod != scope.Period) {
+		return &core.FiscalScopeError{Code: core.ScopeMismatch, Message: "binding does not match the trusted scope axes"}
+	}
+	return nil
+}
+
+// requireFiscalIntentForBoundSubject is the direct-store-bypass guard
+// (spec.md "Direct store bypass is denied"): once a subject already carries
+// at least one persisted fiscal binding link (v1-bound), every further
+// protected mutation MUST supply a (shape/axis-verified) intent — a legacy
+// caller presenting only the old tuple, or no intent at all, fails closed. A
+// subject with NO existing links is still legacy/unbound: supplying an
+// intent for the FIRST time is the explicit upgrade moment, never a bypass.
+func requireFiscalIntentForBoundSubject(existing []core.FiscalBindingLinkContribution, intent *core.FiscalWriteIntent) error {
+	if len(existing) == 0 {
+		return nil
+	}
+	if intent == nil {
+		return &core.FiscalScopeError{Code: core.ScopeBindingRequired, Message: "a v1-bound subject requires the complete current binding"}
+	}
+	return nil
+}
+
+// appendFiscalBindingLinkTx persists the fiscal_scope_bindings row (if new)
+// and appends the NEXT-sequence fiscal_binding_links row for one subject, on
+// the caller's connection/transaction. resultingEnvelopeHash is the caller's
+// ALREADY-COMPUTED envelope/content-address hash of the act's resulting
+// state (memory envelope hash for "memory" subjects; the WORM content
+// address for "evidence_object" subjects) — it is opaque to this helper. It
+// returns the new link's contribution (for building the resulting in-memory
+// FiscalLinks slice / receipt fields).
+func appendFiscalBindingLinkTx(ctx context.Context, q Queryer, subjectType, subjectID string, existing []core.FiscalBindingLinkContribution, intent core.FiscalWriteIntent, resultingEnvelopeHash, auditRefType, auditRefID, createdAt string) (core.FiscalBindingLinkContribution, error) {
+	bindingHash, err := storeFiscalScopeBindingTx(ctx, q, intent.Binding, createdAt)
+	if err != nil {
+		return core.FiscalBindingLinkContribution{}, err
+	}
+	actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+	sequence := len(existing) + 1
+	linkID, err := newUUID()
+	if err != nil {
+		return core.FiscalBindingLinkContribution{}, err
+	}
+	if _, err := q.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		linkID, subjectType, subjectID, sequence, bindingHash, actEvidenceHash, "", resultingEnvelopeHash, nil, nil, auditRefType, auditRefID, createdAt,
+	); err != nil {
+		return core.FiscalBindingLinkContribution{}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
+	}
+	return core.FiscalBindingLinkContribution{Sequence: sequence, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}, nil
+}

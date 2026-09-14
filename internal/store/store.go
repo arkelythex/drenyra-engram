@@ -2674,6 +2674,21 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		input.RuleRefs = core.DeriveRuleRefs(input.RuleRefs, ruleLinks)
 	}
 
+	// Slice 3 fiscal binding intent (design.md "Enforcement and data flow"):
+	// structural + trusted-axis validation happens BEFORE any scoped read,
+	// membership lookup, idempotency reservation, object write, receipt or
+	// audit append — a brand-new Save subject has no prior fiscal links, so
+	// only shape/operation/axis validation applies here (the direct-bypass
+	// guard applies to MUTATIONS of an existing subject, see
+	// SupersedeExplicit/addLinksBound/StoreObjectWithFiscalIntent).
+	expectedFiscalOperation := "memory.save"
+	if input.CloseSnapshot != nil {
+		expectedFiscalOperation = "close.create"
+	}
+	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope); err != nil {
+		return core.WriteResult{}, err
+	}
+
 	// Status and RecordedAt are derived by the engine (approval gate + clock),
 	// never caller-supplied (core.SaveInput contract).
 	recordedAt := nowISO()
@@ -2901,6 +2916,31 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 		PolicyVersion:         kernelPolicyVersion,
 	}, recordedAt); err != nil {
 		return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: emit recorded receipt: %w", err)
+	}
+
+	// Slice 3: a brand-new subject has NO prior fiscal links, so appending the
+	// FIRST one is always the (explicit, intent-carrying) upgrade moment —
+	// never a bypass. resultingEnvelope is computed from the LOCAL memory
+	// value carrying the pending link so the persisted resulting_envelope_hash
+	// and the cache refreshEnvelopeCache computes just below (which re-reads
+	// the just-inserted link row from the DB) agree exactly.
+	if input.FiscalIntent != nil {
+		bindingHash, err := storeFiscalScopeBindingTx(ctx, tx, input.FiscalIntent.Binding, recordedAt)
+		if err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+		}
+		actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+		memory.FiscalLinks = []core.FiscalBindingLinkContribution{{Sequence: 1, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}}
+		resultingEnvelope := core.ComputeEnvelopeHash(memory)
+		linkID, err := newUUID()
+		if err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			linkID, "memory", id, 1, bindingHash, actEvidenceHash, "", resultingEnvelope, nil, nil, "observation", id, recordedAt,
+		); err != nil {
+			return core.WriteResult{Memory: memory, Outcome: core.WriteUnknown}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
+		}
 	}
 
 	// v0.9.0 review workspace (docs/architecture/review-workspace-v0.9.md §3):
@@ -3259,6 +3299,7 @@ func (s *SQLiteStore) withLinks(memory core.AccountingMemory) core.AccountingMem
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, s.linkRefs(`evidence_links`, memory.Identity.ID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, s.linkRefs(`rule_links`, memory.Identity.ID))
 	memory.RuleLinks = s.ruleLinksByID(memory.Identity.ID)
+	memory.FiscalLinks = fiscalBindingLinkContributionsBestEffort(context.Background(), s.db, "memory", memory.Identity.ID)
 	return memory
 }
 
@@ -3326,6 +3367,10 @@ func (s *SQLiteStore) readMemoryWithLinks(ctx context.Context, q Queryer, id str
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memory.Identity.ID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memory.Identity.ID))
 	memory.RuleLinks = ruleLinksQuery(ctx, q, memory.Identity.ID)
+	// Slice 3: a v1-bound subject's persisted fiscal binding links participate
+	// in its envelope hash (core.ComputeEnvelopeHash); a legacy subject has
+	// none and contributes nothing (byte-identical to the frozen contract).
+	memory.FiscalLinks = fiscalBindingLinkContributionsBestEffort(ctx, q, "memory", memory.Identity.ID)
 	return memory, true
 }
 
@@ -3388,6 +3433,7 @@ func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memor
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memoryID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memoryID))
 	memory.RuleLinks = ruleLinksQuery(ctx, q, memoryID)
+	memory.FiscalLinks = fiscalBindingLinkContributionsBestEffort(ctx, q, "memory", memoryID)
 	hash := core.ComputeEnvelopeHash(memory)
 	if _, err := q.ExecContext(ctx, `UPDATE observations SET envelope_hash = ? WHERE id = ?`, hash, memoryID); err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache update: %w", err)
@@ -5365,16 +5411,60 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	}
 	from := memory.Status
 	fromEnvelope := core.ComputeEnvelopeHash(memory)
+
+	// Slice 3 fiscal binding enforcement (design.md "Direct store bypass is
+	// denied"): shape/operation/trusted-axis validation and the v1-bound
+	// direct-bypass guard run BEFORE any mutating statement — a legacy
+	// caller (nil intent) or a mismatched binding against an already
+	// v1-bound subject fails closed here, before the closed-period gate or
+	// any exec.
+	if err := verifyFiscalIntentAxes(meta.FiscalIntent, "memory.supersede", memory.Scope); err != nil {
+		return core.AccountingMemory{}, err
+	}
+	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, meta.FiscalIntent); err != nil {
+		return core.AccountingMemory{}, err
+	}
+
 	superseded := memory
 	superseded.Status = core.StatusSuperseded
 	superseded.SupersedesID = successorID
-	toEnvelope := core.ComputeEnvelopeHash(superseded)
 
 	// Close write gate (v0.5.0): an explicit supersession inside a CLOSED exact
 	// company period fails with PERIOD_CLOSED (supersession is a lifecycle
 	// mutation; design §2.3 gates status/supersession transitions).
 	if err := s.assertPeriodWritable(ctx, tx, memory.Scope, "supersede"); err != nil {
 		return core.AccountingMemory{}, err
+	}
+
+	// Slice 3: compute (but do not yet insert) the pending act-evidence link's
+	// contribution AFTER the closed-period gate — the fiscal_scope_bindings
+	// row it persists is content-addressed/immutable and independent of the
+	// envelope, so persisting it here creates no partial state on a later
+	// failure (a reused binding row is never orphaned evidence). The
+	// resulting envelope hash MUST be known before the link row is inserted
+	// (the row is append-only — no-update trigger), so it is computed from
+	// `superseded` (with the pending link already attached) first.
+	var pendingLink core.FiscalBindingLinkContribution
+	if meta.FiscalIntent != nil {
+		bindingHash, err := storeFiscalScopeBindingTx(ctx, tx, meta.FiscalIntent.Binding, meta.Timestamp)
+		if err != nil {
+			return core.AccountingMemory{}, err
+		}
+		actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+		pendingLink = core.FiscalBindingLinkContribution{Sequence: len(memory.FiscalLinks) + 1, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}
+		superseded.FiscalLinks = append(append([]core.FiscalBindingLinkContribution{}, memory.FiscalLinks...), pendingLink)
+	}
+	toEnvelope := core.ComputeEnvelopeHash(superseded)
+	if meta.FiscalIntent != nil {
+		linkID, err := newUUID()
+		if err != nil {
+			return core.AccountingMemory{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			linkID, "memory", memoryID, pendingLink.Sequence, pendingLink.BindingHash, pendingLink.ActEvidenceHash, "", toEnvelope, nil, nil, "observation", memoryID, meta.Timestamp,
+		); err != nil {
+			return core.AccountingMemory{}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
+		}
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -5791,6 +5881,155 @@ func (s *SQLiteStore) addLink(table, memoryID, ref, actor string) error {
 			FromEnvelopeHash: fromEnvelope,
 			ToEnvelopeHash:   core.ComputeEnvelopeHash(linked),
 			EvidenceRef:      ref,
+			PrincipalID:      actor,
+			PolicyVersion:    kernelPolicyVersion,
+		}, now); err != nil {
+			return err
+		}
+	}
+
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return fmt.Errorf("persistence error: commit link: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// AddEvidenceLinksBound is the Slice 3 ATOMIC batch counterpart of
+// AddEvidenceLink (design.md "Evidence/rule linking gains a bound batch store
+// transaction so one command cannot commit only a subset of refs"): every ref
+// in the batch is validated and inserted inside ONE transaction — an invalid
+// ref anywhere in the batch aborts the whole command with zero refs added.
+// When intent is non-nil it is validated against the trusted scope axes and
+// the "evidence.link" boundary before any mutation, and once the memory
+// already carries any fiscal link (v1-bound), a nil or mismatched intent is
+// the direct-bypass denial. Returns the memory's full evidence-ref list after
+// the batch commits.
+func (s *SQLiteStore) AddEvidenceLinksBound(memoryID string, refs []string, actor string, intent *core.FiscalWriteIntent) ([]string, error) {
+	if err := s.addLinksBound(`evidence_links`, "evidence.link", memoryID, refs, actor, intent); err != nil {
+		return nil, err
+	}
+	return s.EvidenceRefs(memoryID)
+}
+
+// AddRuleLinksBound is the Slice 3 atomic batch counterpart of AddRuleLink —
+// same atomicity and fiscal-enforcement contract as AddEvidenceLinksBound,
+// scoped to the "rule.link" protected boundary. Rule links mint no receipt
+// (unchanged from the legacy AddRuleLink — not in the closed receipt action
+// set), matching existing behavior exactly.
+func (s *SQLiteStore) AddRuleLinksBound(memoryID string, refs []string, actor string, intent *core.FiscalWriteIntent) ([]string, error) {
+	if err := s.addLinksBound(`rule_links`, "rule.link", memoryID, refs, actor, intent); err != nil {
+		return nil, err
+	}
+	return s.RuleRefs(memoryID)
+}
+
+// addLinksBound is the shared atomic-batch + fiscal-enforcement engine behind
+// AddEvidenceLinksBound/AddRuleLinksBound. It mirrors addLink's existing
+// closed-period gate, envelope-cache refresh and (for evidence_links only)
+// receipt emission, extended with: (1) upfront validation of every ref before
+// any mutation, (2) the Slice 3 fiscal shape/axis/bypass guard evaluated
+// BEFORE the closed-period gate and any exec, and (3) one immutable fiscal
+// binding link appended atomically with the batch when intent is supplied.
+func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []string, actor string, intent *core.FiscalWriteIntent) error {
+	cleaned := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if strings.TrimSpace(ref) == "" {
+			return errors.New("INVALID_REF: ref must be a non-empty string")
+		}
+		cleaned = append(cleaned, ref)
+	}
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("persistence error: acquire connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("persistence error: begin immediate: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(ctx, `ROLLBACK`)
+		}
+	}()
+
+	memory, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+	if !ok {
+		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+	}
+	// Slice 3 fiscal guard — before the closed-period gate and any exec.
+	if err := verifyFiscalIntentAxes(intent, operation, memory.Scope); err != nil {
+		return err
+	}
+	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, intent); err != nil {
+		return err
+	}
+	if err := s.assertPeriodWritable(ctx, conn, memory.Scope, "link "+table); err != nil {
+		return err
+	}
+	now := nowISO()
+	fromEnvelope := core.ComputeEnvelopeHash(memory)
+	anyInserted := false
+	for _, ref := range cleaned {
+		res, err := conn.ExecContext(ctx,
+			`INSERT OR IGNORE INTO `+table+` (memory_id, ref, actor, timestamp) VALUES (?, ?, ?, ?)`,
+			memoryID, ref, actor, now,
+		)
+		if err != nil {
+			return fmt.Errorf("persistence error: add link: %w", err)
+		}
+		inserted, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("persistence error: link rows affected: %w", err)
+		}
+		if inserted == 1 {
+			anyInserted = true
+		}
+	}
+
+	// Idempotent replay (spec.md Slice 3 acceptance): a batch that inserts
+	// NOTHING new (every ref already existed — INSERT OR IGNORE silently
+	// no-opped above) is a true no-op replay, not a fresh act. Minting a
+	// fiscal binding link here regardless of anyInserted would record a
+	// phantom act-evidence entry (and bump the envelope hash) for a command
+	// that persisted no new evidence/rule ref — replaying the exact same
+	// bound batch would otherwise create a new sequence entry every time.
+	if intent != nil && anyInserted {
+		// Pure precompute (no persistence yet): the binding hash and
+		// act-evidence hash are content-addressed, so the resulting envelope
+		// hash can be computed BEFORE the append-only link row is inserted.
+		bindingHash := core.FiscalScopeHash(intent.Binding)
+		actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, "", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+		pending := core.FiscalBindingLinkContribution{Sequence: len(memory.FiscalLinks) + 1, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}
+		linked, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+		if !ok {
+			return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+		}
+		linked.FiscalLinks = append(append([]core.FiscalBindingLinkContribution{}, memory.FiscalLinks...), pending)
+		resultingEnvelope := core.ComputeEnvelopeHash(linked)
+		if _, err := appendFiscalBindingLinkTx(ctx, conn, "memory", memoryID, memory.FiscalLinks, *intent, resultingEnvelope, "observation", memoryID, now); err != nil {
+			return err
+		}
+	}
+
+	if err := s.refreshEnvelopeCache(ctx, conn, memoryID); err != nil {
+		return err
+	}
+
+	if table == `evidence_links` && anyInserted {
+		linked, ok := s.readMemoryWithLinks(ctx, conn, memoryID)
+		if !ok {
+			return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
+		}
+		if _, err := s.emitReceipt(ctx, conn, core.SubjectTypeMemory, memoryID, core.ReceiptActionEvidenceLinked, core.ReceiptPayload{
+			TenantID:         memory.Scope.OrganizationID,
+			CompanyID:        memory.Scope.CompanyID,
+			FiscalPeriodID:   memory.Scope.Period,
+			FromEnvelopeHash: fromEnvelope,
+			ToEnvelopeHash:   core.ComputeEnvelopeHash(linked),
 			PrincipalID:      actor,
 			PolicyVersion:    kernelPolicyVersion,
 		}, now); err != nil {
