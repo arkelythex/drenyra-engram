@@ -25,11 +25,19 @@
  * error codes and messages differ from the layer's detail strings.
  */
 import {
+	createHash,
 	createPublicKey,
 	verify as ed25519Verify,
 	type KeyObject,
 } from "node:crypto";
 
+import {
+	canonicalFiscalScopeBytes,
+	decodeFiscalScopeV1,
+	fiscalScopeHash,
+	reviewAcknowledgementState,
+	type FiscalScopeBinding,
+} from "./fiscal-scope.js";
 import {
 	canonicalReceiptPayload,
 	canonicalUnsignedEnvelope,
@@ -44,6 +52,7 @@ import {
 	type EvidenceObject,
 	type ReceiptAction,
 	type ReceiptPayload,
+	type ReviewAcknowledgement,
 	type SignedReceipt,
 } from "./types.js";
 
@@ -115,6 +124,14 @@ export const LAYER_OBJECT_AVAILABILITY = "object availability";
 export const LAYER_RULE_AVAILABILITY = "rule availability";
 export const LAYER_RULE_VERSION_VIGENCIA = "rule version/vigencia";
 export const LAYER_JUDGMENT_HASH = "judgment hash";
+/**
+ * The Delivery Slice 4 read-only fiscal-binding verification layer
+ * (design.md "Verification and audit"). Additive: a legacy/unbound subject
+ * (no persisted fiscal_binding_links) always yields a SKIPPED instance, so
+ * every pre-existing report's outcome stays unchanged beyond the addition of
+ * this one extra layer.
+ */
+export const LAYER_FISCAL_SCOPE_BINDING = "fiscal scope binding";
 
 /** The six receipt-layer names in the stable order — the per-receipt order AND
  * the first six top-level aggregate layers. */
@@ -1106,6 +1123,159 @@ export function verifyJudgmentHash(
 	return layerPassed(
 		LAYER_JUDGMENT_HASH,
 		"judgment hash matches the current row and the immutable decision event",
+	);
+}
+
+// ──────────────────────────────────────────────
+// Fiscal scope binding (design §Verification and audit, Delivery Slice 4)
+// ──────────────────────────────────────────────
+
+/** The versioned act-evidence canonical frame — mirrors Go's
+ * fiscalActEvidenceFrame (internal/core/fiscal_act_evidence.go). */
+const FISCAL_ACT_EVIDENCE_FRAME = "drenyra:fiscal-act-evidence:v1\0";
+
+/**
+ * Recomputes one act's immutable act-evidence hash: a versioned frame, the
+ * binding hash, the reviewed envelope hash (empty when inapplicable) and the
+ * ordered tri-state of both review acknowledgements. Mirrors Go's
+ * core.ComputeActEvidenceHash byte-for-byte (internal/core/
+ * fiscal_act_evidence.go) — it never authorizes anything.
+ */
+export function computeActEvidenceHash(
+	bindingHash: string,
+	reviewedEnvelopeHash: string,
+	evidenceInspected: ReviewAcknowledgement,
+	ruleInspected: ReviewAcknowledgement,
+): string {
+	const parts = [
+		bindingHash,
+		reviewedEnvelopeHash,
+		reviewAcknowledgementState(evidenceInspected),
+		reviewAcknowledgementState(ruleInspected),
+	];
+	let canonical = FISCAL_ACT_EVIDENCE_FRAME;
+	for (const part of parts) {
+		canonical += `${new TextEncoder().encode(part).length}:${part}\0`;
+	}
+	return createHash("sha256")
+		.update(new TextEncoder().encode(canonical))
+		.digest("hex");
+}
+
+/**
+ * The pure, already-loaded verification view of one persisted
+ * fiscal_binding_links row joined with its fiscal_scope_bindings row. The
+ * STORE resolves it (I/O — including audit-anchor existence); this layer only
+ * judges it. Mirrors core.FiscalBindingLinkEvidence.
+ */
+export interface FiscalBindingLinkEvidence {
+	sequence: number;
+	binding: FiscalScopeBinding;
+	bindingHash: string;
+	/** The persisted canonical_bytes column, or undefined when the caller does
+	 * not resolve it (the bytes-vs-hash cross-check is then skipped). */
+	canonicalBytes?: Uint8Array;
+	actEvidenceHash: string;
+	reviewedEnvelopeHash: string;
+	resultingEnvelopeHash: string;
+	evidenceInspected: ReviewAcknowledgement;
+	ruleInspected: ReviewAcknowledgement;
+	/** Whether the link's logical audit reference resolves to a persisted
+	 * record of its declared type — resolved by the STORE, trusted here. */
+	auditAnchorResolved: boolean;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+	return true;
+}
+
+/**
+ * The pure fiscal-binding verification layer (design §Verification and
+ * audit):
+ *  - no links: SKIPPED — "legacy/unbound: no v1 fiscal binding evidence";
+ *  - a missing/invalid binding, a canonical-bytes/hash mismatch, a sequence
+ *    gap, an act-evidence-hash mismatch, an unresolved audit anchor, or an
+ *    envelope mismatch: FAILED (never a silent skip, never a v1 pass);
+ *  - every link verifies completely AND the terminal link's resulting
+ *    envelope hash matches the subject's current envelope hash: PASSED, with
+ *    a deterministic act count.
+ *
+ * currentEnvelopeHash is the subject's own, ALREADY recomputed envelope/
+ * content-address hash. Mirrors core.VerifyFiscalScopeBinding byte-for-byte
+ * for the same evidence — no network access, no store call, no mutation.
+ */
+export function verifyFiscalScopeBinding(
+	links: FiscalBindingLinkEvidence[],
+	currentEnvelopeHash: string,
+): VerificationLayer {
+	if (links.length === 0) {
+		return layerSkipped(
+			LAYER_FISCAL_SCOPE_BINDING,
+			"legacy/unbound: no v1 fiscal binding evidence",
+		);
+	}
+	for (let i = 0; i < links.length; i++) {
+		const link = links[i];
+		if (link.sequence !== i + 1) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				`fiscal binding link sequence gap: expected sequence ${i + 1}, found ${link.sequence}`,
+			);
+		}
+		try {
+			decodeFiscalScopeV1(link.binding);
+		} catch (cause) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				`fiscal binding is missing or invalid: ${(cause as Error).message}`,
+			);
+		}
+		if (fiscalScopeHash(link.binding) !== link.bindingHash) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				"fiscal binding hash does not match the recomputed canonical hash",
+			);
+		}
+		if (
+			link.canonicalBytes !== undefined &&
+			!bytesEqual(link.canonicalBytes, canonicalFiscalScopeBytes(link.binding))
+		) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				"fiscal binding canonical bytes do not match the recomputed canonical bytes",
+			);
+		}
+		const wantAct = computeActEvidenceHash(
+			link.bindingHash,
+			link.reviewedEnvelopeHash,
+			link.evidenceInspected,
+			link.ruleInspected,
+		);
+		if (wantAct !== link.actEvidenceHash) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				"fiscal act-evidence hash does not match the recomputed hash",
+			);
+		}
+		if (!link.auditAnchorResolved) {
+			return layerFailed(
+				LAYER_FISCAL_SCOPE_BINDING,
+				"fiscal binding link audit anchor does not resolve to a persisted record",
+			);
+		}
+	}
+	const last = links[links.length - 1];
+	if (last.resultingEnvelopeHash !== currentEnvelopeHash) {
+		return layerFailed(
+			LAYER_FISCAL_SCOPE_BINDING,
+			"fiscal binding resulting envelope hash differs from the current envelope hash",
+		);
+	}
+	return layerPassed(
+		LAYER_FISCAL_SCOPE_BINDING,
+		`v1 fiscal binding evidence is complete and hash-consistent across ${links.length} act(s)`,
 	);
 }
 
