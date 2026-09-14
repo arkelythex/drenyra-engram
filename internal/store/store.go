@@ -182,7 +182,7 @@ import (
 // idx_rule_links_ref(ref, version, effective_at, memory_id). No existing row
 // is backfilled or re-hashed; the fail-closed migration validates the columns
 // and the index ABSENT before mutation.
-const schemaVersion = 17
+const schemaVersion = 18
 
 // migrationBatchSize chunks the v1→v2 backfill into batched UPDATEs inside the
 // single migration transaction.
@@ -761,11 +761,18 @@ func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSign
 			_ = db.Close()
 			return nil, err
 		}
-		version = schemaVersion
+		version = 17
 	}
-	if version != schemaVersion {
+	if version == 17 {
+		if err := migrateV17ToV18(db); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		version = 18
+	}
+	if err := requireSupportedSchemaVersion(version, schemaVersion); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("unsupported store layout: schema_version=%d, supported=%d — fail closed; migrate additively, never rewrite", version, schemaVersion)
+		return nil, err
 	}
 
 	if len(signers) > 1 {

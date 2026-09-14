@@ -37,6 +37,7 @@ func seedV16StoreWithConfidence(t *testing.T) (*SQLiteStore, string) {
 	}); err != nil {
 		t.Fatalf("save fixture: %v", err)
 	}
+	removeV18FixtureArtifacts(t, st.db)
 	if _, err := st.db.Exec(`UPDATE schema_meta SET value = '16' WHERE key = 'schema_version'`); err != nil {
 		t.Fatalf("downgrade marker: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestConfidenceMigrationCleanV16Upgrades(t *testing.T) {
 	if err := st2.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 17 {
+	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want 17", version)
 	}
 	// The confidence-required triggers are installed (SQLite requires separate
@@ -116,7 +117,7 @@ func TestConfidenceMigrationPreservesLegacyNullRows(t *testing.T) {
 	if err := st2.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 17 {
+	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want 17", version)
 	}
 	// Legacy row preserved with NULL confidence (no backfill, no re-hash).
@@ -177,6 +178,7 @@ func TestConfidenceMigrationCrashConvergesToV17(t *testing.T) {
 	if _, err := st2.db.Exec(`DROP TRIGGER observations_confidence_required_update`); err != nil {
 		t.Fatalf("drop trigger: %v", err)
 	}
+	removeV18FixtureArtifacts(t, st2.db)
 	if _, err := st2.db.Exec(`UPDATE schema_meta SET value = '16' WHERE key = 'schema_version'`); err != nil {
 		t.Fatalf("reset marker: %v", err)
 	}
@@ -191,7 +193,7 @@ func TestConfidenceMigrationCrashConvergesToV17(t *testing.T) {
 	if err := st3.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 17 {
+	if version != schemaVersion {
 		t.Fatalf("schema version = %d after crash-reopen, want 17", version)
 	}
 }
