@@ -1,0 +1,12 @@
+{
+  "name": "fiscal-ruc-v1",
+  "contract": "fiscal-ruc-v1",
+  "cases": [
+    { "input": "20100070970", "classification": "valid" },
+    { "input": "20600055519", "classification": "valid" },
+    { "input": "20100070971", "classification": "invalid_checksum" },
+    { "input": "2010007097", "classification": "invalid_shape" },
+    { "input": "２０１０００７０９７０", "classification": "invalid_shape" },
+    { "input": "2010007097a", "classification": "invalid_shape" }
+  ]
+}

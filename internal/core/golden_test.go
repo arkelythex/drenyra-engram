@@ -264,6 +264,8 @@ func TestGoldenVectorsGo(t *testing.T) {
 				runTopicFoldGolden(t, tc)
 			case "reconstructibility":
 				runReconstructibilityGolden(t, tc)
+			case "fiscal-ruc-v1", "fiscal-scope-v1":
+				// Dedicated pure parity tests consume these focused vectors.
 			case "judgment":
 				runJudgmentGolden(t, tc)
 			case "receipt":

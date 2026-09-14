@@ -62,7 +62,7 @@ func checkComprobanteInvariants(t testing.TB, data []byte) {
 	if c1.DocumentID == "" || c1.DocumentID != c1.Serie+"-"+c1.Numero {
 		t.Fatalf("documentId %q is not serie-numero of serie %q numero %q", c1.DocumentID, c1.Serie, c1.Numero)
 	}
-	if !IsValidRUC(c1.EmitterRUC) || !isValidRUCChecksum(c1.EmitterRUC) {
+	if !IsValidFiscalRUC(c1.EmitterRUC) {
 		t.Fatalf("emitter RUC %q is not shape- and checksum-valid", c1.EmitterRUC)
 	}
 	if c1.Kind != ComprobanteFactura && c1.Kind != ComprobanteBoleta {

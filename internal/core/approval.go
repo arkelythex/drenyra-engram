@@ -16,6 +16,38 @@ package core
 
 import "github.com/arkelythex/drenyra-engram/internal/auth"
 
+// ReviewAcknowledgement preserves whether a reviewer declaration was omitted,
+// explicitly false, or explicitly true. It records no authorization.
+type ReviewAcknowledgement struct {
+	Present bool `json:"present"`
+	Value   bool `json:"value"`
+}
+
+type ReviewAcknowledgementState string
+
+const (
+	ReviewAcknowledgementOmitted ReviewAcknowledgementState = "omitted"
+	ReviewAcknowledgementFalse   ReviewAcknowledgementState = "false"
+	ReviewAcknowledgementTrue    ReviewAcknowledgementState = "true"
+)
+
+func (a ReviewAcknowledgement) State() ReviewAcknowledgementState {
+	if !a.Present {
+		return ReviewAcknowledgementOmitted
+	}
+	if a.Value {
+		return ReviewAcknowledgementTrue
+	}
+	return ReviewAcknowledgementFalse
+}
+
+// ReviewChecksV1 is the additive presence-aware contract. Slice 5 carries it
+// through the authenticated transaction; this value itself grants nothing.
+type ReviewChecksV1 struct {
+	EvidenceInspected ReviewAcknowledgement `json:"evidenceInspected"`
+	RuleInspected     ReviewAcknowledgement `json:"applicableRulesInspected"`
+}
+
 // ApproveMemoryCommand is the approval command. It carries the memory to
 // approve, the envelope hash the caller reviewed, the reason, the idempotency
 // request id and the optional v0.9.0 review checks. No principal fields
