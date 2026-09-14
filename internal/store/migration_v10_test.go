@@ -56,7 +56,7 @@ func TestFreshStoreBootstrapsV10Holds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 17 {
+	if version != schemaVersion {
 		t.Fatalf("schema_version = %d, want 17 (the chain continues v2→v3→…→v10→v11→v12→v13→v14)", version)
 	}
 

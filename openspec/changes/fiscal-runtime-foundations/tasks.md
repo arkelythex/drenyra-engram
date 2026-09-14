@@ -8,15 +8,15 @@
 | 400-line budget risk | High |
 | Chained PRs recommended | Yes |
 | Suggested split | PR 1 → PR 2 → PR 3 → PR 4 → PR 5 → PR 6 → PR 7, one design slice per review unit |
-| Delivery strategy | ask-on-risk |
-| Chain strategy | pending |
+| Delivery strategy | auto-chain (session preflight, 2026-09-14) |
+| Chain strategy | stacked-to-main (selected 2026-09-14) |
 
-Decision needed before apply: Yes
+Decision needed before apply: Resolved
 Chained PRs recommended: Yes
-Chain strategy: pending
+Chain strategy: stacked-to-main — PR 1 (`feat/fiscal-runtime-foundations-slice-1`, targets main) → PR 2 (`feat/fiscal-runtime-foundations-slice-2`, targets slice-1 branch) → ...
 400-line budget risk: High
 
-**Planning gate:** do not start apply until the maintainer selects a chain strategy or explicitly accepts the applicable size exception. No task below authorizes implementation by itself; each runtime work unit requires native attempt acquisition before launch.
+**Planning gate:** resolved — chain strategy selected 2026-09-14. No task below authorizes implementation by itself; each runtime work unit requires native attempt acquisition before launch.
 
 ## Execution Rules
 
@@ -97,6 +97,6 @@ Chain strategy: pending
 
 ## Parent-owned lifecycle actions
 
-- [ ] Select the chain strategy or explicitly approve a documented size exception before launching apply; retain the ask-on-risk decision in the delivery record. <!-- sdd-owner: parent -->
+- [x] Select the chain strategy or explicitly approve a documented size exception before launching apply; retain the ask-on-risk decision in the delivery record. <!-- sdd-owner: parent -->
 - [ ] Start or reuse one bounded review per approved delivery slice after implementation and before delivery gating. <!-- sdd-owner: parent -->
 - [ ] Confirm all seven slices have native attempt acquisition, focused evidence, clean changed-path boundaries, and no unresolved receipt hard stop before verification/archive. <!-- sdd-owner: parent -->

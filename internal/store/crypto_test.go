@@ -182,6 +182,7 @@ func TestMigrationV15Additive(t *testing.T) {
 	if _, err := st.db.Exec(`DROP TRIGGER observations_immutable_content`); err != nil {
 		t.Fatalf("drop trigger: %v", err)
 	}
+	removeV18FixtureArtifacts(t, st.db)
 	if _, err := st.db.Exec(`UPDATE schema_meta SET value = '14' WHERE key = 'schema_version'`); err != nil {
 		t.Fatalf("downgrade marker: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestMigrationV15Additive(t *testing.T) {
 	if err := st2.db.QueryRow(`SELECT CAST(value AS INTEGER) FROM schema_meta WHERE key = 'schema_version'`).Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 17 {
+	if version != schemaVersion {
 		t.Fatalf("schema version = %d, want 17", version)
 	}
 	// The store is fully writable post-migration.
