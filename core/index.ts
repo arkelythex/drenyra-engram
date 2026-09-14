@@ -7,6 +7,13 @@
  * (observation, scope, provenance, validation helpers).
  */
 export * from "./types.js";
+export {
+ classifyRuc,
+ isValidFiscalRuc,
+ RUC_CLASSIFICATION,
+ type RucClassification,
+} from "./ruc.js";
+export * from "./fiscal-scope.js";
 export * from "./receipt.js";
 export * from "./verify.js";
 export * from "./evidence-object.js";

@@ -64,11 +64,8 @@ type parseableCDR struct {
 
 // ParseComprobanteXML parses an electronic invoice XML (UBL 2.1) into the
 // minimal adapter metadata, FAILING CLOSED on any malformed or missing field.
-// The PayableAmount decimal (2 places) is converted to whole cents; a non-2-
-// decimal amount, an invalid emitter RUC (the repo validator is SHAPE-ONLY:
-// exactly 11 digits — a real mod-11 checksum is a domain decision, not this
-// adapter's), or an unparseable structure is a typed error — never a silent
-// guess.
+// The PayableAmount decimal (2 places) is converted to whole cents; an invalid
+// canonical RUC or unparseable structure is a typed error — never a silent guess.
 func ParseComprobanteXML(data []byte) (Comprobante, error) {
 	var inv parseableInvoice
 	if err := xml.Unmarshal(data, &inv); err != nil {
@@ -91,7 +88,7 @@ func ParseComprobanteXML(data []byte) (Comprobante, error) {
 	}
 	c.Serie, c.Numero, c.DocumentID = serie, numero, inv.ID
 	c.EmitterRUC = strings.TrimSpace(inv.SupplierID)
-	if !IsValidRUC(c.EmitterRUC) || !isValidRUCChecksum(c.EmitterRUC) {
+	if !IsValidFiscalRUC(c.EmitterRUC) {
 		return Comprobante{}, fmt.Errorf("INVALID_EMITTER_RUC: %q fails the SUNAT mod-11 checksum", c.EmitterRUC)
 	}
 	amount, currency, err := parsePayableAmount(inv.PayableAmount)
@@ -134,22 +131,6 @@ func kindForTypeCode(code string) (ComprobanteKind, error) {
 	default:
 		return "", fmt.Errorf("INVALID_COMPROBANTE_KIND: InvoiceTypeCode %q is not a valid <Invoice> code (SUNAT Catálogo 01: 01 factura, 03 boleta; 07/08 are CreditNote/DebitNote roots)", code)
 	}
-}
-
-// isValidRUCChecksum verifies the SUNAT mod-11 check digit of an 11-digit RUC
-// (weights [5,4,3,2,7,6,5,4,3,2]; check = (11 - (sum % 11)) % 10). Verified
-// against current SUNAT validator references (2026-08). Shape validation stays
-// in IsValidRUC; this is the checksum layer the ADAPTER requires.
-func isValidRUCChecksum(ruc string) bool {
-	if len(ruc) != 11 {
-		return false
-	}
-	weights := [10]int{5, 4, 3, 2, 7, 6, 5, 4, 3, 2}
-	sum := 0
-	for i := 0; i < 10; i++ {
-		sum += int(ruc[i]-'0') * weights[i]
-	}
-	return (11-(sum%11))%10 == int(ruc[10]-'0')
 }
 
 // splitSerieNumero splits "F001-948" into ("F001", "948"). The separator is the
