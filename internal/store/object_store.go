@@ -113,10 +113,34 @@ func (e *objectScopeConflictError) Error() string { return e.code + ": " + e.msg
 // transaction (a signing or real directory-sync failure rolls the row back,
 // leaving at most an orphan byte file).
 func (s *SQLiteStore) StoreObject(ctx context.Context, input core.ObjectStoreInput) (core.ObjectStoreResult, error) {
+	return s.storeObject(ctx, input, nil)
+}
+
+// StoreObjectWithFiscalIntent is the Slice 3 fiscal-bound counterpart of
+// StoreObject: when intent is non-nil, it is validated (shape, the
+// "evidence.store" protected boundary and the trusted scope axes) BEFORE any
+// byte write, row insert or receipt — a rejected intent leaves no bytes on
+// disk and no evidence_objects/fiscal rows. On success it persists one
+// immutable fiscal binding link on the "evidence_object" subject atomically
+// with the WORM row and receipt. A content-addressed duplicate (existing
+// object, same scope) is a no-op exactly as StoreObject and does not append
+// a new fiscal link (no new act is being recorded).
+func (s *SQLiteStore) StoreObjectWithFiscalIntent(ctx context.Context, input core.ObjectStoreInput, intent *core.FiscalWriteIntent) (core.ObjectStoreResult, error) {
+	return s.storeObject(ctx, input, intent)
+}
+
+func (s *SQLiteStore) storeObject(ctx context.Context, input core.ObjectStoreInput, intent *core.FiscalWriteIntent) (core.ObjectStoreResult, error) {
 	if err := core.AssertValidObjectScope(input.Scope); err != nil {
 		return core.ObjectStoreResult{}, err
 	}
 	if err := core.AssertValidSource(input.Source); err != nil {
+		return core.ObjectStoreResult{}, err
+	}
+	// Slice 3: fiscal intent shape/operation/axis validation runs BEFORE the
+	// connection is even acquired — before any reservation, byte write or
+	// object access (spec.md "invalid input before reservation/object
+	// access").
+	if err := verifyFiscalIntentAxes(intent, "evidence.store", input.Scope); err != nil {
 		return core.ObjectStoreResult{}, err
 	}
 	objectID := core.ComputeObjectID(input.Bytes)
@@ -207,6 +231,18 @@ func (s *SQLiteStore) StoreObject(ctx context.Context, input core.ObjectStoreInp
 		input.Source.ActorID, now, relPath,
 	); err != nil {
 		return core.ObjectStoreResult{}, fmt.Errorf("persistence error: insert evidence_objects: %w", err)
+	}
+
+	// Slice 3: persist ONE immutable fiscal binding link on the
+	// "evidence_object" subject, atomically with the WORM row above. An
+	// evidence object has no envelope-hash concept (unlike AccountingMemory);
+	// its own content address IS its immutable resulting-state identity, so it
+	// is used as the link's resultingEnvelopeHash (already a lowercase SHA-256
+	// hex string — the same shape Slice 2's ClassifyFiscalSubject validates).
+	if intent != nil {
+		if _, err := appendFiscalBindingLinkTx(ctx, conn, "evidence_object", objectID, nil, *intent, objectID, "evidence_object", objectID, now); err != nil {
+			return core.ObjectStoreResult{}, err
+		}
 	}
 
 	// Atomic object_stored receipt (v0.7.0): the claimed capture uses the source
