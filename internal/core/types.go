@@ -727,6 +727,15 @@ type AccountingMemory struct {
 	// Revision is the 1-based revision within the (topicKey, scope) chain; a
 	// JSON integer, never a float.
 	Revision int `json:"revision"`
+	// FiscalLinks is the in-memory projection of this subject's persisted
+	// fiscal_binding_links rows, in sequence order (Slice 3, design.md
+	// "Immutable act evidence and envelope linkage"). It is populated by the
+	// store from persisted rows ONLY — never caller-supplied — and never
+	// serialized (internal envelope-hash state, not a public contract field
+	// in this slice). Empty/nil means legacy/unbound: ComputeEnvelopeHash
+	// then contributes nothing, so every pre-existing envelope hash stays
+	// byte-identical.
+	FiscalLinks []FiscalBindingLinkContribution `json:"-"`
 }
 
 // SaveInput is the input for saving/upserting under a topic key + exact scope.
@@ -780,6 +789,13 @@ type SaveInput struct {
 	// contributes to the envelope/hashes — the bare refs do.
 	RuleLinks []RuleLink `json:"ruleLinks,omitempty"`
 	ReceiptID string     `json:"receiptId,omitempty"`
+	// FiscalIntent is the OPTIONAL Slice 3 v1 fiscal scope binding a caller
+	// wants bound to this act (design.md "Immutable act evidence and
+	// envelope linkage"). Nil on every legacy save — the store then persists
+	// no fiscal binding link and the envelope hash stays byte-identical to
+	// the frozen legacy contract. Never transport-decoded here: adapters
+	// remain out of this slice's boundary.
+	FiscalIntent *FiscalWriteIntent `json:"-"`
 }
 
 // WriteOutcome is the save (upsert) outcome. Conflict and Unknown are the
@@ -1043,6 +1059,13 @@ func ComputeEnvelopeHash(m AccountingMemory) string {
 		// Same contract as the content hash (v0.6.0): only memories WITH rule
 		// metadata contribute (carrying the vigencia window); pre-v0.6 envelopes
 		// stay byte-identical.
+		parts = append(parts, contribution)
+	}
+	if contribution := fiscalLinksEnvelopeContribution(m.FiscalLinks); contribution != "" {
+		// Slice 3 (design.md "Immutable act evidence and envelope linkage"):
+		// only a v1-bound subject WITH persisted fiscal_binding_links rows
+		// contributes; a legacy/unbound subject (nil/empty FiscalLinks) stays
+		// byte-identical to every pre-existing envelope/receipt hash.
 		parts = append(parts, contribution)
 	}
 	canonical := strings.Join(parts, "\x00")

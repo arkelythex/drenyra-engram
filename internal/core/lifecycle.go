@@ -213,6 +213,11 @@ type TransitionMeta struct {
 	Actor     string
 	ActorKind ActorKind
 	Timestamp string
+	// FiscalIntent is the OPTIONAL Slice 3 v1 fiscal scope binding a caller
+	// wants bound to an explicit supersede act (design.md "Immutable act
+	// evidence and envelope linkage"). Nil preserves the exact legacy
+	// behavior and envelope-hash bytes.
+	FiscalIntent *FiscalWriteIntent
 }
 
 // LifecycleStore is the narrow, consumer-side view of the store the lifecycle
