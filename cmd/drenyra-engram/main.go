@@ -184,6 +184,25 @@ func openStoreWithRoot(dbPath, objectsRoot string) (*store.SQLiteStore, error) {
 		return nil, err
 	}
 	st.SetReceiptSigner(receipts.NewSigner(st, receipts.DefaultKeyringPath()))
+	// Runtime-review CRITICAL R4-1/R4-2 (2026-09-15): DRENYRA_FISCAL_RUNTIME_MODE
+	// unset resolves to shadow, which design.md "Runtime and downgrade modes"
+	// deliberately fails closed on EVERY company-scoped protected write
+	// (Save/ApproveMemory/SupersedeExplicit/link/object-store) — that is the
+	// intended safety property this rollout exists to establish, not a defect,
+	// and this diagnostic does not change it. What the review correctly
+	// identified as missing is OBSERVABILITY: a deployment that has never set
+	// the variable had no way to discover, before a write fails, that this is
+	// what is about to happen. openStoreWithRoot is the single choke point
+	// every CLI command AND the HTTP/MCP `serve`/`mcp` commands open the store
+	// through (cmdServe, cmdMCP both call openStore -> here), so one stderr
+	// line here covers every entry point. It goes to stderr, never stdout, so
+	// it never pollutes a command's machine-readable JSON output.
+	if st.FiscalRuntimeMode() == store.FiscalRuntimeShadow {
+		fmt.Fprintln(os.Stderr, "drenyra-engram: DRENYRA_FISCAL_RUNTIME_MODE is unset — defaulting to shadow: "+
+			"every company-scoped protected write (save/approve/supersede/link/store-object) will fail closed with "+
+			"FISCAL_WRITE_GATE_CLOSED until an operator explicitly sets legacy_compat or enforce (design.md "+
+			"\"Runtime and downgrade modes\")")
+	}
 	return st, nil
 }
 

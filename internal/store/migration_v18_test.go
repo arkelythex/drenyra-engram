@@ -21,7 +21,15 @@ func openV17FiscalFixture(t *testing.T, path string) *SQLiteStore {
 			t.Fatal(err)
 		}
 	}
-	return &SQLiteStore{db: db, objectsRoot: defaultObjectsRoot(path)}
+	// This raw struct literal bypasses openInternal (deliberately — it drives
+	// the migration chain directly rather than through Open), so
+	// fiscalRuntimeMode is never resolved from DRENYRA_FISCAL_RUNTIME_MODE
+	// and stays at its zero value (shadow-equivalent, fail-closed — see the
+	// field's doc comment in store.go). saveFiscalFixture's only caller of
+	// this fixture (TestMigrationV18IsAdditiveAndFailsClosed) never passes a
+	// FiscalIntent, so set the mode directly on the struct field to the
+	// legacy-permitting mode that call needs.
+	return &SQLiteStore{db: db, objectsRoot: defaultObjectsRoot(path), fiscalRuntimeMode: FiscalRuntimeLegacyCompat}
 }
 func removeV18FixtureArtifacts(t *testing.T, db *sql.DB) {
 	t.Helper()

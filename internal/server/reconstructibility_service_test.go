@@ -382,6 +382,7 @@ func TestReconstructibilityDeterminism(t *testing.T) {
 // ──────────────────────────────────────────────
 
 func TestReconstructibilityRealStoreIntegrationReadOnly(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this test
 	path := filepath.Join(t.TempDir(), "metric.db")
 	s, err := store.Open(path)
 	if err != nil {

@@ -40,6 +40,7 @@ import (
 // objects root (the hardening tests drive custom-root scenarios).
 func newTestStoreWithRoot(t *testing.T, root string) *SQLiteStore {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := OpenWithObjects(path, root)
 	if err != nil {
@@ -54,6 +55,7 @@ func newTestStoreWithRoot(t *testing.T, root string) *SQLiteStore {
 // objects root).
 func openTestStoreRootPath(t *testing.T, path, root string) *SQLiteStore {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	s, err := OpenWithObjects(path, root)
 	if err != nil {
 		t.Fatalf("open store at %s: %v", path, err)

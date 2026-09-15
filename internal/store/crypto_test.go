@@ -42,6 +42,7 @@ func seedEncryptedMemory(t *testing.T, st *SQLiteStore, scope core.Scope) string
 // TestEncryptionRoundtrip — AC-ENC-1: save with key → read byte-identical; raw
 // SQL proves ciphertext on the row and empty plaintext columns.
 func TestEncryptionRoundtrip(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	st, err := OpenWithOptions(filepath.Join(t.TempDir(), "engram.db"), Options{EncryptionKey: testMasterKey})
 	if err != nil {
 		t.Fatalf("open encrypted store: %v", err)
@@ -79,6 +80,7 @@ func TestEncryptionRoundtrip(t *testing.T) {
 // TestEncryptionFailClosed — AC-ENC-2: no key → ENCRYPTION_REQUIRED; wrong key
 // → DECRYPTION_FAILED; never partial.
 func TestEncryptionFailClosed(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	stEnc, err := OpenWithOptions(path, Options{EncryptionKey: testMasterKey})
 	if err != nil {
@@ -117,6 +119,7 @@ func TestEncryptionFailClosed(t *testing.T) {
 // TestEncryptionTenantSeparation — AC-ENC-3: tenant A's ciphertext fails GCM
 // under tenant B's derived key (separable keys).
 func TestEncryptionTenantSeparation(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	st, err := OpenWithOptions(filepath.Join(t.TempDir(), "engram.db"), Options{EncryptionKey: testMasterKey})
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -143,6 +146,7 @@ func TestEncryptionTenantSeparation(t *testing.T) {
 
 // TestEncryptionLegacyRows — AC-ENC-4: plaintext rows readable in both modes.
 func TestEncryptionLegacyRows(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	stPlain, err := Open(path)
 	if err != nil {
@@ -170,6 +174,7 @@ func TestEncryptionLegacyRows(t *testing.T) {
 // TestMigrationV15Additive — AC-ENC-5: a v14 store upgrades additively to v15
 // and the schema guard stays green.
 func TestMigrationV15Additive(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := Open(path)
 	if err != nil {
@@ -222,6 +227,7 @@ func (s *SQLiteStore) GetByID(id string) (core.AccountingMemory, error) {
 // enabled for the SAVE of the encrypted row only.
 func seedLegacyReencryptRows(t *testing.T) (*SQLiteStore, []string, string) {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	// Genuine legacy (plaintext) rows require a NO-KEY write: open plain first.
 	stPlain, err := Open(path)

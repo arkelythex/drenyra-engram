@@ -83,7 +83,13 @@ func fiscalRowsForSubject(t *testing.T, s *SQLiteStore, memoryID string) []fisca
 // resultingEnvelopeHash is H2 (the returned ResultingEnvelopeHash), and whose
 // acknowledgement columns are 1/1 (provided true) — never NULL (omitted).
 func TestApproveMemoryWithFiscalIntentSucceedsAndPersistsActEvidence(t *testing.T) {
-	s := newTestStore(t)
+	// The material save carries NO FiscalIntent (legacy-classified, needs
+	// legacy_compat); the approval that follows carries one (v1-classified,
+	// needs enforce) and must succeed — reopen the same underlying file
+	// across the mode each phase needs (see reopenTestStoreMode's doc
+	// comment in store_test.go; design.md "Runtime and downgrade modes"
+	// documents that no single mode permits both classes at once).
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	saved, err := s.Save(fiscalMaterialGatedInput("topic/fiscal/approve-ok", "material, fiscal-bound approval"))
 	if err != nil {
@@ -93,6 +99,7 @@ func TestApproveMemoryWithFiscalIntentSucceedsAndPersistsActEvidence(t *testing.
 	h1 := currentEnvelope(saved)
 	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	res, err := s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed evidence and applicable rules",
 		RequestID: "req-fiscal-approve-ok", ReviewChecks: bothTrueChecks(), FiscalIntent: intent,
@@ -145,7 +152,12 @@ func TestApproveMemoryFiscalReviewChecksTriState(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := newTestStore(t)
+			// Save is legacy-classified (legacy_compat); the approval that
+			// follows carries a FiscalIntent and must REACH the
+			// ReviewChecks gate (v1-classified, needs enforce) regardless of
+			// which tri-state case wins or loses it — reopen the same file
+			// (see reopenTestStoreMode's doc comment in store_test.go).
+			s, path := newTestStorePathMode(t, "legacy_compat")
 			seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 			saved, err := s.Save(fiscalMaterialGatedInput("topic/fiscal/tristate/"+c.name, "tri-state case"))
 			if err != nil {
@@ -155,6 +167,7 @@ func TestApproveMemoryFiscalReviewChecksTriState(t *testing.T) {
 			h1 := currentEnvelope(saved)
 			intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
 
+			s = reopenTestStoreMode(t, s, path, "enforce")
 			_, err = s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 				MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed",
 				RequestID: "req-" + c.name, ReviewChecks: core.ReviewChecksV1{EvidenceInspected: c.evidence, RuleInspected: c.rule},
@@ -254,7 +267,11 @@ func TestApproveMemoryFiscalIntentAxisMismatchFailsClosed(t *testing.T) {
 // once a memory is v1-bound at SAVE time, approving it with NO fiscal intent
 // (the legacy caller shape) fails closed and mutates nothing.
 func TestApproveMemoryDirectBypassDeniedForV1BoundMemory(t *testing.T) {
-	s := newTestStore(t)
+	// The initial save carries a FiscalIntent (v1-classified, needs
+	// enforce); the bypass approval attempt (nil intent) fails via
+	// requireFiscalIntentForBoundSubject BEFORE reaching the runtime gate,
+	// so staying in enforce for it is immaterial.
+	s := newTestStoreMode(t, "enforce")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	input := fiscalMaterialGatedInput("topic/fiscal/approve-bypass", "v1-bound at save time")
 	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
@@ -291,7 +308,13 @@ func TestApproveMemoryDirectBypassDeniedForV1BoundMemory(t *testing.T) {
 // not "memory.approve" — proving the expected operation token is derived
 // from the LOADED subject, not a fixed constant.
 func TestApproveCloseMemoryRequiresCloseApproveOperationToken(t *testing.T) {
-	s := newTestStore(t)
+	// The close save carries no FiscalIntent (legacy_compat); the right-token
+	// approval below must SUCCEED and genuinely reaches checkFiscalRuntimeGate
+	// as v1 (its own intent), so it needs enforce — reopen the same
+	// underlying file (see reopenTestStoreMode's doc comment in
+	// store_test.go). The wrong-token approval attempt fails via
+	// verifyFiscalIntentAxes before reaching the gate either way.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	scope := testScope(fiscalRucA)
 
@@ -307,6 +330,7 @@ func TestApproveCloseMemoryRequiresCloseApproveOperationToken(t *testing.T) {
 	id := saved.Memory.Identity.ID
 	h1 := currentEnvelope(saved)
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	wrongToken := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
 	_, err = s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "cierre revisado",
@@ -341,7 +365,12 @@ func TestApproveCloseMemoryRequiresCloseApproveOperationToken(t *testing.T) {
 // but a DIFFERENT binding hash is rejected as IDEMPOTENCY_CONFLICT rather
 // than silently reusing the earlier reservation.
 func TestApproveMemoryFiscalIdempotencyConflictOnDifferentBinding(t *testing.T) {
-	s := newTestStore(t)
+	// Legacy save, then a fiscal-bound first approval that must SUCCEED (v1,
+	// needs enforce) — reopen the same file (see reopenTestStoreMode's doc
+	// comment in store_test.go). The conflicting second approval fails via
+	// the idempotency reservation check, which runs before the runtime gate
+	// either way, so staying in enforce for it is immaterial.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	saved, err := s.Save(fiscalMaterialGatedInput("topic/fiscal/approve-conflict", "conflict case"))
 	if err != nil {
@@ -352,6 +381,7 @@ func TestApproveMemoryFiscalIdempotencyConflictOnDifferentBinding(t *testing.T) 
 	principal := controllerPrincipal(t)
 	policy := authz.NewApprovalPolicy()
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	first := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
 	if _, err := s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed",
@@ -381,7 +411,12 @@ func TestApproveMemoryFiscalIdempotencyConflictOnDifferentBinding(t *testing.T) 
 // acknowledgements) returns the stored result with IdempotentReplay=true and
 // creates no second fiscal_binding_links row.
 func TestApproveMemoryFiscalIdempotentReplayReturnsStoredResult(t *testing.T) {
-	s := newTestStore(t)
+	// Legacy save, then a fiscal-bound first approval that must SUCCEED (v1,
+	// needs enforce) — reopen the same file (see reopenTestStoreMode's doc
+	// comment in store_test.go). The exact replay short-circuits at the
+	// idempotency reservation check, which runs before the runtime gate
+	// either way, so staying in enforce for it is immaterial.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	saved, err := s.Save(fiscalMaterialGatedInput("topic/fiscal/approve-replay", "replay case"))
 	if err != nil {
@@ -392,6 +427,8 @@ func TestApproveMemoryFiscalIdempotentReplayReturnsStoredResult(t *testing.T) {
 	principal := controllerPrincipal(t)
 	policy := authz.NewApprovalPolicy()
 	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+
+	s = reopenTestStoreMode(t, s, path, "enforce")
 
 	cmd := core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed",

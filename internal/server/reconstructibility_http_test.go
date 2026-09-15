@@ -348,6 +348,7 @@ func TestHTTPReconstructibilityTokenGuard(t *testing.T) {
 // ──────────────────────────────────────────────
 
 func TestReconstructibilityAdapterParityMCPHTTP(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this test
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := store.Open(path)
 	if err != nil {

@@ -25,6 +25,15 @@ const (
 
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
+	// The overwhelming majority of newTestStore callers are plain legacy
+	// (no FiscalIntent) Save/Approve/Supersede/link/object calls exercising
+	// unrelated functionality; default this shared helper to legacy_compat
+	// so the DRENYRA_FISCAL_RUNTIME_MODE gate (design.md "Runtime and
+	// downgrade modes") doesn't fail-close them. A test whose calls are
+	// homogeneously v1 (every Save/Approve/etc. carries a FiscalIntent) does
+	// NOT call newTestStore — it calls newTestStoreMode(t, "enforce")
+	// instead, since newTestStore always pins legacy_compat itself.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := Open(path)
 	if err != nil {
@@ -32,6 +41,63 @@ func newTestStore(t *testing.T) *SQLiteStore {
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	return s
+}
+
+// newTestStoreMode is newTestStore with an explicit DRENYRA_FISCAL_RUNTIME_MODE,
+// for a test whose Save/Approve/Supersede/link/object calls are homogeneously
+// legacy-class or v1-class (unlike newTestStore's blanket legacy_compat
+// default) — most commonly "enforce" for a test that only ever passes a
+// FiscalIntent.
+func newTestStoreMode(t *testing.T, mode string) *SQLiteStore {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	path := filepath.Join(t.TempDir(), "engram.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s
+}
+
+// reopenTestStoreMode closes s and reopens the SAME underlying SQLite file
+// (path, from newTestStorePathMode or openTestStorePath) under a DIFFERENT
+// DRENYRA_FISCAL_RUNTIME_MODE. FiscalRuntimeMode is resolved ONCE per Open
+// and frozen for that store handle's lifetime (store.go openInternal), and
+// design.md "Runtime and downgrade modes" documents that no single mode
+// permits both a legacy-class and a v1-class protected write — so a test
+// whose single logical dataset genuinely needs BOTH (e.g. a plain legacy
+// scaffold save followed by a v1-bound mutation of THAT SAME subject, where
+// the two rows must coexist in one database for a later cross-referencing
+// call) closes and reopens the identical file under the mode each phase
+// needs, rather than splitting into two unrelated databases.
+func reopenTestStoreMode(t *testing.T, s *SQLiteStore, path, mode string) *SQLiteStore {
+	t.Helper()
+	if err := s.Close(); err != nil {
+		t.Fatalf("close test store before reopen: %v", err)
+	}
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	ns, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+	return ns
+}
+
+// newTestStorePathMode is newTestStoreMode but also returns the store's
+// path, for a test that will later reopenTestStoreMode it under a
+// different mode.
+func newTestStorePathMode(t *testing.T, mode string) (*SQLiteStore, string) {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	path := filepath.Join(t.TempDir(), "engram.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s, path
 }
 
 func testScope(ruc string) core.Scope {
@@ -825,6 +891,7 @@ func TestV1ToV2MigrationIsAdditive(t *testing.T) {
 		t.Fatalf("close legacy db: %v", err)
 	}
 
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this test
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("open migrated store: %v", err)

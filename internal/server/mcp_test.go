@@ -78,6 +78,15 @@ func newTestMCP(t *testing.T) (*MCPServer, *API) {
 	return NewMCPServer(api), api
 }
 
+// newTestMCPMode is newTestMCP with an explicit DRENYRA_FISCAL_RUNTIME_MODE
+// (see newTestAPIMode's doc comment in server_test.go), for a test whose
+// tool calls are homogeneously v1 (every save carries a fiscalScope).
+func newTestMCPMode(t *testing.T, mode string) (*MCPServer, *API) {
+	t.Helper()
+	api := newTestAPIMode(t, mode)
+	return NewMCPServer(api), api
+}
+
 // ──────────────────────────────────────────────
 // Protocol lifecycle
 // ──────────────────────────────────────────────
@@ -296,7 +305,7 @@ func mcpFiscalScopeJSON(scope core.Scope, operationType string) string {
 // memory to the v1 fiscal scope — proven by the persisted
 // fiscal_binding_links evidence, not just a successful save.
 func TestMCPEngramSaveWithFiscalScopeStoresLink(t *testing.T) {
-	m, api := newTestMCP(t)
+	m, api := newTestMCPMode(t, "enforce")
 	scope := testScope(mcpFiscalRuc)
 
 	response := call(t, m, 1, "tools/call", map[string]any{
@@ -579,6 +588,7 @@ func TestMCPDoctor(t *testing.T) {
 // is opened at an explicit objects root so the test can simulate the crash
 // window by removing the bytes before execution.
 func TestMCPDoctorSurfacesPurgeRecoveryFindings(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this test
 	path := filepath.Join(t.TempDir(), "engram.db")
 	root := filepath.Join(t.TempDir(), "objects")
 	st, err := store.OpenWithObjects(path, root)

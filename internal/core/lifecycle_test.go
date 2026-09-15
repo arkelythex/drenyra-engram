@@ -51,6 +51,12 @@ var systemSource = core.Source{
 
 func newTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
+	// None of this file's Save/Approve/Void/Supersede calls carry a
+	// FiscalIntent (legacy-class writes), so the DRENYRA_FISCAL_RUNTIME_MODE
+	// gate (design.md "Runtime and downgrade modes") needs legacy_compat to
+	// let them through; the production default (shadow) fail-closes both
+	// classes and is exercised by internal/store's own gate tests instead.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := store.Open(path)
 	if err != nil {

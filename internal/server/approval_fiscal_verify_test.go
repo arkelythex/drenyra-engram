@@ -27,7 +27,12 @@ import (
 // VerifyMemory's fiscal layer passes with "1 act(s)" and the report still
 // ends with the mandatory non-authorization conclusion.
 func TestVerifyMemoryPassesForFiscalBoundApproval(t *testing.T) {
-	api := closeAcceptanceStore(t)
+	// The initial save carries no FiscalIntent (legacy-classified, needs
+	// legacy_compat); the approval that follows carries one (v1-classified,
+	// needs enforce) and must succeed — reopen the same underlying file
+	// across the mode each phase needs (see closeAcceptanceStore's and
+	// internal/store's reopenTestStoreMode doc comments).
+	api, path, keysPath := closeAcceptanceStorePathMode(t, "legacy_compat")
 	const tenantID, companyID, ruc, period = "t-fiscal-verify", "c-fiscal-verify", "20100070970", "202401"
 	token := seedApprovalIdentity(t, api, tenantID, companyID, ruc, []auth.AccountingRole{auth.RoleController})
 	controller := resolvePrincipal(t, api, token)
@@ -52,6 +57,7 @@ func TestVerifyMemoryPassesForFiscalBoundApproval(t *testing.T) {
 	id := saved.Memory.Identity.ID
 	h1 := core.ComputeEnvelopeHash(saved.Memory)
 
+	api = reopenCloseAcceptanceStoreMode(t, api, path, keysPath, "enforce")
 	intent := &core.FiscalWriteIntent{Binding: core.FiscalScopeBinding{
 		Version: "v1", Tenant: tenantID, Organization: companyID, Company: ruc, FiscalPeriod: period,
 		LedgerBook: "purchases", OperationType: "memory.approve", SourceSnapshot: strings.Repeat("a", 64),

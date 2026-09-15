@@ -528,6 +528,18 @@ type SQLiteStore struct {
 	// clear it and no unfreeze method exists. It has no authority over any
 	// production database.
 	writeFrozen atomic.Bool
+
+	// fiscalRuntimeMode is the resolved DRENYRA_FISCAL_RUNTIME_MODE (design.md
+	// "Runtime and downgrade modes"), read ONCE at Open and frozen for the
+	// store's lifetime — never re-read per call, so a mode change requires a
+	// restart, matching "unknown values fail startup" and giving every
+	// protected write in one process a single, consistent answer. A store
+	// built by a raw struct literal that bypasses openInternal (a handful of
+	// pre-v18 migration test fixtures) leaves this at its zero value "", which
+	// FiscalRuntimeMode.CheckProtectedWrite treats identically to explicit
+	// FiscalRuntimeShadow — the safe, fail-closed default, never an
+	// accidentally-permissive one.
+	fiscalRuntimeMode FiscalRuntimeMode
 	// drillCopy marks a store handle opened from a MARKED drill copy (see
 	// OpenDrillCopy): the handle is read-only by construction (mode=ro,
 	// query_only) and is the only handle on which the full diagnostic surface
@@ -779,7 +791,20 @@ func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSign
 		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite store: at most one receipt signer may be attached")
 	}
-	st := &SQLiteStore{db: db, objectsRoot: objectsRoot, encMaster: opts.EncryptionKey}
+
+	// Resolve DRENYRA_FISCAL_RUNTIME_MODE once, here, at the single choke
+	// point every Open/OpenWithOptions/OpenWithObjects/OpenWithObjectsAndOptions
+	// variant funnels through (design.md "Runtime and downgrade modes":
+	// "Unknown values fail startup"). An empty value resolves to the
+	// documented default FiscalRuntimeShadow via ParseFiscalRuntimeMode; only
+	// a genuinely unrecognized value fails Open.
+	fiscalRuntimeMode, err := ParseFiscalRuntimeMode(os.Getenv("DRENYRA_FISCAL_RUNTIME_MODE"))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	st := &SQLiteStore{db: db, objectsRoot: objectsRoot, encMaster: opts.EncryptionKey, fiscalRuntimeMode: fiscalRuntimeMode}
 	if len(signers) == 1 {
 		st.signer = signers[0]
 	}
@@ -2688,6 +2713,17 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope); err != nil {
 		return core.WriteResult{}, err
 	}
+	// design.md "Runtime and downgrade modes" / proposal.md "protected fiscal
+	// operations" scope this gate to COMPANY-scoped save/supersede only —
+	// institutional memories carry no company/RUC/period to classify or
+	// authorize (see the identical ScopeKindCompany exemption in ApproveMemory
+	// below) and stay entirely outside this rollout gate. A brand-new Save
+	// subject has no prior links, so class comes from input.FiscalIntent alone.
+	if input.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(nil, input.FiscalIntent); err != nil {
+			return core.WriteResult{}, err
+		}
+	}
 
 	// Status and RecordedAt are derived by the engine (approval gate + clock),
 	// never caller-supplied (core.SaveInput contract).
@@ -3815,6 +3851,13 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	// claims). Institutional memories have no company to authorize.
 	if memory.Scope.Kind != core.ScopeKindCompany {
 		return core.ApprovalResult{}, auth.New(auth.CodeCompanyScopeDenied, "institutional memories cannot be approved by a company-scoped principal")
+	}
+	// design.md "Runtime and downgrade modes": gated identically to Save,
+	// now that ScopeKindCompany is guaranteed. class comes from the subject's
+	// EXISTING links (loaded above) — an already v1-bound memory stays v1
+	// regardless of what this particular approval intent supplies.
+	if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, cmd.FiscalIntent); err != nil {
+		return core.ApprovalResult{}, err
 	}
 	if principal.TenantID() != memory.Scope.OrganizationID {
 		return core.ApprovalResult{}, auth.New(auth.CodeTenantScopeMismatch, "principal tenant does not match the memory tenant")
@@ -5595,6 +5638,14 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, meta.FiscalIntent); err != nil {
 		return core.AccountingMemory{}, err
 	}
+	// design.md "Runtime and downgrade modes" — scoped to company memories
+	// only, matching Save/ApproveMemory; institutional supersession stays
+	// outside this rollout gate.
+	if memory.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, meta.FiscalIntent); err != nil {
+			return core.AccountingMemory{}, err
+		}
+	}
 
 	superseded := memory
 	superseded.Status = core.StatusSuperseded
@@ -6137,6 +6188,13 @@ func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []st
 	}
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, intent); err != nil {
 		return err
+	}
+	// design.md "Runtime and downgrade modes" — scoped to company memories
+	// only, matching Save/ApproveMemory/SupersedeExplicit.
+	if memory.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, intent); err != nil {
+			return err
+		}
 	}
 	if err := s.assertPeriodWritable(ctx, conn, memory.Scope, "link "+table); err != nil {
 		return err

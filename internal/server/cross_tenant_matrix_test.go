@@ -213,6 +213,7 @@ func defaultSnapshot(t *testing.T, f *crossTenantFixture, s operationState) stri
 // two exact company scopes with different organization/company/RUC/period.
 func newCrossTenantFixture(t *testing.T) *crossTenantFixture {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := store.Open(path)
 	if err != nil {
