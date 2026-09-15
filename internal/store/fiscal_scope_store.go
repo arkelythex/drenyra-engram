@@ -129,6 +129,107 @@ func (s *SQLiteStore) ClassifyFiscalSubject(ctx context.Context, subjectType, su
 	return FiscalScopeV1, nil
 }
 
+// FiscalBindingEvidence is the read-only, VERIFICATION-oriented projection of
+// one subject's persisted fiscal_binding_links + joined fiscal_scope_bindings
+// rows, in sequence order, with each link's logical audit reference resolved
+// against its declared type (design.md "Verification and audit" — audit-
+// anchor resolution). Unlike ClassifyFiscalSubject (a cheap legacy/v1/
+// unverifiable classification consumed by mutation guards), this method loads
+// every field the pure core.VerifyFiscalScopeBinding layer needs, including
+// the review-acknowledgement tri-state and audit-anchor existence. A subject
+// with no persisted links returns (nil, nil) — the legacy/unbound case.
+func (s *SQLiteStore) FiscalBindingEvidence(ctx context.Context, subjectType, subjectID string) ([]core.FiscalBindingLinkEvidence, error) {
+	// IMPORTANT: the store's *sql.DB is configured with SetMaxOpenConns(1)
+	// (store.go Open) — the pool has exactly ONE connection. This query's rows
+	// cursor MUST be fully drained and closed BEFORE any further query runs on
+	// s.db (including resolveFiscalAuditAnchor below); nesting a second
+	// s.db.QueryRowContext call while this rows cursor is still open would wait
+	// forever for a connection the open cursor itself is holding — a real
+	// self-deadlock this method used to have until a focused test caught it.
+	rows, err := s.db.QueryContext(ctx, `SELECT l.sequence,b.binding_hash,b.version,b.tenant,b.organization,b.company,b.fiscal_period,b.ledger_book,b.operation_type,b.source_snapshot,b.policy_version,b.actor,b.authority_level,b.canonical_bytes,l.act_evidence_hash,l.reviewed_envelope_hash,l.resulting_envelope_hash,l.evidence_inspected,l.rules_inspected,l.audit_ref_type,l.audit_ref_id FROM fiscal_binding_links l JOIN fiscal_scope_bindings b ON b.binding_hash=l.binding_hash WHERE l.subject_type=? AND l.subject_id=? ORDER BY l.sequence`, subjectType, subjectID)
+	if err != nil {
+		return nil, err
+	}
+	type rawLink struct {
+		sequence                                  int
+		hash, canonical, act, reviewed, resulting string
+		auditType, auditID                        string
+		binding                                   core.FiscalScopeBinding
+		evidenceInspected, rulesInspected         sql.NullBool
+	}
+	var raw []rawLink
+	for rows.Next() {
+		var r rawLink
+		if err := rows.Scan(&r.sequence, &r.hash, &r.binding.Version, &r.binding.Tenant, &r.binding.Organization, &r.binding.Company, &r.binding.FiscalPeriod, &r.binding.LedgerBook, &r.binding.OperationType, &r.binding.SourceSnapshot, &r.binding.PolicyVersion, &r.binding.Actor, &r.binding.AuthorityLevel, &r.canonical, &r.act, &r.reviewed, &r.resulting, &r.evidenceInspected, &r.rulesInspected, &r.auditType, &r.auditID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		raw = append(raw, r)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var out []core.FiscalBindingLinkEvidence
+	for _, r := range raw {
+		resolved, err := s.resolveFiscalAuditAnchor(ctx, r.auditType, r.auditID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, core.FiscalBindingLinkEvidence{
+			Sequence:              r.sequence,
+			Binding:               r.binding,
+			BindingHash:           r.hash,
+			CanonicalBytes:        []byte(r.canonical),
+			ActEvidenceHash:       r.act,
+			ReviewedEnvelopeHash:  r.reviewed,
+			ResultingEnvelopeHash: r.resulting,
+			EvidenceInspected:     fiscalAckFromNullable(r.evidenceInspected),
+			RuleInspected:         fiscalAckFromNullable(r.rulesInspected),
+			AuditAnchorResolved:   resolved,
+		})
+	}
+	return out, nil
+}
+
+// fiscalAckFromNullable maps a nullable SQLite acknowledgement column
+// (NULL=omitted, 0=provided false, 1=provided true — design.md "Immutable act
+// evidence and envelope linkage") back into the tri-state
+// core.ReviewAcknowledgement.
+func fiscalAckFromNullable(v sql.NullBool) core.ReviewAcknowledgement {
+	if !v.Valid {
+		return core.ReviewAcknowledgement{}
+	}
+	return core.ReviewAcknowledgement{Present: true, Value: v.Bool}
+}
+
+// resolveFiscalAuditAnchor reports whether one fiscal_binding_links row's
+// logical audit reference resolves to a persisted record of its declared type
+// (design.md "Verification and audit" — "unresolved audit anchor" fails
+// closed). Every Slice 3 protected write records audit_ref_type as either
+// "observation" (memory.save/supersede/evidence.link/rule.link — the memory
+// subject itself) or "evidence_object" (evidence.store); an unknown type never
+// resolves — the store never guesses a new anchor kind.
+func (s *SQLiteStore) resolveFiscalAuditAnchor(ctx context.Context, auditRefType, auditRefID string) (bool, error) {
+	var query string
+	switch auditRefType {
+	case "observation":
+		query = `SELECT COUNT(*) FROM observations WHERE id = ?`
+	case "evidence_object":
+		query = `SELECT COUNT(*) FROM evidence_objects WHERE id = ?`
+	default:
+		return false, nil
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, query, auditRefID).Scan(&n); err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 type FiscalInventoryReport struct {
 	LegacyCount, V1Count, UnverifiableCount int
 	InvalidLegacyRUCCount                   int

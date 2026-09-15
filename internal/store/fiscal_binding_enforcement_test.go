@@ -487,3 +487,131 @@ func TestBoundSaveIntoClosedPeriodFailsWithZeroFiscalState(t *testing.T) {
 		t.Fatal("rejected save must not create an observation row")
 	}
 }
+
+// ──────────────────────────────────────────────
+// Delivery Slice 4 — FiscalBindingEvidence (design.md "Verification and
+// audit" — audit-anchor resolution). These tests exercise the STORE-side I/O
+// loader that internal/server's FiscalScopeBindingLayer/core.
+// VerifyFiscalScopeBinding consume; the pure classification itself is fully
+// covered at internal/core/verify_test.go.
+// ──────────────────────────────────────────────
+
+// TestFiscalBindingEvidenceLegacySubjectHasNoEvidence: a subject with no
+// fiscal intent ever supplied has no persisted links — FiscalBindingEvidence
+// returns nil/nil (the legacy/unbound input core.VerifyFiscalScopeBinding
+// classifies as SKIPPED).
+func TestFiscalBindingEvidenceLegacySubjectHasNoEvidence(t *testing.T) {
+	s := newTestStore(t)
+	legacy := validInput("topic/fiscal/evidence-legacy", "legacy")
+	legacy.Scope = testScope(fiscalRucA)
+	saved, err := s.Save(legacy)
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	evidence, err := s.FiscalBindingEvidence(context.Background(), "memory", saved.Memory.Identity.ID)
+	if err != nil {
+		t.Fatalf("FiscalBindingEvidence: %v", err)
+	}
+	if len(evidence) != 0 {
+		t.Fatalf("evidence = %+v, want none for a legacy/unbound subject", evidence)
+	}
+}
+
+// TestFiscalBindingEvidenceResolvesAuditAnchorForBoundSubject: a genuinely
+// v1-bound memory save resolves its own "observation" audit anchor (the
+// memory row IS the subject that was just created) and every recomputed field
+// agrees with core.VerifyFiscalScopeBinding, so the layer PASSES.
+func TestFiscalBindingEvidenceResolvesAuditAnchorForBoundSubject(t *testing.T) {
+	s := newTestStore(t)
+	bound := validInput("topic/fiscal/evidence-bound", "bound")
+	scope := testScope(fiscalRucA)
+	bound.Scope = scope
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	saved, err := s.Save(bound)
+	if err != nil {
+		t.Fatalf("bound save: %v", err)
+	}
+
+	ctx := context.Background()
+	evidence, err := s.FiscalBindingEvidence(ctx, "memory", saved.Memory.Identity.ID)
+	if err != nil {
+		t.Fatalf("FiscalBindingEvidence: %v", err)
+	}
+	if len(evidence) != 1 {
+		t.Fatalf("evidence = %+v, want exactly one link", evidence)
+	}
+	if !evidence[0].AuditAnchorResolved {
+		t.Fatal("the memory's own observation row must resolve as the audit anchor")
+	}
+
+	reloaded, ok := s.FindByID(saved.Memory.Identity.ID)
+	if !ok {
+		t.Fatal("reloaded memory not found")
+	}
+	layer := core.VerifyFiscalScopeBinding(evidence, core.ComputeEnvelopeHash(reloaded))
+	if layer.Status != core.VerificationPassed {
+		t.Fatalf("layer status = %s, detail = %q, want passed", layer.Status, layer.Detail)
+	}
+}
+
+// TestFiscalBindingEvidenceDetectsUnresolvedAuditAnchor: a SECOND
+// fiscal_binding_links row inserted with an audit_ref_id that resolves to no
+// persisted "observation" row (the immutability triggers block UPDATE/DELETE
+// on existing rows — see the Slice 3 "no update/no delete" schema — so a
+// tampered anchor can only be modeled by a plain INSERT of a row that never
+// legitimately existed; this is the direct-SQL-bypass shape the design's
+// "unresolved audit anchor" failure mode defends against) is detected as
+// AuditAnchorResolved=false, and core.VerifyFiscalScopeBinding fails the
+// subject closed — never a silent v1 pass.
+func TestFiscalBindingEvidenceDetectsUnresolvedAuditAnchor(t *testing.T) {
+	s := newTestStore(t)
+	bound := validInput("topic/fiscal/evidence-tampered", "bound")
+	scope := testScope(fiscalRucA)
+	bound.Scope = scope
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	saved, err := s.Save(bound)
+	if err != nil {
+		t.Fatalf("bound save: %v", err)
+	}
+	memoryID := saved.Memory.Identity.ID
+
+	binding := fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod).Binding
+	bindingHash := core.FiscalScopeHash(binding)
+	// reviewedEnvelopeHash MUST differ from the first (real) act's ("") so this
+	// synthetic second act's act_evidence_hash differs too — otherwise it
+	// collides with fiscal_binding_links' own
+	// UNIQUE(subject_type,subject_id,binding_hash,act_evidence_hash) constraint
+	// (the exact Slice 3 "open design question" documented in
+	// apply-progress.md), which is a DIFFERENT concern from the "unresolved
+	// audit anchor" this test targets.
+	reviewedEnvelopeHash := strings.Repeat("c", 64)
+	actEvidenceHash := core.ComputeActEvidenceHash(bindingHash, reviewedEnvelopeHash, core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+	linkID, err := newUUID()
+	if err != nil {
+		t.Fatalf("newUUID: %v", err)
+	}
+	if _, err := s.db.Exec(
+		`INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		linkID, "memory", memoryID, 2, bindingHash, actEvidenceHash, reviewedEnvelopeHash, strings.Repeat("b", 64), nil, nil,
+		"observation", "an-observation-id-that-was-never-persisted", testT,
+	); err != nil {
+		t.Fatalf("insert stray fiscal_binding_links row: %v", err)
+	}
+
+	ctx := context.Background()
+	evidence, err := s.FiscalBindingEvidence(ctx, "memory", memoryID)
+	if err != nil {
+		t.Fatalf("FiscalBindingEvidence: %v", err)
+	}
+	if len(evidence) != 2 {
+		t.Fatalf("evidence = %+v, want two links", evidence)
+	}
+	if evidence[1].AuditAnchorResolved {
+		t.Fatal("an audit_ref_id naming no persisted observation must not resolve")
+	}
+
+	layer := core.VerifyFiscalScopeBinding(evidence, strings.Repeat("b", 64))
+	if layer.Status != core.VerificationFailed {
+		t.Fatalf("layer status = %s, want failed for an unresolved audit anchor", layer.Status)
+	}
+}
