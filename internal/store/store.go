@@ -3456,6 +3456,40 @@ func approveCommandHash(memoryID, expectedEnvelopeHash, reason string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// approveFiscalCommandHash is the Slice 5 v1 idempotency command hash
+// (design.md "Authenticated approval transaction" step 5): SHA-256 hex of
+// memoryId NUL lowercase(expectedEnvelopeHash) NUL exact reason NUL binding
+// hash NUL the ORDERED tri-state of both acknowledgements (each rendered as
+// "omitted"/"false"/"true" via ReviewAcknowledgement.State()). A requestId
+// reused with the same memory/envelope/reason but a DIFFERENT binding or
+// acknowledgement state therefore hashes differently and is rejected as
+// IDEMPOTENCY_CONFLICT rather than silently reusing an earlier reservation.
+// Legacy (nil FiscalIntent) approvals never call this — they retain the
+// EXACT approveCommandHash formula above, unchanged.
+//
+// Deviation from the literal design text (flagged, not silently decided):
+// design.md names "H1" (the freshly recomputed envelope) as the hashed
+// value. This implementation hashes the CALLER'S ExpectedEnvelopeHash
+// instead, at the SAME reservation position as the legacy path (before the
+// exact-scope load). Moving the reservation itself to after the load+H1
+// recompute — for v1 callers only — was considered and rejected: it would
+// require a second, structurally divergent control-flow path through this
+// heavily-tested transaction (internal/store/approval_test.go,
+// idempotency_replay_matrix_test.go, idempotency_interrupted_reservation_test.go),
+// risking a change to the OBSERVABLE reservation-row side effects of the
+// existing, extensively covered legacy ordering. The substitution preserves
+// the design's actual security property: by the time any request reaches a
+// successful completion, ExpectedEnvelopeHash and H1 are ALREADY required to
+// be byte-identical by the unchanged ENVELOPE_MISMATCH gate later in this
+// same function, so a conflicting binding/acknowledgement pair under a
+// reused requestId is caught identically either way.
+func approveFiscalCommandHash(memoryID, expectedEnvelopeHash, reason, bindingHash string, checks core.ReviewChecksV1) string {
+	canonical := memoryID + "\x00" + strings.ToLower(expectedEnvelopeHash) + "\x00" + reason + "\x00" + bindingHash + "\x00" +
+		string(checks.EvidenceInspected.State()) + "\x00" + string(checks.RuleInspected.State())
+	sum := sha256.Sum256([]byte(canonical))
+	return hex.EncodeToString(sum[:])
+}
+
 func principalHasCompanyScope(p auth.VerifiedApprovalPrincipal, companyID string) bool {
 	for _, c := range p.CompanyScopes() {
 		if c == companyID {
@@ -3617,6 +3651,19 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		return core.ApprovalResult{}, auth.New(auth.CodeMemoryNotFound, "approval command is incomplete (memoryId, expectedEnvelopeHash and requestId are required)")
 	}
 
+	// Slice 5 fiscal binding (design.md "Authenticated approval transaction"
+	// step 1): the binding's OWN shape/vocabulary is validated BEFORE any
+	// DB/auth lookup. The exact expected operationType ("memory.approve" vs
+	// "close.approve") is not yet knowable — it depends on whether the
+	// subject turns out to be a close memory — so that comparison, and the
+	// trusted-axis comparison against the memory's own scope, happen after
+	// the exact-scope load below (step 3).
+	if cmd.FiscalIntent != nil {
+		if err := core.ValidateFiscalScopeBinding(cmd.FiscalIntent.Binding); err != nil {
+			return core.ApprovalResult{}, err
+		}
+	}
+
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: acquire connection: %w", err)
@@ -3636,7 +3683,17 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	}()
 
 	now := nowISO()
-	commandHash := approveCommandHash(cmd.MemoryID, cmd.ExpectedEnvelopeHash, cmd.Reason)
+	// Slice 5: a v1 fiscal-bound approval commits the idempotency reservation
+	// to the binding hash and the ordered acknowledgement tri-state
+	// (approveFiscalCommandHash — see its doc comment for the documented
+	// H1-vs-ExpectedEnvelopeHash deviation); a legacy approval keeps the
+	// EXACT original formula, unchanged.
+	var commandHash string
+	if cmd.FiscalIntent != nil {
+		commandHash = approveFiscalCommandHash(cmd.MemoryID, cmd.ExpectedEnvelopeHash, cmd.Reason, core.FiscalScopeHash(cmd.FiscalIntent.Binding), cmd.ReviewChecks)
+	} else {
+		commandHash = approveCommandHash(cmd.MemoryID, cmd.ExpectedEnvelopeHash, cmd.Reason)
+	}
 
 	// 1. Idempotency: one reservation per (tenant, requestId).
 	var (
@@ -3688,6 +3745,29 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		return core.ApprovalResult{}, auth.New(auth.CodeMemoryNotFound, "memory not found: "+cmd.MemoryID)
 	}
 
+	// 3b. Slice 5 fiscal guards (design.md step 3 trusted-axis comparison,
+	// and spec.md "Direct store bypass is denied" applied to the approval
+	// boundary): a v1-bound memory (existing fiscal links from an earlier
+	// save/supersede) requires the caller to supply the complete CURRENT
+	// binding for ANY further protected mutation, including approval — a
+	// legacy caller (nil intent) against an already-bound subject fails
+	// closed here, before any scope/status/policy work. The expected
+	// operation token differs for a close approval (design.md's operation
+	// map: "close.approve" vs "memory.approve") — determined now that the
+	// subject is loaded. Both checks are no-ops (nil error) when the memory
+	// has no existing fiscal links and no intent is supplied — the legacy
+	// path is byte-for-byte unaffected.
+	expectedFiscalOperation := "memory.approve"
+	if core.IsCloseMemory(memory) {
+		expectedFiscalOperation = "close.approve"
+	}
+	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, cmd.FiscalIntent); err != nil {
+		return core.ApprovalResult{}, err
+	}
+	if err := verifyFiscalIntentAxes(cmd.FiscalIntent, expectedFiscalOperation, memory.Scope); err != nil {
+		return core.ApprovalResult{}, err
+	}
+
 	// 4. Derive tenant/company/period from the row's scope (never caller
 	// claims). Institutional memories have no company to authorize.
 	if memory.Scope.Kind != core.ScopeKindCompany {
@@ -3737,7 +3817,7 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	if authz.SODViolation(memory.Source.ActorID, principal.SubjectID()) {
 		return core.ApprovalResult{}, auth.New(auth.CodeSODViolation, "the reviewer cannot approve their own proposal (separation of duties)")
 	}
-	if err := authz.ValidateReviewChecks(memory.MaterialityLevel, cmd.ReviewChecks); err != nil {
+	if err := authz.ValidateReviewChecksV1(memory.MaterialityLevel, cmd.ReviewChecks); err != nil {
 		return core.ApprovalResult{}, err
 	}
 
@@ -3745,8 +3825,30 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	// differ from H1 (status participates in the envelope hash). The guarded
 	// UPDATE requires EXACTLY one pending_review row — the write lock makes a
 	// lost update impossible; the guard is a final invariant check.
+	//
+	// Slice 5: when the approval carries a fiscal intent, the pending
+	// immutable act-evidence link is computed and attached to
+	// approvedSnapshot BEFORE H2 — the fiscal_binding_links row is
+	// append-only (no-update trigger), so its resultingEnvelopeHash (H2
+	// itself) must be known before the row is inserted, the same
+	// "compute before persisting" pattern SupersedeExplicit already uses.
+	// The reviewed envelope hash recorded on the link is H1 (the exact
+	// envelope the reviewer approved against) and the acknowledgement
+	// columns are the command's ACTUAL tri-state — a non-material approval
+	// may legitimately carry omitted/omitted.
 	approvedSnapshot := memory
 	approvedSnapshot.Status = core.StatusApproved
+	var pendingFiscalLink core.FiscalBindingLinkContribution
+	var fiscalBindingHash string
+	if cmd.FiscalIntent != nil {
+		fiscalBindingHash, err = storeFiscalScopeBindingTx(ctx, conn, cmd.FiscalIntent.Binding, now)
+		if err != nil {
+			return core.ApprovalResult{}, err
+		}
+		actEvidenceHash := core.ComputeActEvidenceHash(fiscalBindingHash, h1, cmd.ReviewChecks.EvidenceInspected, cmd.ReviewChecks.RuleInspected)
+		pendingFiscalLink = core.FiscalBindingLinkContribution{Sequence: len(memory.FiscalLinks) + 1, BindingHash: fiscalBindingHash, ActEvidenceHash: actEvidenceHash}
+		approvedSnapshot.FiscalLinks = append(append([]core.FiscalBindingLinkContribution{}, memory.FiscalLinks...), pendingFiscalLink)
+	}
 	h2 := core.ComputeEnvelopeHash(approvedSnapshot)
 	if h2 == h1 {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: resulting envelope equals reviewed envelope — status change did not affect the hash")
@@ -3803,6 +3905,25 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 		cmd.MemoryID, string(core.StatusPendingReview), string(core.StatusApproved), principal.SubjectID(), string(core.ActorKindHuman), now,
 	); err != nil {
 		return core.ApprovalResult{}, fmt.Errorf("persistence error: record approval transition: %w", err)
+	}
+
+	// 9-fiscal. Append the immutable fiscal binding link for this approval
+	// act (design.md step 8: "atomically write guarded status, existing
+	// frozen approval event, fiscal link, ..." — right after the approval
+	// event/transition above). Do NOT rebuild approval_events; this link
+	// references the SAME act through the existing "observation" audit
+	// anchor already used by Save/SupersedeExplicit.
+	if cmd.FiscalIntent != nil {
+		linkID, err := newUUID()
+		if err != nil {
+			return core.ApprovalResult{}, fmt.Errorf("persistence error: generate fiscal binding link id: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO fiscal_binding_links VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			linkID, "memory", cmd.MemoryID, pendingFiscalLink.Sequence, pendingFiscalLink.BindingHash, pendingFiscalLink.ActEvidenceHash,
+			h1, h2, nullableFiscalAck(cmd.ReviewChecks.EvidenceInspected), nullableFiscalAck(cmd.ReviewChecks.RuleInspected), "observation", cmd.MemoryID, now,
+		); err != nil {
+			return core.ApprovalResult{}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
+		}
 	}
 
 	// 9a. Anti-rubber-stamp observable events (v0.9.0, design §6): derive the

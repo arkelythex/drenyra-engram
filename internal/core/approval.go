@@ -41,8 +41,16 @@ func (a ReviewAcknowledgement) State() ReviewAcknowledgementState {
 	return ReviewAcknowledgementFalse
 }
 
-// ReviewChecksV1 is the additive presence-aware contract. Slice 5 carries it
-// through the authenticated transaction; this value itself grants nothing.
+// ReviewChecksV1 is the Slice 5 presence-aware anti-rubber-stamp contract
+// (design.md "Immutable act evidence and envelope linkage"): each check is
+// independently omitted, provided false, or provided true. It is the type of
+// ApproveMemoryCommand.ReviewChecks — the exported FIELD name stays exactly
+// "ReviewChecks" (ADR-003's frozen field-name contract,
+// TestApproveMemoryCommandCarriesNoPrincipalFields), only its TYPE moved from
+// the legacy boolean-only ReviewChecks (internal/core/review.go, still used
+// unchanged by the frozen v0.9.0 Go/TypeScript parity golden vectors via
+// authz.ValidateReviewChecks) to this tri-state. This value itself grants
+// nothing.
 type ReviewChecksV1 struct {
 	EvidenceInspected ReviewAcknowledgement `json:"evidenceInspected"`
 	RuleInspected     ReviewAcknowledgement `json:"applicableRulesInspected"`
@@ -50,9 +58,12 @@ type ReviewChecksV1 struct {
 
 // ApproveMemoryCommand is the approval command. It carries the memory to
 // approve, the envelope hash the caller reviewed, the reason, the idempotency
-// request id and the optional v0.9.0 review checks. No principal fields
-// (compile-level contract — internal/server verifies the field set stays
-// exactly this).
+// request id, the presence-aware review checks and the OPTIONAL Slice 5 v1
+// fiscal scope binding intent. No principal fields (compile-level contract —
+// internal/server verifies the field set stays exactly this;
+// TestApproveMemoryCommandCarriesNoPrincipalFields is the frozen list —
+// FiscalIntent is scope METADATA, never authority, exactly like
+// SaveInput.FiscalIntent and TransitionMeta.FiscalIntent added in Slice 3).
 type ApproveMemoryCommand struct {
 	// MemoryID is the pending_review memory to approve.
 	MemoryID string `json:"memoryId"`
@@ -65,8 +76,23 @@ type ApproveMemoryCommand struct {
 	// RequestID is the idempotency key scoped to (tenant, requestId); a replay
 	// with the same id and payload returns the stored result.
 	RequestID string `json:"requestId"`
-	// ReviewChecks (v0.9.0): anti-rubber-stamp checks for material/critical approvals.
-	ReviewChecks ReviewChecks `json:"reviewChecks,omitempty"`
+	// ReviewChecks (v0.9.0/Slice 5): presence-aware anti-rubber-stamp checks
+	// for material/critical approvals. Adapters MUST NOT default an omitted
+	// value into a successful declaration (proposal.md).
+	ReviewChecks ReviewChecksV1 `json:"reviewChecks,omitempty"`
+	// FiscalIntent is the OPTIONAL Slice 5 v1 fiscal scope binding a caller
+	// wants bound to THIS approval act (operationType "memory.approve" or
+	// "close.approve", authorityLevel EXECUTE per design.md's operation map —
+	// legitimately DIFFERENT from an earlier memory.save/close.create
+	// PREPARE binding on the same subject). It participates in command
+	// INTENT only: authentication, membership, role, assurance, separation
+	// of duties and the closed-period gate remain independently and
+	// authoritatively enforced by the store. A nil intent is the legacy path
+	// (byte-identical to pre-Slice-5 behavior) UNLESS the memory already
+	// carries a v1 fiscal binding link, in which case a nil intent is a
+	// direct-store-bypass attempt and fails closed
+	// (spec.md "Direct store bypass is denied").
+	FiscalIntent *FiscalWriteIntent `json:"-"`
 }
 
 // ApprovalResult is the outcome of an atomic approval. PreviousStatus is always
