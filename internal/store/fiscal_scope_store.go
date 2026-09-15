@@ -206,6 +206,19 @@ func fiscalAckFromNullable(v sql.NullBool) core.ReviewAcknowledgement {
 	return core.ReviewAcknowledgement{Present: true, Value: v.Bool}
 }
 
+// nullableFiscalAck is the Slice 5 forward mapping (the symmetric inverse of
+// fiscalAckFromNullable above): a tri-state core.ReviewAcknowledgement into
+// the nullable SQLite column value a fiscal_binding_links INSERT binds
+// (omitted -> nil/NULL, provided false/true -> the bool). Centralizing this
+// one mapping keeps every fiscal act-evidence writer (ApproveMemory today)
+// from re-deriving the NULL-vs-bool rule inline.
+func nullableFiscalAck(a core.ReviewAcknowledgement) any {
+	if !a.Present {
+		return nil
+	}
+	return a.Value
+}
+
 // resolveFiscalAuditAnchor reports whether one fiscal_binding_links row's
 // logical audit reference resolves to a persisted record of its declared type
 // (design.md "Verification and audit" — "unresolved audit anchor" fails
