@@ -296,6 +296,13 @@ const (
 	FiscalRuntimeReadOnly     FiscalRuntimeMode = "read_only"
 )
 
+// FiscalRuntimeMode reports the mode resolved once at Open (design.md
+// "Runtime and downgrade modes") for this store handle. Adapters use it to
+// surface a clear operational diagnostic — e.g. a startup log line when the
+// resolved mode is the (fail-closed) shadow default — WITHOUT weakening the
+// gate itself: this getter is read-only and grants nothing.
+func (s *SQLiteStore) FiscalRuntimeMode() FiscalRuntimeMode { return s.fiscalRuntimeMode }
+
 func ParseFiscalRuntimeMode(raw string) (FiscalRuntimeMode, error) {
 	if raw == "" {
 		return FiscalRuntimeShadow, nil
@@ -439,6 +446,45 @@ func requireFiscalIntentForBoundSubject(existing []core.FiscalBindingLinkContrib
 		return &core.FiscalScopeError{Code: core.ScopeBindingRequired, Message: "a v1-bound subject requires the complete current binding"}
 	}
 	return nil
+}
+
+// checkFiscalRuntimeGate enforces DRENYRA_FISCAL_RUNTIME_MODE (design.md
+// "Runtime and downgrade modes") at ONE shared choke point reused by every
+// protected write entry point (Save, ApproveMemory, SupersedeExplicit,
+// AddEvidenceLinksBound/AddRuleLinksBound, StoreObjectWithFiscalIntent).
+//
+// class is derived without ClassifyFiscalSubject's extra re-verification
+// query, reusing signals every caller has already loaded: existing
+// (non-empty) fiscalLinks means the subject is ALREADY v1-bound, so the
+// write classifies v1 regardless of whether THIS command also supplies an
+// intent — the same existing-links signal requireFiscalIntentForBoundSubject
+// above already uses. A subject with no existing links (a brand-new Save
+// subject, or any subject never fiscal-bound) classifies by whether THIS
+// command supplies an intent: FiscalScopeV1 if it does, FiscalScopeLegacy
+// otherwise — mirroring Save's pre-existing "a brand-new subject has no
+// prior fiscal links" rule.
+// The drill write-freeze latch (design D-8, store.go's writeFrozen field) is
+// checked FIRST, before the fiscal-mode policy check: freeze is a whole-store
+// operational quarantine (this exact handle is a corruption-drill evidence
+// copy — every write entry point refuses immediately, and no retry clears
+// it), strictly more fundamental than a per-write fiscal-mode policy
+// decision. Checking fiscal mode first would return FISCAL_WRITE_GATE_CLOSED
+// for a frozen drill copy instead of the specific ErrStoreWriteFrozen a
+// caller may depend on to distinguish "this is a quarantined copy" from an
+// ordinary policy denial — misleading precisely when an operator is running
+// a corruption drill. beginWriteTx (the transaction-begin choke point) still
+// re-checks the SAME atomic field right before every transaction as its own
+// independent, authoritative guard; this is an earlier, redundant-by-design
+// read of that one atomic bool, not a second freeze mechanism.
+func (s *SQLiteStore) checkFiscalRuntimeGate(fiscalLinks []core.FiscalBindingLinkContribution, intent *core.FiscalWriteIntent) error {
+	if s.writeFrozen.Load() {
+		return ErrStoreWriteFrozen
+	}
+	class := FiscalScopeLegacy
+	if len(fiscalLinks) > 0 || intent != nil {
+		class = FiscalScopeV1
+	}
+	return s.fiscalRuntimeMode.CheckProtectedWrite(class)
 }
 
 // appendFiscalBindingLinkTx persists the fiscal_scope_bindings row (if new)

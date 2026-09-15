@@ -60,7 +60,13 @@ func fiscalRowCounts(t *testing.T, s *SQLiteStore) (bindings, links int) {
 // changes the memory's envelope hash relative to the same save without an
 // intent (the envelope transitively commits to the immutable act evidence).
 func TestSaveWithFiscalIntentPersistsImmutableActEvidence(t *testing.T) {
-	s := newTestStore(t)
+	// This test needs BOTH a legacy-class save and a v1-class save to
+	// coexist in the SAME database (compared via s.ClassifyFiscalSubject
+	// below) — no single DRENYRA_FISCAL_RUNTIME_MODE permits both classes at
+	// once (design.md "Runtime and downgrade modes"), so the legacy phase
+	// and the v1 phase reopen the identical underlying file under the mode
+	// each needs (see reopenTestStoreMode's doc comment).
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	scope := testScope(fiscalRucA)
 
 	legacy := validInput("topic/fiscal/legacy", "legacy save")
@@ -70,6 +76,7 @@ func TestSaveWithFiscalIntentPersistsImmutableActEvidence(t *testing.T) {
 		t.Fatalf("legacy save: %v", err)
 	}
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	bound := validInput("topic/fiscal/bound", "bound save")
 	bound.Scope = scope
 	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
@@ -108,7 +115,7 @@ func TestSaveWithFiscalIntentPersistsImmutableActEvidence(t *testing.T) {
 // instead of memory.save) fails closed BEFORE any row, binding or link is
 // created.
 func TestSaveFiscalIntentOperationMismatchFailsClosed(t *testing.T) {
-	s := newTestStore(t)
+	s := newTestStoreMode(t, "enforce")
 	input := validInput("topic/fiscal/opmismatch", "wrong operation")
 	input.Scope = testScope(fiscalRucA)
 	input.FiscalIntent = fiscalIntentFor("memory.supersede", core.AuthorityLevelExecute, "agent-1", fiscalRucA, testPeriod)
@@ -133,7 +140,7 @@ func TestSaveFiscalIntentOperationMismatchFailsClosed(t *testing.T) {
 // disagrees with the scope's own RUC fails SCOPE_MISMATCH with no partial
 // state and discloses no foreign RUC.
 func TestSaveFiscalIntentAxisMismatchFailsClosed(t *testing.T) {
-	s := newTestStore(t)
+	s := newTestStoreMode(t, "enforce")
 	input := validInput("topic/fiscal/axismismatch", "wrong axis")
 	input.Scope = testScope(fiscalRucA)
 	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucB, testPeriod)
@@ -160,7 +167,14 @@ func TestSaveFiscalIntentAxisMismatchFailsClosed(t *testing.T) {
 // intent (the legacy/old-tuple caller shape) must fail closed and mutate
 // nothing — no status flip, no transition-log row, no relation, no receipt.
 func TestSupersedeDirectBypassOfV1BoundSubjectDenied(t *testing.T) {
-	s := newTestStore(t)
+	// The v1-bound subject and its legacy successor must coexist in the
+	// SAME database for the SupersedeExplicit(id, successorID, ...) call
+	// below to resolve both ids — reopen the same file across the mode each
+	// phase needs (see reopenTestStoreMode's doc comment); the bypass
+	// SupersedeExplicit call itself fails via requireFiscalIntentForBoundSubject
+	// BEFORE ever reaching the runtime gate, so the mode active at that final
+	// call is immaterial.
+	s, path := newTestStorePathMode(t, "enforce")
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-bypass", "v1 subject")
 	bound.Scope = scope
@@ -171,6 +185,7 @@ func TestSupersedeDirectBypassOfV1BoundSubjectDenied(t *testing.T) {
 	}
 	id := saved.Memory.Identity.ID
 
+	s = reopenTestStoreMode(t, s, path, "legacy_compat")
 	successor := validInput("topic/fiscal/supersede-successor", "successor")
 	successor.Scope = scope
 	successorSaved, err := s.Save(successor)
@@ -202,7 +217,11 @@ func TestSupersedeDirectBypassOfV1BoundSubjectDenied(t *testing.T) {
 // fails closed, proving the guard checks the trusted axes, not merely
 // presence.
 func TestSupersedeMismatchedFiscalIntentDenied(t *testing.T) {
-	s := newTestStore(t)
+	// Same coexistence requirement as TestSupersedeDirectBypassOfV1BoundSubjectDenied
+	// above — reopen the same file across modes; the mismatched-intent
+	// supersede call fails via verifyFiscalIntentAxes BEFORE reaching the
+	// runtime gate, so the mode active at that final call is immaterial.
+	s, path := newTestStorePathMode(t, "enforce")
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-mismatch", "v1 subject")
 	bound.Scope = scope
@@ -211,6 +230,7 @@ func TestSupersedeMismatchedFiscalIntentDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
 	}
+	s = reopenTestStoreMode(t, s, path, "legacy_compat")
 	successor := validInput("topic/fiscal/supersede-mismatch-successor", "successor")
 	successor.Scope = scope
 	successorSaved, err := s.Save(successor)
@@ -236,7 +256,13 @@ func TestSupersedeMismatchedFiscalIntentDenied(t *testing.T) {
 // succeeds, appends sequence 2 (H1/H2 linkage), and the pre/post envelope
 // hashes recomputed from the reloaded state differ from each other.
 func TestSupersedeWithMatchingFiscalIntentAppendsSecondLink(t *testing.T) {
-	s := newTestStore(t)
+	// Three phases against the SAME underlying file: v1-bound save
+	// (enforce), legacy successor save (legacy_compat), then the matching
+	// supersede — which, unlike the two bypass tests above, genuinely
+	// reaches checkFiscalRuntimeGate and must succeed, so it needs enforce
+	// again (class comes from the ALREADY-BOUND subject's existing links,
+	// not this call's own intent — see checkFiscalRuntimeGate's doc comment).
+	s, path := newTestStorePathMode(t, "enforce")
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-ok", "v1 subject")
 	bound.Scope = scope
@@ -245,6 +271,7 @@ func TestSupersedeWithMatchingFiscalIntentAppendsSecondLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
 	}
+	s = reopenTestStoreMode(t, s, path, "legacy_compat")
 	successor := validInput("topic/fiscal/supersede-ok-successor", "successor")
 	successor.Scope = scope
 	successorSaved, err := s.Save(successor)
@@ -252,6 +279,7 @@ func TestSupersedeWithMatchingFiscalIntentAppendsSecondLink(t *testing.T) {
 		t.Fatalf("save successor: %v", err)
 	}
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	intent := fiscalIntentFor("memory.supersede", core.AuthorityLevelPrepare, "controller-1", fiscalRucA, testPeriod)
 	updated, err := s.SupersedeExplicit(saved.Memory.Identity.ID, successorSaved.Memory.Identity.ID, core.TransitionMeta{
 		Actor: "controller-1", ActorKind: core.ActorKindHuman, Timestamp: testT, FiscalIntent: intent,
@@ -279,7 +307,13 @@ func TestSupersedeWithMatchingFiscalIntentAppendsSecondLink(t *testing.T) {
 // batch containing ONE invalid ref fails the WHOLE command — zero refs are
 // added and zero fiscal evidence is recorded (no partial subset commits).
 func TestAddEvidenceLinksBoundAtomicBatch(t *testing.T) {
-	s := newTestStore(t)
+	// The target memory (legacy scaffold save) and its later v1-bound
+	// evidence batch must live in the SAME database — reopen the same file
+	// across modes (see reopenTestStoreMode's doc comment). The invalid-ref
+	// batch call carries a nil intent, but the target has no existing fiscal
+	// links yet, so it still classifies legacy and is unaffected by which
+	// mode is active as long as it's a mode that allows legacy (legacy_compat).
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	input := validInput("topic/fiscal/evidence-batch", "evidence target")
 	input.Scope = testScope(fiscalRucA)
 	saved, err := s.Save(input)
@@ -299,7 +333,9 @@ func TestAddEvidenceLinksBoundAtomicBatch(t *testing.T) {
 	}
 
 	// TRIANGULATE: a fully valid batch WITH a fiscal intent commits every ref
-	// and exactly one fiscal binding link.
+	// and exactly one fiscal binding link. This call is the target's FIRST
+	// fiscal act (v1-classified by its own intent), so it needs enforce.
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	out, err := s.AddEvidenceLinksBound(saved.Memory.Identity.ID, []string{"evidence/a", "evidence/b"}, "agent-1",
 		fiscalIntentFor("evidence.link", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod))
 	if err != nil {
@@ -325,13 +361,18 @@ func TestAddEvidenceLinksBoundAtomicBatch(t *testing.T) {
 // (bumping the sequence and envelope hash for a command that persisted no
 // new ref) is NOT a real act and must not be minted.
 func TestAddEvidenceLinksBoundIdempotentReplayMintsNoPhantomAct(t *testing.T) {
-	s := newTestStore(t)
+	// Legacy scaffold save, then every subsequent call carries a fiscal
+	// intent (v1) — reopen the same file from legacy_compat to enforce (see
+	// reopenTestStoreMode's doc comment); one reopen covers the whole v1
+	// phase since every later call on this subject stays v1-classified.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	input := validInput("topic/fiscal/evidence-replay", "evidence target")
 	input.Scope = testScope(fiscalRucA)
 	saved, err := s.Save(input)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	memoryID := saved.Memory.Identity.ID
 	intent := fiscalIntentFor("evidence.link", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
 
@@ -403,13 +444,19 @@ func TestAddEvidenceLinksBoundIdempotentReplayMintsNoPhantomAct(t *testing.T) {
 // evidence-link binding, a further legacy (nil-intent) evidence link attempt
 // is denied and adds no new ref.
 func TestAddEvidenceLinksBoundDirectBypassDenied(t *testing.T) {
-	s := newTestStore(t)
+	// Legacy scaffold save, then the bound (v1) evidence link — reopen the
+	// same file from legacy_compat to enforce (see reopenTestStoreMode's doc
+	// comment). The final bypass call (nil intent against a now-bound
+	// subject) fails via requireFiscalIntentForBoundSubject BEFORE reaching
+	// the runtime gate, so staying in enforce for it is immaterial.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	input := validInput("topic/fiscal/evidence-bypass", "evidence target")
 	input.Scope = testScope(fiscalRucA)
 	saved, err := s.Save(input)
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	if _, err := s.AddEvidenceLinksBound(saved.Memory.Identity.ID, []string{"evidence/a"}, "agent-1",
 		fiscalIntentFor("evidence.link", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)); err != nil {
 		t.Fatalf("bound batch: %v", err)
@@ -432,7 +479,7 @@ func TestAddEvidenceLinksBoundDirectBypassDenied(t *testing.T) {
 // receipt (closed-period-style ordering, the "invalid input before
 // reservation/object access" requirement).
 func TestStoreObjectWithFiscalIntentPersistsActEvidence(t *testing.T) {
-	s := newTestStore(t)
+	s := newTestStoreMode(t, "enforce")
 	input := objectInputForTest(t, []byte("fiscal-object"))
 	input.Scope = testScope(fiscalRucA)
 
@@ -468,11 +515,17 @@ func TestStoreObjectWithFiscalIntentPersistsActEvidence(t *testing.T) {
 // fiscal link (the existing closed-period gate runs before the new fiscal
 // append code).
 func TestBoundSaveIntoClosedPeriodFailsWithZeroFiscalState(t *testing.T) {
-	s := newTestStore(t)
+	// The identity seed + close save/approve are all legacy (no FiscalIntent)
+	// and need legacy_compat; the final bound (v1) Save that must reach the
+	// PERIOD_CLOSED check (deeper than checkFiscalRuntimeGate in Save) needs
+	// enforce — reopen the same file (see reopenTestStoreMode's doc comment)
+	// so the closed-period projection persists across the mode switch.
+	s, path := newTestStorePathMode(t, "legacy_compat")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	scope := testScope(fiscalRucA)
 	saveAndApproveClose(t, s, scope, "close blocks bound save", "req-fiscal-close")
 
+	s = reopenTestStoreMode(t, s, path, "enforce")
 	input := validInput("topic/fiscal/closed-period", "must not land")
 	input.Scope = scope
 	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
@@ -522,7 +575,7 @@ func TestFiscalBindingEvidenceLegacySubjectHasNoEvidence(t *testing.T) {
 // memory row IS the subject that was just created) and every recomputed field
 // agrees with core.VerifyFiscalScopeBinding, so the layer PASSES.
 func TestFiscalBindingEvidenceResolvesAuditAnchorForBoundSubject(t *testing.T) {
-	s := newTestStore(t)
+	s := newTestStoreMode(t, "enforce")
 	bound := validInput("topic/fiscal/evidence-bound", "bound")
 	scope := testScope(fiscalRucA)
 	bound.Scope = scope
@@ -564,7 +617,7 @@ func TestFiscalBindingEvidenceResolvesAuditAnchorForBoundSubject(t *testing.T) {
 // AuditAnchorResolved=false, and core.VerifyFiscalScopeBinding fails the
 // subject closed — never a silent v1 pass.
 func TestFiscalBindingEvidenceDetectsUnresolvedAuditAnchor(t *testing.T) {
-	s := newTestStore(t)
+	s := newTestStoreMode(t, "enforce")
 	bound := validInput("topic/fiscal/evidence-tampered", "bound")
 	scope := testScope(fiscalRucA)
 	bound.Scope = scope

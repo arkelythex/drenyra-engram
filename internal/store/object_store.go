@@ -210,6 +210,17 @@ func (s *SQLiteStore) storeObject(ctx context.Context, input core.ObjectStoreInp
 		return core.ObjectStoreResult{}, fmt.Errorf("persistence error: duplicate object check: %w", err)
 	}
 
+	// design.md "Runtime and downgrade modes": gated ONLY on the genuine
+	// new-object path below — a same-scope duplicate already returned above
+	// (no new act is recorded, so there is nothing to gate) and
+	// AssertValidObjectScope above already guarantees ScopeKindCompany.
+	// Evidence objects are WORM/immutable with no supersede path, so a fresh
+	// object id never carries prior fiscal links: class comes from intent
+	// alone, exactly like a brand-new Save subject.
+	if err := s.checkFiscalRuntimeGate(nil, intent); err != nil {
+		return core.ObjectStoreResult{}, err
+	}
+
 	// WORM byte write (temp + fsync + atomic rename + directory sync). One
 	// captured timestamp covers the row AND the receipt (provenance continuity).
 	// A real (non-benign) write failure — including a real directory-sync

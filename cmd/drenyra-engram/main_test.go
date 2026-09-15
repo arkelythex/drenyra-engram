@@ -37,7 +37,20 @@ var (
 
 // TestMain builds the CLI binary once and runs the suite against it — the CLI
 // smoke (save → search → context round trip) runs through the real binary.
+//
+// runCLIEnv spawns the built binary with cmd.Env = append(os.Environ(), env...),
+// so it inherits whatever DRENYRA_FISCAL_RUNTIME_MODE is set on THIS test
+// process at the moment each subprocess launches — os.Setenv here (or a
+// per-test t.Setenv override) propagates to every runCLI/runCLIEnv call the
+// same way it would to an in-process store.Open. The overwhelming majority of
+// this suite's CLI invocations are plain legacy (no --fiscal-scope) saves and
+// approvals exercising unrelated commands, so default the whole test binary
+// to legacy_compat (design.md "Runtime and downgrade modes") here; a test
+// whose CLI calls are v1 (carry --fiscal-scope) overrides this via its own
+// t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "enforce") before the relevant
+// runCLIEnv call — see cmd/drenyra-engram/fiscal_scope_test.go.
 func TestMain(m *testing.M) {
+	os.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve repo root: %v\n", err)

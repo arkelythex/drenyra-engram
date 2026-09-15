@@ -416,6 +416,26 @@ func httpFiscalScopeJSON(mem core.AccountingMemory, operationType string, author
 func materialFiscalApprovalServer(t *testing.T) (*httptest.Server, *API, string, core.AccountingMemory) {
 	t.Helper()
 	ts, api := newTestHTTPServer(t, "")
+	return materialFiscalApprovalServerOn(t, ts, api)
+}
+
+// materialFiscalApprovalServerForApproval is materialFiscalApprovalServer for
+// a test whose HTTP approve request itself carries a fiscalScope and must
+// SUCCEED (v1-classified, needs enforce) — the setup save carries no
+// FiscalIntent (legacy-classified, needs legacy_compat), so this reopens the
+// same underlying store between setup and the returned server (see
+// reopenTestHTTPServerMode's doc comment; design.md "Runtime and downgrade
+// modes" — no single mode permits both classes at once).
+func materialFiscalApprovalServerForApproval(t *testing.T) (*httptest.Server, *API, string, core.AccountingMemory) {
+	t.Helper()
+	ts, api, path := newTestHTTPServerPathMode(t, "", "legacy_compat")
+	ts, api, token, mem := materialFiscalApprovalServerOn(t, ts, api)
+	ts, api = reopenTestHTTPServerMode(t, ts, api, path, "", "enforce")
+	return ts, api, token, mem
+}
+
+func materialFiscalApprovalServerOn(t *testing.T, ts *httptest.Server, api *API) (*httptest.Server, *API, string, core.AccountingMemory) {
+	t.Helper()
 	token := seedApprovalIdentity(t, api, "fiscal_org", httpFiscalRuc, httpFiscalRuc,
 		[]auth.AccountingRole{auth.RoleController})
 	material := core.MaterialityMaterial
@@ -445,7 +465,7 @@ func materialFiscalApprovalServer(t *testing.T) (*httptest.Server, *API, string,
 // material memory approved with a matching fiscalScope binding and explicit
 // positive reviewChecks succeeds in one transaction.
 func TestHTTPApprovalWithFiscalScopeAndReviewChecksSucceeds(t *testing.T) {
-	ts, api, token, mem := materialFiscalApprovalServer(t)
+	ts, api, token, mem := materialFiscalApprovalServerForApproval(t)
 	h1 := core.ComputeEnvelopeHash(mem)
 
 	status, raw := approvalHTTP(t, http.MethodPost,

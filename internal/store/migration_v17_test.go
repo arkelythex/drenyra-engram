@@ -22,6 +22,7 @@ import (
 // rows all carry confidence — the clean-upgrade fixture.
 func seedV16StoreWithConfidence(t *testing.T) (*SQLiteStore, string) {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := Open(path)
 	if err != nil {

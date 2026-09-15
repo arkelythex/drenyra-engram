@@ -15,6 +15,7 @@ import (
 
 	"github.com/arkelythex/drenyra-engram/internal/core"
 	"github.com/arkelythex/drenyra-engram/internal/search"
+	"github.com/arkelythex/drenyra-engram/internal/store"
 )
 
 // newTestHTTPServer returns an httptest server over the shared API with the
@@ -34,6 +35,56 @@ func newTestHTTPServer(t *testing.T, token string, opts ...func(*HTTPServer)) (*
 
 // enableLegacyApprove opts a test server into the deprecated v0.3 approve route.
 func enableLegacyApprove(h *HTTPServer) { h.EnableLegacyApprove() }
+
+// newTestHTTPServerPathMode is newTestHTTPServer with an explicit
+// DRENYRA_FISCAL_RUNTIME_MODE, also returning the store's path — for a test
+// whose setup (through api.Save et al.) needs a DIFFERENT mode than the HTTP
+// requests driven against the returned server, via
+// reopenTestHTTPServerMode.
+func newTestHTTPServerPathMode(t *testing.T, token, mode string, opts ...func(*HTTPServer)) (*httptest.Server, *API, string) {
+	t.Helper()
+	api, path, _ := newTestAPIPathMode(t, mode)
+	httpServer := NewHTTPServer(api, token)
+	for _, opt := range opts {
+		opt(httpServer)
+	}
+	ts := httptest.NewServer(httpServer.Handler())
+	t.Cleanup(ts.Close)
+	return ts, api, path
+}
+
+// reopenTestHTTPServerMode closes ts and the store behind api, then reopens
+// the SAME underlying SQLite file (path, from newTestHTTPServerPathMode)
+// under a DIFFERENT DRENYRA_FISCAL_RUNTIME_MODE, rebuilding a fresh
+// HTTPServer + httptest.Server over it. A plain field swap on the existing
+// *API is not enough: NewHTTPServerWithDefaultScope caches api.Store into
+// several separate typed fields (resolver.Sessions, approvalStore,
+// reviewStore, ...) at construction time, so the whole server must be
+// rebuilt for the reopened store to actually take effect on the next
+// request. See internal/store's reopenTestStoreMode doc comment for why a
+// reopen (rather than one mode for the whole test) is needed at all.
+func reopenTestHTTPServerMode(t *testing.T, ts *httptest.Server, api *API, path, token, mode string, opts ...func(*HTTPServer)) (*httptest.Server, *API) {
+	t.Helper()
+	ts.Close()
+	st := api.Store.(*store.SQLiteStore)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close test store before reopen: %v", err)
+	}
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	ns, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+	newAPI := New(ns, "test")
+	httpServer := NewHTTPServer(newAPI, token)
+	for _, opt := range opts {
+		opt(httpServer)
+	}
+	newTS := httptest.NewServer(httpServer.Handler())
+	t.Cleanup(newTS.Close)
+	return newTS, newAPI
+}
 
 // httpScope builds a scope matching what the HTTP surface derives from query
 // parameters (companyId := ruc), so HTTP saves and HTTP reads round-trip.

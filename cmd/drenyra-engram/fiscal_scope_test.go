@@ -119,6 +119,13 @@ func TestCLIApproveWithFiscalScopeSucceeds(t *testing.T) {
 		t.Fatalf("write binding fixture: %v", err)
 	}
 
+	// The setup save above (saveMaterialFiscalMemory) is a plain legacy CLI
+	// save (needs the TestMain default legacy_compat); this approve carries
+	// --fiscal-scope and must SUCCEED (v1-classified, needs enforce) — each
+	// runCLIEnv call spawns its own subprocess reading the CURRENT env at
+	// launch (see TestMain's doc comment), so overriding here doesn't disturb
+	// the earlier legacy calls.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "enforce")
 	stdout, stderr, code := runCLIEnv(t, env,
 		"approve", id, "--fiscal-scope", bindingPath,
 		"--expected-envelope", h1, "--reason", "revisado evidencia y reglas aplicables",
