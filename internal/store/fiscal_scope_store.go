@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
+	sqlite "modernc.org/sqlite"
 	"strings"
 )
 
@@ -247,10 +249,37 @@ type FiscalInventoryReport struct {
 	LegacyCount, V1Count, UnverifiableCount int
 	InvalidLegacyRUCCount                   int
 	InvalidLegacyOpaqueIDs                  []string
+	// Truncated is true when the scan hit fiscalInventoryMaxScan before
+	// exhausting the company-scope observations table: the counts above cover
+	// only the first fiscalInventoryMaxScan rows (ordered by id), never a
+	// silent, unmarked partial result. See fiscalInventoryMaxScan's doc
+	// comment for why this is a hard cap rather than real pagination.
+	Truncated bool
 }
 
+// fiscalInventoryMaxScan bounds FiscalInventory's single-call cost (design.md
+// "Runtime and downgrade modes": inventory is a shadow-mode diagnostic, no
+// production caller exists for it yet). Two constraints shape this as a hard
+// cap rather than streaming or a cursor-based pagination API: (1) the store's
+// *sql.DB is configured with SetMaxOpenConns(1), and ClassifyFiscalSubject
+// issues its OWN separate query per row — running it while THIS function's
+// own rows cursor is still open would deadlock the single connection against
+// itself, so every row must be buffered and the cursor closed BEFORE
+// classifying (the existing, load-bearing shape below); a true streaming
+// rewrite is not a safe drop-in change here. (2) A real pagination contract
+// (cursor semantics, a caller that resumes across calls) has no consumer to
+// design against yet — FiscalInventory has no production caller at all
+// today. A bounded cap converts "unbounded memory growth and an unbounded
+// single-connection hold" into a KNOWN worst case, and Truncated reports
+// honestly when the cap was hit, rather than a silently incomplete result. A
+// full paginated redesign belongs with this function's first real caller.
+// A package-level var, not a const, solely so a test can temporarily lower
+// it (save/restore) to exercise the truncation boundary cheaply instead of
+// creating 10000+ real rows; production code never mutates it.
+var fiscalInventoryMaxScan = 10000
+
 func (s *SQLiteStore) FiscalInventory(ctx context.Context) (FiscalInventoryReport, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,organization_id,ruc FROM observations WHERE scope_kind='company' ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,organization_id,ruc FROM observations WHERE scope_kind='company' ORDER BY id LIMIT ?`, fiscalInventoryMaxScan+1)
 	if err != nil {
 		return FiscalInventoryReport{}, err
 	}
@@ -265,6 +294,10 @@ func (s *SQLiteStore) FiscalInventory(ctx context.Context) (FiscalInventoryRepor
 	}
 	_ = rows.Close()
 	var report FiscalInventoryReport
+	if len(records) > fiscalInventoryMaxScan {
+		report.Truncated = true
+		records = records[:fiscalInventoryMaxScan]
+	}
 	for _, record := range records {
 		class, err := s.ClassifyFiscalSubject(ctx, "memory", record.id)
 		if err != nil {
@@ -512,4 +545,27 @@ func appendFiscalBindingLinkTx(ctx context.Context, q Queryer, subjectType, subj
 		return core.FiscalBindingLinkContribution{}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
 	}
 	return core.FiscalBindingLinkContribution{Sequence: sequence, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}, nil
+}
+
+// isFiscalActEvidenceConflict reports whether err is the
+// fiscal_binding_links UNIQUE(subject_type,subject_id,binding_hash,
+// act_evidence_hash) violation (extended result code 2067, the same
+// SQLITE_CONSTRAINT_UNIQUE code isOpenTupleConflict checks for a DIFFERENT
+// index — the message is inspected too, since this table carries a SECOND
+// unique constraint on (subject_type,subject_id,sequence) that shares the
+// same numeric code).
+//
+// This exists because ComputeActEvidenceHash's formula for a non-approval
+// act (design.md: bindingHash + "" + omitted + omitted — no ref content, no
+// timestamp) makes a second genuinely distinct addLinksBound call under the
+// SAME binding on the SAME subject compute an IDENTICAL act_evidence_hash to
+// the first: a foreseeable, non-adversarial pattern (the same
+// reviewer/agent linking more evidence to the same memory later), not a
+// tamper attempt. addLinksBound treats this conflict as "this exact
+// evidentiary commitment — same binding, same acknowledgement state — is
+// already recorded for this subject" and skips minting a duplicate link
+// rather than discarding the already-persisted new refs.
+func isFiscalActEvidenceConflict(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == 2067 && strings.Contains(err.Error(), "act_evidence_hash")
 }
