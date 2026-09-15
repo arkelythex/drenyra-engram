@@ -379,6 +379,184 @@ func TestHTTPApprovalEnvelopeMismatch(t *testing.T) {
 	}
 }
 
+// httpFiscalRuc is a checksum-VALID SUNAT RUC used by the Delivery Slice 6
+// fiscal-scope HTTP tests — deliberately different from demoScope()'s RUC
+// (which stays checksum-invalid, matching the frozen legacy scope contract).
+const httpFiscalRuc = "20100070970"
+
+// httpFiscalScopeJSON builds the fiscalScope binding value for the HTTP
+// approval body, matching mem's legacy scope axes (tenant=organizationId,
+// organization=companyId, company=ruc — internal/store's verifyFiscalIntentAxes
+// contract) with the given operationType. It returns the typed
+// core.FiscalScopeBinding (not a map[string]any) DELIBERATELY: Go's
+// encoding/json marshals a struct's fields in DECLARATION order (matching the
+// canonical key order internal/core.DecodeFiscalScopeV1JSON strictly
+// requires — spec.md "Ambiguous encoding is rejected": reordered keys fail
+// closed), whereas a map[string]any always marshals its keys ALPHABETICALLY.
+func httpFiscalScopeJSON(mem core.AccountingMemory, operationType string, authorityLevel core.AuthorityLevel) core.FiscalScopeBinding {
+	return core.FiscalScopeBinding{
+		Version:        "v1",
+		Tenant:         mem.Scope.OrganizationID,
+		Organization:   mem.Scope.CompanyID,
+		Company:        mem.Scope.RUC,
+		FiscalPeriod:   mem.Scope.Period,
+		LedgerBook:     "purchases",
+		OperationType:  operationType,
+		SourceSnapshot: strings.Repeat("a", 64),
+		PolicyVersion:  "fiscal-v1",
+		Actor:          "controller-1",
+		AuthorityLevel: authorityLevel,
+	}
+}
+
+// materialFiscalApprovalServer builds a test server plus a controller identity
+// scoped to httpFiscalRuc (checksum-valid) and one MATERIAL pending_review
+// memory in that exact scope — the anti-rubber-stamp policy requires explicit
+// review acknowledgements to approve it.
+func materialFiscalApprovalServer(t *testing.T) (*httptest.Server, *API, string, core.AccountingMemory) {
+	t.Helper()
+	ts, api := newTestHTTPServer(t, "")
+	token := seedApprovalIdentity(t, api, "fiscal_org", httpFiscalRuc, httpFiscalRuc,
+		[]auth.AccountingRole{auth.RoleController})
+	material := core.MaterialityMaterial
+	result, err := api.Save(core.SaveInput{
+		TopicKey:         "fiscal/http/material",
+		Title:            "Ajuste material fiscal",
+		Kind:             core.KindDecision,
+		Scope:            core.Scope{Kind: core.ScopeKindCompany, OrganizationID: "fiscal_org", CompanyID: httpFiscalRuc, RUC: httpFiscalRuc, Period: "202601"},
+		Content:          core.Content{What: "ajuste material", Why: "fixture", Where: "internal/server", Learned: "n/a"},
+		FiscalEffect:     core.FiscalEffectClosing,
+		MaterialityLevel: &material,
+		EffectiveAt:      "2026-01-31T12:00:00Z",
+		Source:           testAgentSource,
+		Confidence:       0.8,
+	})
+	if err != nil {
+		t.Fatalf("save material fiscal fixture: %v", err)
+	}
+	if result.Memory.Status != core.StatusPendingReview {
+		t.Fatalf("fixture status = %q, want pending_review", result.Memory.Status)
+	}
+	return ts, api, token, result.Memory
+}
+
+// TestHTTPApprovalWithFiscalScopeAndReviewChecksSucceeds (RED->GREEN, spec.md
+// "Eligible professional approves exact material envelope" through HTTP): a
+// material memory approved with a matching fiscalScope binding and explicit
+// positive reviewChecks succeeds in one transaction.
+func TestHTTPApprovalWithFiscalScopeAndReviewChecksSucceeds(t *testing.T) {
+	ts, api, token, mem := materialFiscalApprovalServer(t)
+	h1 := core.ComputeEnvelopeHash(mem)
+
+	status, raw := approvalHTTP(t, http.MethodPost,
+		ts.URL+"/accounting/memories/"+mem.Identity.ID+"/approve",
+		token, "approval-fiscal-1", map[string]any{
+			"expectedEnvelopeHash": h1,
+			"reason":               "revisado evidencia y reglas aplicables",
+			"fiscalScope":          httpFiscalScopeJSON(mem, "memory.approve", core.AuthorityLevelExecute),
+			"reviewChecks":         map[string]any{"evidenceInspected": true, "applicableRulesInspected": true},
+		})
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", status, raw)
+	}
+	var result core.ApprovalResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if result.CurrentStatus != string(core.StatusApproved) {
+		t.Fatalf("currentStatus = %q, want approved", result.CurrentStatus)
+	}
+	got, err := api.Get(mem.Identity.ID)
+	if err != nil {
+		t.Fatalf("get approved memory: %v", err)
+	}
+	if got.Status != core.StatusApproved {
+		t.Errorf("stored status = %q, want approved", got.Status)
+	}
+}
+
+// TestHTTPApprovalMaterialWithoutReviewChecksFailsClosed (TRIANGULATE, spec.md
+// "Missing or false acknowledgement is rejected"): omitting reviewChecks on a
+// material memory fails REVIEW_CHECKS_REQUIRED and leaves the memory
+// unchanged — regardless of whether fiscalScope is supplied.
+func TestHTTPApprovalMaterialWithoutReviewChecksFailsClosed(t *testing.T) {
+	ts, api, token, mem := materialFiscalApprovalServer(t)
+	h1 := core.ComputeEnvelopeHash(mem)
+
+	status, raw := approvalHTTP(t, http.MethodPost,
+		ts.URL+"/accounting/memories/"+mem.Identity.ID+"/approve",
+		token, "approval-fiscal-nochecks-1", map[string]any{
+			"expectedEnvelopeHash": h1,
+			"reason":               "sin acuse explicito",
+		})
+	if status != http.StatusForbidden && status != http.StatusUnprocessableEntity && status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want an error status; body %s", status, raw)
+	}
+	if !strings.Contains(raw, "REVIEW_CHECKS_REQUIRED") {
+		t.Fatalf("body %q must carry REVIEW_CHECKS_REQUIRED", raw)
+	}
+	got, err := api.Get(mem.Identity.ID)
+	if err != nil {
+		t.Fatalf("get memory: %v", err)
+	}
+	if got.Status != core.StatusPendingReview {
+		t.Fatalf("rejected approval mutated status: %q", got.Status)
+	}
+}
+
+// TestHTTPApprovalInvalidFiscalScopeFailsBeforeAuthentication (RED->GREEN,
+// design.md boundary matrix "HTTP approval | Raw fiscal scope + checks |
+// Bounded pre-auth binding middleware"): a malformed fiscalScope object
+// (missing required elements) fails closed with the typed
+// SCOPE_BINDING_REQUIRED/SCOPE_BINDING_INVALID code even when NO
+// Authorization header is presented — the binding decode runs BEFORE
+// authentication, so an unauthenticated request never reaches the
+// authentication membership lookup on malformed fiscal input, and never
+// returns the generic AUTHENTICATION_REQUIRED body instead.
+func TestHTTPApprovalInvalidFiscalScopeFailsBeforeAuthentication(t *testing.T) {
+	ts, _, _, mem := approvalServer(t)
+	status, raw := approvalHTTP(t, http.MethodPost,
+		ts.URL+"/accounting/memories/"+mem.Identity.ID+"/approve",
+		"", "approval-fiscal-invalid-1", map[string]any{
+			"expectedEnvelopeHash": "x",
+			"reason":               "x",
+			"fiscalScope":          map[string]any{"version": "v1"},
+		})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body %s", status, raw)
+	}
+	if strings.Contains(raw, "AUTHENTICATION_REQUIRED") {
+		t.Fatalf("binding validation must fail BEFORE authentication, not after: body %s", raw)
+	}
+	if !strings.Contains(raw, "SCOPE_BINDING") {
+		t.Fatalf("body %q must carry a SCOPE_BINDING_* code", raw)
+	}
+}
+
+// TestHTTPApprovalRejectsCallerSuppliedAuthorityWithFiscalScope: the existing
+// top-level strict-shape rejection (ADR-003) still applies unchanged when a
+// fiscalScope object is ALSO present — a top-level authority field is never
+// laundered through the new optional members.
+func TestHTTPApprovalRejectsCallerSuppliedAuthorityWithFiscalScope(t *testing.T) {
+	ts, _, token, mem := materialFiscalApprovalServer(t)
+	h1 := core.ComputeEnvelopeHash(mem)
+	status, raw := approvalHTTP(t, http.MethodPost,
+		ts.URL+"/accounting/memories/"+mem.Identity.ID+"/approve",
+		token, "approval-fiscal-authority-1", map[string]any{
+			"expectedEnvelopeHash": h1,
+			"reason":               "x",
+			"fiscalScope":          httpFiscalScopeJSON(mem, "memory.approve", core.AuthorityLevelExecute),
+			"reviewChecks":         map[string]any{"evidenceInspected": true, "applicableRulesInspected": true},
+			"actorId":              "maria.torres",
+		})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body %s", status, raw)
+	}
+	if !strings.Contains(raw, "INVALID") {
+		t.Fatalf("body %q must carry the INVALID code", raw)
+	}
+}
+
 // TestHTTPLegacyApproveDisabledByDefault: the deprecated v0.3 approve route
 // stays compiled but returns 404 when the opt-in flag is off (the daemon
 // default; removed in v0.5.0).

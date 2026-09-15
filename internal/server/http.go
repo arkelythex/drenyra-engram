@@ -318,7 +318,7 @@ func (h *HTTPServer) Handler() http.Handler {
 	// Authenticated approval (v0.4.0 Step 1, ADR-003): the principal is derived
 	// ONLY from the Authorization credential; the strict body can never supply
 	// authority (actor/actorKind/subjectId/roles are REJECTED, never ignored).
-	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.authenticate(h.handleApprovalApprove))
+	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.validateFiscalApprovalPreAuth(h.authenticate(h.handleApprovalApprove)))
 	// Review workspace (v0.9.0 — docs/architecture/review-workspace-v0.9.md):
 	// queue and detail are SCOPE-FIRST READS (the exact scope tuple comes from the
 	// query parameters — ?ruc= + ?organizationId= + ?period= — the same derivation
@@ -755,10 +755,20 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, output)
 }
 
-// approvalApproveInput is the STRICT approval body.
+// approvalApproveInput is the STRICT approval body. Delivery Slice 6 adds two
+// OPTIONAL raw members: fiscalScope (a complete strict v1 binding object,
+// decoded by core.DecodeFiscalScopeV1JSON) and reviewChecks (a presence-aware
+// {evidenceInspected, applicableRulesInspected} object, decoded by
+// decodeReviewChecksV1Strict) — both decoded and validated by the
+// validateFiscalApprovalPreAuth middleware BEFORE authentication runs. Every
+// field here remains part of the frozen strict shape: DisallowUnknownFields
+// still rejects any caller-declared authority field (actorId/actorKind/
+// subjectId/roles/identity), exactly as before.
 type approvalApproveInput struct {
-	ExpectedEnvelopeHash string `json:"expectedEnvelopeHash"`
-	Reason               string `json:"reason"`
+	ExpectedEnvelopeHash string          `json:"expectedEnvelopeHash"`
+	Reason               string          `json:"reason"`
+	FiscalScope          json.RawMessage `json:"fiscalScope,omitempty"`
+	ReviewChecks         json.RawMessage `json:"reviewChecks,omitempty"`
 }
 
 // handleApprovalApprove is the authenticated approval route.
@@ -778,16 +788,13 @@ func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Reques
 		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
 		return
 	}
-	body, err := readBounded(r)
-	if err != nil {
-		writeHTTPError(w, http.StatusRequestEntityTooLarge, "TOO_LARGE", "request body exceeds the limit")
-		return
-	}
-	var input approvalApproveInput
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil {
-		writeHTTPError(w, http.StatusBadRequest, "INVALID", "parse body: "+err.Error())
+	// The body was already read, strictly decoded and fiscal-validated by the
+	// validateFiscalApprovalPreAuth middleware BEFORE authenticate() ran
+	// (design.md boundary matrix "HTTP approval"); re-reading it here would
+	// find an already-drained r.Body.
+	pre, ok := r.Context().Value(fiscalApprovalPreAuthKey{}).(*fiscalApprovalPreAuth)
+	if !ok || pre == nil {
+		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "fiscal pre-auth validation missing")
 		return
 	}
 	// The mux route is POST /accounting/memories/{memoryId}/approve; the memory
@@ -799,9 +806,11 @@ func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Reques
 	}
 	cmd := core.ApproveMemoryCommand{
 		MemoryID:             memoryID,
-		ExpectedEnvelopeHash: input.ExpectedEnvelopeHash,
-		Reason:               input.Reason,
+		ExpectedEnvelopeHash: pre.expectedEnvelopeHash,
+		Reason:               pre.reason,
 		RequestID:            requestID,
+		ReviewChecks:         pre.reviewChecks,
+		FiscalIntent:         pre.fiscalIntent,
 	}
 	result, err := ApproveMemory(r.Context(), h.approvalStore, authz.NewApprovalPolicy(), cmd, principal)
 	if err != nil {
