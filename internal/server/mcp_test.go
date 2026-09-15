@@ -258,6 +258,126 @@ func TestMCPToolsCallSaveAndGet(t *testing.T) {
 	}
 }
 
+// mcpFiscalRuc is a checksum-VALID SUNAT RUC used by the Delivery Slice 6
+// accounting_record fiscal-scope tests (testScope's default RUC fixtures stay
+// checksum-invalid, matching the frozen legacy scope contract).
+const mcpFiscalRuc = "20100070970"
+
+// mcpFiscalScopeJSON builds the strict v1 binding document string for the
+// accounting_record fiscalScope argument, matching scope's legacy axes
+// (tenant=organizationId, organization=companyId, company=ruc —
+// internal/store's verifyFiscalIntentAxes contract).
+func mcpFiscalScopeJSON(scope core.Scope, operationType string) string {
+	binding := core.FiscalScopeBinding{
+		Version:        "v1",
+		Tenant:         scope.OrganizationID,
+		Organization:   scope.CompanyID,
+		Company:        scope.RUC,
+		FiscalPeriod:   scope.Period,
+		LedgerBook:     "purchases",
+		OperationType:  operationType,
+		SourceSnapshot: strings.Repeat("a", 64),
+		PolicyVersion:  "fiscal-v1",
+		Actor:          "agent-1",
+		AuthorityLevel: core.AuthorityLevelPrepare,
+	}
+	raw, err := json.Marshal(binding)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+// TestMCPEngramSaveWithFiscalScopeStoresLink (RED->GREEN, design.md
+// "First-slice v1 create/mutate tools take one strict binding JSON string or
+// fail closed"): a valid fiscalScope argument on engram_save (the functioning
+// memory.save MCP tool — accounting_record's own schema has no content field
+// and cannot complete a real save; see apply-progress.md) binds the saved
+// memory to the v1 fiscal scope — proven by the persisted
+// fiscal_binding_links evidence, not just a successful save.
+func TestMCPEngramSaveWithFiscalScopeStoresLink(t *testing.T) {
+	m, api := newTestMCP(t)
+	scope := testScope(mcpFiscalRuc)
+
+	response := call(t, m, 1, "tools/call", map[string]any{
+		"name": "engram_save",
+		"arguments": map[string]any{
+			"topicKey":     "fiscal/mcp/save",
+			"title":        "MCP fiscal save",
+			"kind":         "decision",
+			"fiscalEffect": "none",
+			"effectiveAt":  "2026-01-31T00:00:00Z",
+			"scope":        scope,
+			"content":      map[string]any{"what": "works", "why": "fixture", "where": "internal/server", "learned": "n/a"},
+			"source":       map[string]any{"system": "mcp", "actorId": "agent-1", "actorKind": "agent"},
+			"fiscalScope":  mcpFiscalScopeJSON(scope, "memory.save"),
+		},
+	})
+	if response.Error != nil {
+		t.Fatalf("save error: %+v", response.Error)
+	}
+	var result core.WriteResult
+	if err := json.Unmarshal([]byte(toolResultText(t, response)), &result); err != nil {
+		t.Fatalf("decode save result: %v", err)
+	}
+	if result.Outcome != core.WriteCreated {
+		t.Fatalf("outcome = %q, want created", result.Outcome)
+	}
+
+	sqlStore, ok := api.Store.(*store.SQLiteStore)
+	if !ok {
+		t.Fatalf("test API store is %T, want *store.SQLiteStore", api.Store)
+	}
+	links, err := sqlStore.FiscalBindingEvidence(context.Background(), "memory", result.Memory.Identity.ID)
+	if err != nil {
+		t.Fatalf("load fiscal binding evidence: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("fiscal binding links = %d, want exactly 1", len(links))
+	}
+}
+
+// TestMCPEngramSaveRejectsMalformedFiscalScope (TRIANGULATE, spec.md
+// "Ambiguous encoding is rejected"): a duplicate-key fiscalScope document
+// fails closed as an in-band tool error BEFORE any memory is created.
+func TestMCPEngramSaveRejectsMalformedFiscalScope(t *testing.T) {
+	m, api := newTestMCP(t)
+	scope := testScope(mcpFiscalRuc)
+	malformed := `{"version":"v1","version":"v1","tenant":"t","organization":"o","company":"20100070970","fiscalPeriod":"202401","ledgerBook":"purchases","operationType":"memory.save","sourceSnapshot":"` +
+		strings.Repeat("a", 64) + `","policyVersion":"p","actor":"a","authorityLevel":"PREPARE"}`
+
+	response := call(t, m, 1, "tools/call", map[string]any{
+		"name": "engram_save",
+		"arguments": map[string]any{
+			"topicKey":     "fiscal/mcp/save-malformed",
+			"title":        "MCP fiscal save",
+			"kind":         "decision",
+			"fiscalEffect": "none",
+			"effectiveAt":  "2026-01-31T00:00:00Z",
+			"scope":        scope,
+			"content":      map[string]any{"what": "works", "why": "fixture", "where": "internal/server", "learned": "n/a"},
+			"source":       map[string]any{"system": "mcp", "actorId": "agent-1", "actorKind": "agent"},
+			"fiscalScope":  malformed,
+		},
+	})
+	if response.Error != nil {
+		t.Fatalf("a malformed fiscalScope must be an in-band tool error, not a JSON-RPC error: %+v", response.Error)
+	}
+	var output toolCallOutput
+	if err := json.Unmarshal(response.Result, &output); err != nil {
+		t.Fatalf("decode tool result: %v", err)
+	}
+	if !output.IsError {
+		t.Fatal("isError = false, want true (malformed fiscalScope must fail closed)")
+	}
+	if len(output.Content) == 0 || !strings.Contains(output.Content[0]["text"], core.ScopeBindingInvalid) {
+		t.Fatalf("error text must carry %s: %v", core.ScopeBindingInvalid, output.Content)
+	}
+	if _, err := api.GetByTopic("fiscal/mcp/save-malformed", scope); err == nil {
+		t.Fatal("a rejected fiscalScope must not create the memory")
+	}
+}
+
 // TestMCPToolsCallLifecycle runs review → promote → supersede → compare through
 // the protocol and asserts the corrected source-check semantics end to end.
 func TestMCPToolsCallLifecycle(t *testing.T) {
@@ -358,6 +478,12 @@ func TestMCPAccountingApproveRejectsExtraArgs(t *testing.T) {
 		{"roles", map[string]any{"roles": []string{"controller"}}},
 		{"subjectId", map[string]any{"subjectId": "maria.torres"}},
 		{"unrelated extra", map[string]any{"bogus": 1}},
+		// Delivery Slice 6 regression (spec.md "Unauthenticated stdio MCP
+		// cannot approve"): accounting_approve's schema does NOT gain a
+		// fiscalScope argument even though OTHER protected tools do — a
+		// binding-shaped field is just another unknown field, rejected before
+		// ever reaching the AUTHENTICATION_REQUIRED fail-closed return.
+		{"fiscalScope", map[string]any{"fiscalScope": `{"version":"v1"}`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

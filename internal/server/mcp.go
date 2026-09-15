@@ -402,6 +402,13 @@ func ToolCatalog() []map[string]any {
 					"actorKind": stringSchema("human|agent|system (required)"),
 					"session":   stringSchema("optional session id"),
 				}, "system", "actorKind"),
+				// Delivery Slice 6 (openspec/changes/fiscal-runtime-foundations,
+				// design.md "Public contracts > MCP"): OPTIONAL strict v1 fiscal
+				// scope binding JSON string. No identity/role/assurance field is
+				// advertised — the binding is scope metadata (never authority)
+				// and a malformed/incomplete document fails closed before any
+				// mutation.
+				"fiscalScope": stringSchema(`optional strict v1 fiscal scope binding JSON: {"version":"v1","tenant":"...","organization":"...","company":"11-digit checksum-valid RUC","fiscalPeriod":"YYYYMM","ledgerBook":"...","operationType":"memory.save","sourceSnapshot":"64-hex sha256","policyVersion":"...","actor":"...","authorityLevel":"PREPARE"}`),
 			}, "topicKey", "title", "kind", "fiscalEffect", "scope", "content", "source"),
 		},
 		{
@@ -1071,9 +1078,28 @@ func (m *MCPServer) handleToolsCall(ctx context.Context, params json.RawMessage)
 
 	switch call.Name {
 	case "engram_save":
-		var input core.SaveInput
-		if err := decodeArguments(call.Arguments, &input); err != nil {
+		// Delivery Slice 6: the OPTIONAL fiscalScope member decodes ALONGSIDE
+		// core.SaveInput's own fields (embedding, not a separate top-level
+		// arguments shape) — core.SaveInput.FiscalIntent carries json:"-" so it
+		// never round-trips itself; this is the one MCP-facing seam that turns
+		// caller JSON into the pure core.FiscalWriteIntent value. A malformed
+		// binding fails closed with the SAME typed *core.FiscalScopeError the
+		// core/store boundary raises — in-band (isError=true), never a
+		// mutation.
+		var wrapper struct {
+			core.SaveInput
+			FiscalScope string `json:"fiscalScope,omitempty"`
+		}
+		if err := decodeArguments(call.Arguments, &wrapper); err != nil {
 			return nil, err
+		}
+		input := wrapper.SaveInput
+		if strings.TrimSpace(wrapper.FiscalScope) != "" {
+			binding, err := core.DecodeFiscalScopeV1JSON([]byte(wrapper.FiscalScope))
+			if err != nil {
+				return errTextContent(err), nil
+			}
+			input.FiscalIntent = &core.FiscalWriteIntent{Binding: binding}
 		}
 		// scope-param-rollout FR-SPR-2: a bound principal's save scope MUST be
 		// inside its membership before dispatch (typed denial otherwise).
