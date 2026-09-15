@@ -1095,11 +1095,11 @@ func (m *MCPServer) handleToolsCall(ctx context.Context, params json.RawMessage)
 		}
 		input := wrapper.SaveInput
 		if strings.TrimSpace(wrapper.FiscalScope) != "" {
-			binding, err := core.DecodeFiscalScopeV1JSON([]byte(wrapper.FiscalScope))
+			intent, err := core.DecodeFiscalWriteIntentJSON([]byte(wrapper.FiscalScope))
 			if err != nil {
 				return errTextContent(err), nil
 			}
-			input.FiscalIntent = &core.FiscalWriteIntent{Binding: binding}
+			input.FiscalIntent = intent
 		}
 		// scope-param-rollout FR-SPR-2: a bound principal's save scope MUST be
 		// inside its membership before dispatch (typed denial otherwise).
