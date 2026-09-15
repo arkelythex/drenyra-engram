@@ -6240,7 +6240,22 @@ func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []st
 		linked.FiscalLinks = append(append([]core.FiscalBindingLinkContribution{}, memory.FiscalLinks...), pending)
 		resultingEnvelope := core.ComputeEnvelopeHash(linked)
 		if _, err := appendFiscalBindingLinkTx(ctx, conn, "memory", memoryID, memory.FiscalLinks, *intent, resultingEnvelope, "observation", memoryID, now); err != nil {
-			return err
+			// A second addLinksBound call under the SAME binding, on the SAME
+			// subject, computes an IDENTICAL act_evidence_hash to an earlier
+			// call (ComputeActEvidenceHash folds in no ref content — see
+			// isFiscalActEvidenceConflict's doc comment) and collides on
+			// fiscal_binding_links' UNIQUE constraint. This is a foreseeable,
+			// non-adversarial pattern, not a tamper attempt: the new
+			// evidence/rule refs were ALREADY inserted above (anyInserted is
+			// already true here) and must not be discarded by rolling back
+			// this whole transaction over a redundant evidentiary-commitment
+			// mint. Skip the duplicate link (this exact binding+acknowledgement
+			// commitment is already on record for this subject) and let the
+			// batch complete; refreshEnvelopeCache below still recomputes
+			// envelope_hash from the CURRENT ref set either way.
+			if !isFiscalActEvidenceConflict(err) {
+				return err
+			}
 		}
 	}
 
