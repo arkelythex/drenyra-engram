@@ -31,7 +31,7 @@ import (
 // approveFixtureMemory approves ONE memory through the real authenticated
 // service against the exact reviewed envelope (post-link), with idempotency and
 // the review-checks for high-risk approvals.
-func approveFixtureMemory(t *testing.T, api *API, principal auth.VerifiedApprovalPrincipal, mem core.AccountingMemory, requestID string, checks core.ReviewChecks) {
+func approveFixtureMemory(t *testing.T, api *API, principal auth.VerifiedApprovalPrincipal, mem core.AccountingMemory, requestID string, checks core.ReviewChecksV1) {
 	t.Helper()
 	res, err := ApproveMemory(context.Background(), api.Store.(ApprovalStore), authz.NewApprovalPolicy(), core.ApproveMemoryCommand{
 		MemoryID:             mem.Identity.ID,
@@ -162,7 +162,7 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get compras entry: %v", err)
 	}
-	approveFixtureMemory(t, api, controller, comprasMem, "req-approve-compras", core.ReviewChecks{})
+	approveFixtureMemory(t, api, controller, comprasMem, "req-approve-compras", core.ReviewChecksV1{})
 
 	// ── 4b. Comprobante tardío F001-948 (adjustment, MATERIAL, late event) ──
 	// effectiveAt en enero, observedAt en febrero — el evento posterior que
@@ -236,7 +236,7 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 	}
 
 	// ── Aprobar el ajuste MATERIAL (anti-rubber-stamp: ambas review checks) ──
-	approveFixtureMemory(t, api, controller, lateMem, "req-approve-late", core.ReviewChecks{EvidenceInspected: true, RuleInspected: true})
+	approveFixtureMemory(t, api, controller, lateMem, "req-approve-late", core.ReviewChecksV1{EvidenceInspected: core.ReviewAcknowledgement{Present: true, Value: true}, RuleInspected: core.ReviewAcknowledgement{Present: true, Value: true}})
 
 	// ── 6. Cierre mensual + aprobación del controller → periodo cerrado ──
 	closeMem, err := CreateClose(ctx, api, fixtureScope(), core.CreateCloseInput{
@@ -251,7 +251,7 @@ func TestReconstructibleCloseFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create close: %v", err)
 	}
-	approveFixtureMemory(t, api, controller, closeMem, "req-approve-close", core.ReviewChecks{})
+	approveFixtureMemory(t, api, controller, closeMem, "req-approve-close", core.ReviewChecksV1{})
 	closure, ok := api.FindPeriodClosure(fixtureScope())
 	if !ok || closure.Status != "closed" {
 		t.Fatalf("period closure = %+v (ok=%v), want closed", closure, ok)

@@ -239,3 +239,26 @@ func ValidateReviewChecks(level *core.MaterialityLevel, checks core.ReviewChecks
 	}
 	return nil
 }
+
+// ValidateReviewChecksV1 is the Slice 5 presence-aware anti-rubber-stamp
+// clause carried through core.ApproveMemoryCommand.ReviewChecks
+// (design.md "Immutable act evidence and envelope linkage"): when the
+// declared materiality level demands the two review checks, BOTH must be
+// explicitly PRESENT and true — an omitted acknowledgement and an explicit
+// false both fail closed, exactly like ValidateReviewChecks' boolean pair,
+// but the tri-state (omitted/false/true) is preserved in the command and the
+// immutable act evidence even though the POLICY OUTCOME of omitted and false
+// is identical (proposal.md: "Omitted or false material-review
+// acknowledgements return REVIEW_CHECKS_REQUIRED"). When no check is
+// demanded, the checks are ignored (a normal approval never trips this
+// clause) — this is the SAME frozen ValidateReviewChecks outcome, restated
+// for the tri-state type.
+func ValidateReviewChecksV1(level *core.MaterialityLevel, checks core.ReviewChecksV1) error {
+	evidenceOK := checks.EvidenceInspected.Present && checks.EvidenceInspected.Value
+	ruleOK := checks.RuleInspected.Present && checks.RuleInspected.Value
+	if ReviewChecksRequired(level) && !(evidenceOK && ruleOK) {
+		return auth.New(auth.CodeReviewChecksRequired,
+			"material/critical approvals require both review checks (evidenceInspected and applicableRulesInspected)")
+	}
+	return nil
+}
