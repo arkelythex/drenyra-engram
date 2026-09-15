@@ -1159,8 +1159,8 @@ func TestCLIApproveRejectsActorFlag(t *testing.T) {
 func TestCLISeedLocalDevRejectedInProduction(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "engram.db")
 	stdout, stderr, code := runCLIEnv(t, []string{"DRENYRA_ENV=production"},
-		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", cliRucA,
-		"--ruc", cliRucA, "--subject", "maria.torres", "--roles", "controller")
+		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", fiscalCLIRuc,
+		"--ruc", fiscalCLIRuc, "--subject", "maria.torres", "--roles", "controller")
 	if code != 1 {
 		t.Fatalf("seed-local-dev in production exit = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -1187,8 +1187,8 @@ func TestCLISeedLocalDevPrintsTokenOnce(t *testing.T) {
 	dir := t.TempDir()
 	env := append([]string{"DRENYRA_ENV=local_dev"}, sessionFileEnv(dir)...)
 	stdout, stderr, code := runCLIEnv(t, env,
-		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", cliRucA,
-		"--ruc", cliRucA, "--subject", "maria.torres", "--roles", "controller,senior_accountant")
+		"auth", "seed-local-dev", "--db", db, "--tenant", cliOrganizationID, "--company", fiscalCLIRuc,
+		"--ruc", fiscalCLIRuc, "--subject", "maria.torres", "--roles", "controller,senior_accountant")
 	if code != 0 {
 		t.Fatalf("seed-local-dev failed (exit %d): %s", code, stderr)
 	}

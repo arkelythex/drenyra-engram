@@ -537,19 +537,47 @@ func cliSource(actor string) core.Source {
 	return core.Source{System: "cli", ActorID: actor, ActorKind: core.ActorKindHuman}
 }
 
+// approveV1Output is the machine-readable envelope emitted when --fiscal-scope
+// was supplied: it carries the core.ApprovalResult fields plus the v1 binding
+// version/hash and a redacted presence/value reviewChecksRecorded summary
+// (design.md "Public contracts > CLI": "V1 machine output adds binding
+// version/hash and a redacted presence/value reviewChecksRecorded summary;
+// tokens remain redacted" — this command never prints a token or credential).
+type approveV1Output struct {
+	core.ApprovalResult
+	FiscalScopeVersion   string              `json:"fiscalScopeVersion"`
+	FiscalScopeHash      string              `json:"fiscalScopeHash"`
+	ReviewChecksRecorded core.ReviewChecksV1 `json:"reviewChecksRecorded"`
+}
+
 func cmdApprove(args []string) int {
 	// The authenticated approval command (v0.4.0 Step 1, ADR-003): the principal
 	// is DERIVED from the stored CLI session (auth login), never declared by the
 	// caller — there is deliberately NO --actor flag on this command (caller-
-	// supplied authority is gone). Each invocation generates a fresh requestId.
+	// supplied authority is gone). Each invocation generates a fresh requestId
+	// unless --request-id is supplied.
+	//
+	// Delivery Slice 6 additions (design.md "Public contracts > CLI"):
+	// --fiscal-scope is the OPTIONAL strict v1 binding file (a nil intent stays
+	// the legacy path, byte-identical to pre-Slice-5 behavior); --evidence-
+	// inspected/--applicable-rules-inspected are the presence-aware material-
+	// review acknowledgements the store's tri-state policy (Slice 5,
+	// authz.ValidateReviewChecksV1) now enforces UNCONDITIONALLY for material/
+	// critical memory — they are required regardless of --fiscal-scope.
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
 	expectedEnvelope := fs.String("expected-envelope", "", "REQUIRED envelope hash the reviewer actually saw")
 	reason := fs.String("reason", "", "REQUIRED approval justification")
+	fiscalScopePath := fs.String("fiscal-scope", "", "optional strict v1 fiscal scope binding JSON file")
+	requestIDFlag := fs.String("request-id", "", "optional idempotency key (default: a freshly generated one)")
+	evidenceInspected := fs.Bool("evidence-inspected", false, "acknowledge the evidence was inspected (REQUIRED, explicit, for material/critical memory)")
+	applicableRulesInspected := fs.Bool("applicable-rules-inspected", false, "acknowledge the applicable rules were inspected (REQUIRED, explicit, for material/critical memory)")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: drenyra-engram approve <memory-id> --expected-envelope <hash> --reason <text> [--db <path>]")
+		fmt.Fprintln(fs.Output(), "usage: drenyra-engram approve <memory-id> [--fiscal-scope <binding.json>] --expected-envelope <hash> --reason <text> [--evidence-inspected] [--applicable-rules-inspected] [--request-id <id>] [--db <path>]")
 	}
-	if err := fs.Parse(reorderFlags(args, map[string]bool{"--db": true, "--expected-envelope": true, "--reason": true})); err != nil {
+	if err := fs.Parse(reorderFlags(args, map[string]bool{
+		"--db": true, "--expected-envelope": true, "--reason": true, "--fiscal-scope": true, "--request-id": true,
+	})); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
@@ -559,6 +587,22 @@ func cmdApprove(args []string) int {
 	if len(rest) != 1 || strings.TrimSpace(*expectedEnvelope) == "" || strings.TrimSpace(*reason) == "" {
 		fs.Usage()
 		return 2
+	}
+
+	// Strict binding-file input is validated BEFORE any session token load or
+	// store open (spec.md "RUC validation precedes protected work"; design.md
+	// boundary matrix "CLI approval | Binding file | Before token/auth").
+	var fiscalIntent *core.FiscalWriteIntent
+	if strings.TrimSpace(*fiscalScopePath) != "" {
+		intent, err := loadFiscalScopeBindingFile(*fiscalScopePath)
+		if err != nil {
+			return fail("%v", err)
+		}
+		fiscalIntent = intent
+	}
+	reviewChecks := core.ReviewChecksV1{
+		EvidenceInspected: reviewAckFromFlag(fs, "evidence-inspected", *evidenceInspected),
+		RuleInspected:     reviewAckFromFlag(fs, "applicable-rules-inspected", *applicableRulesInspected),
 	}
 
 	token, err := loadSessionToken()
@@ -581,20 +625,34 @@ func cmdApprove(args []string) int {
 		return fail("%v", err)
 	}
 
-	requestID, err := newRequestID()
-	if err != nil {
-		return fail("generate request id: %v", err)
+	requestID := strings.TrimSpace(*requestIDFlag)
+	if requestID == "" {
+		generated, err := newRequestID()
+		if err != nil {
+			return fail("generate request id: %v", err)
+		}
+		requestID = generated
 	}
 	result, err := server.ApproveMemory(context.Background(), st, authz.NewApprovalPolicy(), core.ApproveMemoryCommand{
 		MemoryID:             rest[0],
 		ExpectedEnvelopeHash: *expectedEnvelope,
 		Reason:               *reason,
 		RequestID:            requestID,
+		ReviewChecks:         reviewChecks,
+		FiscalIntent:         fiscalIntent,
 	}, principal)
 	if err != nil {
 		return fail("%v", err)
 	}
-	return emit(result)
+	if fiscalIntent == nil {
+		return emit(result)
+	}
+	return emit(approveV1Output{
+		ApprovalResult:       result,
+		FiscalScopeVersion:   fiscalIntent.Binding.Version,
+		FiscalScopeHash:      core.FiscalScopeHash(fiscalIntent.Binding),
+		ReviewChecksRecorded: reviewChecks,
+	})
 }
 
 func cmdReject(args []string) int {
@@ -929,7 +987,7 @@ func cmdAuthSeedLocalDev(args []string) int {
 	dbPath := fs.String("db", defaultDBPath(), "SQLite database path (default ./engram.db or $DRENYRA_ENGRAM_DB)")
 	tenant := fs.String("tenant", "", "REQUIRED tenant (organization) id")
 	company := fs.String("company", "", "REQUIRED company id")
-	ruc := fs.String("ruc", "", "REQUIRED company RUC (exactly 11 digits)")
+	ruc := fs.String("ruc", "", "REQUIRED company RUC (checksum-valid SUNAT RUC)")
 	subject := fs.String("subject", "", "REQUIRED subject (professional) id")
 	roles := fs.String("roles", "", "REQUIRED comma-separated accounting roles")
 	fs.Usage = func() {
@@ -947,8 +1005,14 @@ func cmdAuthSeedLocalDev(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if !core.IsValidRUC(*ruc) {
-		fmt.Fprintln(os.Stderr, "drenyra-engram: auth seed-local-dev: invalid RUC: expected exactly 11 digits")
+	// Delivery Slice 6 (proposal.md "Keep `auth seed-local-dev` explicitly
+	// local-development-only and checksum-valid"): the seed's OWN RUC gate now
+	// uses the canonical SUNAT checksum validator, not the frozen legacy
+	// shape-only core.IsValidRUC — a local-dev fixture must be as checksum-
+	// disciplined as any other v1-adjacent identity input, even though the
+	// company/membership rows it seeds remain the legacy (non-v1-bound) shape.
+	if !core.IsValidFiscalRUC(*ruc) {
+		fmt.Fprintln(os.Stderr, "drenyra-engram: auth seed-local-dev: invalid RUC: expected a checksum-valid SUNAT RUC")
 		return 2
 	}
 	var accountingRoles []auth.AccountingRole
