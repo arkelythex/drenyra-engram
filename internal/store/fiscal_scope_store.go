@@ -356,12 +356,15 @@ func fiscalBindingLinkContributionsTx(ctx context.Context, q Queryer, subjectTyp
 }
 
 // fiscalBindingLinkContributionsBestEffort is the tolerant read used to
-// populate AccountingMemory.FiscalLinks for envelope-hash computation
-// (readMemoryWithLinks / refreshEnvelopeCache): a read failure degrades to
-// "no links" (legacy contribution), mirroring linkRefsQuery's existing
-// tolerance for evidence/rule refs. It is NEVER used to decide whether a
-// protected mutation may proceed — that decision always uses the
-// error-propagating form above.
+// populate AccountingMemory.FiscalLinks for a read path only (readMemory /
+// readMemoryWithLinks): a read failure degrades to "no links" (legacy
+// contribution), mirroring linkRefsQuery's existing tolerance for
+// evidence/rule refs. It is NEVER used to decide whether a protected mutation
+// may proceed — that decision always uses the error-propagating form above —
+// and it is NOT used to populate what gets PERSISTED into the envelope-hash
+// cache (refreshEnvelopeCache uses the error-propagating form for exactly
+// that reason: a transient read failure there must abort the refresh, not
+// silently persist a wrong cached hash for a v1 fiscal-bound subject).
 func fiscalBindingLinkContributionsBestEffort(ctx context.Context, q Queryer, subjectType, subjectID string) []core.FiscalBindingLinkContribution {
 	links, err := fiscalBindingLinkContributionsTx(ctx, q, subjectType, subjectID)
 	if err != nil {

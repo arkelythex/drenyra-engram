@@ -3432,6 +3432,27 @@ func ruleLinksQuery(ctx context.Context, q Queryer, memoryID string) []core.Rule
 // persists it on the given connection. The persisted observations.envelope_hash
 // is a cache only: approval always recomputes H1 fresh inside its own locked
 // transaction (design §5 — the cache is not trusted).
+//
+// FiscalLinks deliberately uses the ERROR-PROPAGATING
+// fiscalBindingLinkContributionsTx, not the tolerant …BestEffort form the
+// pre-existing evidence/rule-ref reads above use: on a v18+ schema, a
+// transient read failure on fiscal_binding_links (SQLITE_BUSY, an I/O
+// hiccup) must abort this refresh (the caller's transaction then rolls back,
+// per every current caller already checking this error) rather than silently
+// persist an envelope hash computed as if the subject had no fiscal links.
+// That failure mode would write a masked, incorrect cache value for exactly
+// the class of record (v1 fiscal-bound memories) this feature exists to make
+// tamper-evident, defeating the point of the linkage it caches.
+//
+// A pre-v18 schema (fiscal_binding_links does not exist AT ALL — e.g. a store
+// opened before the v18 migration has run) is a DIFFERENT, non-transient
+// condition and is deliberately NOT treated as a failure: fiscalLinksTable
+// checks the table's existence via sqlite_master first, and its absence
+// degrades to "no links" exactly as the legacy best-effort read always did,
+// so this fix changes nothing for a pre-v18 store. Only a genuine query
+// failure against an EXISTING table now aborts the refresh. A v18+ subject
+// with genuinely zero links is likewise unaffected: the query returns an
+// empty result with no error.
 func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error {
 	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID), s.encMaster)
 	if err != nil {
@@ -3440,12 +3461,34 @@ func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memor
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memoryID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memoryID))
 	memory.RuleLinks = ruleLinksQuery(ctx, q, memoryID)
-	memory.FiscalLinks = fiscalBindingLinkContributionsBestEffort(ctx, q, "memory", memoryID)
+	if fiscalLinksTableExists(ctx, q) {
+		fiscalLinks, err := fiscalBindingLinkContributionsTx(ctx, q, "memory", memoryID)
+		if err != nil {
+			return fmt.Errorf("persistence error: refresh envelope cache fiscal links: %w", err)
+		}
+		memory.FiscalLinks = fiscalLinks
+	}
 	hash := core.ComputeEnvelopeHash(memory)
 	if _, err := q.ExecContext(ctx, `UPDATE observations SET envelope_hash = ? WHERE id = ?`, hash, memoryID); err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache update: %w", err)
 	}
 	return nil
+}
+
+// fiscalLinksTableExists reports whether fiscal_binding_links exists in the
+// schema reachable through q, via a single sqlite_master catalog lookup on
+// the SAME connection/transaction (never s.db directly — q may be mid
+// transaction). This is the unambiguous, driver-upgrade-safe signal for "pre-
+// v18 schema": SQLite's own error for a missing table is the generic
+// SQLITE_ERROR(1) result code, indistinguishable by code alone from any other
+// SQL logic error, so a catalog check is used instead of sniffing the error.
+// Any error from the catalog lookup itself (vanishingly rare) is treated as
+// "table not confirmed present", the conservative choice matching the legacy
+// degrade-to-no-links behavior this helper exists to preserve.
+func fiscalLinksTableExists(ctx context.Context, q Queryer) bool {
+	var name string
+	err := q.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fiscal_binding_links'`).Scan(&name)
+	return err == nil
 }
 
 // approveCommandHash is the canonical idempotency command hash: SHA-256 hex of
