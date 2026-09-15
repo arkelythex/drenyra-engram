@@ -4,9 +4,9 @@
 // helper (openspec/changes/fiscal-runtime-foundations, design.md "Public
 // contracts > CLI"):
 //
-//   - loadFiscalScopeBindingFile reads and strictly decodes one --fiscal-scope
-//     binding file using the SAME canonical decoder the core/store boundary
-//     uses (internal/core.DecodeFiscalScopeV1JSON) — the CLI keeps no private,
+//   - loadFiscalScopeBindingFile reads one --fiscal-scope binding file and
+//     hands the bytes to the SAME shared seam the HTTP and MCP adapters use
+//     (internal/core.DecodeFiscalWriteIntentJSON) — the CLI keeps no private,
 //     weaker parser. A read or decode failure fails closed BEFORE any session
 //     token is loaded or store opened (spec.md "RUC validation precedes
 //     protected work"; design.md boundary matrix "CLI approval | Binding
@@ -36,11 +36,7 @@ func loadFiscalScopeBindingFile(path string) (*core.FiscalWriteIntent, error) {
 	if err != nil {
 		return nil, err
 	}
-	binding, err := core.DecodeFiscalScopeV1JSON(raw)
-	if err != nil {
-		return nil, err
-	}
-	return &core.FiscalWriteIntent{Binding: binding}, nil
+	return core.DecodeFiscalWriteIntentJSON(raw)
 }
 
 // reviewAckFromFlag builds the presence-aware core.ReviewAcknowledgement for

@@ -318,7 +318,7 @@ func (h *HTTPServer) Handler() http.Handler {
 	// Authenticated approval (v0.4.0 Step 1, ADR-003): the principal is derived
 	// ONLY from the Authorization credential; the strict body can never supply
 	// authority (actor/actorKind/subjectId/roles are REJECTED, never ignored).
-	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.validateFiscalApprovalPreAuth(h.authenticate(h.handleApprovalApprove)))
+	mux.HandleFunc("POST /accounting/memories/{memoryId}/approve", h.approvalRoute())
 	// Review workspace (v0.9.0 — docs/architecture/review-workspace-v0.9.md):
 	// queue and detail are SCOPE-FIRST READS (the exact scope tuple comes from the
 	// query parameters — ?ruc= + ?organizationId= + ?period= — the same derivation
@@ -757,9 +757,9 @@ func (h *HTTPServer) handleSupersede(w http.ResponseWriter, r *http.Request) {
 
 // approvalApproveInput is the STRICT approval body. Delivery Slice 6 adds two
 // OPTIONAL raw members: fiscalScope (a complete strict v1 binding object,
-// decoded by core.DecodeFiscalScopeV1JSON) and reviewChecks (a presence-aware
-// {evidenceInspected, applicableRulesInspected} object, decoded by
-// decodeReviewChecksV1Strict) — both decoded and validated by the
+// decoded by core.DecodeFiscalWriteIntentJSON) and reviewChecks (a
+// presence-aware {evidenceInspected, applicableRulesInspected} object, decoded
+// by core.DecodeReviewChecksV1JSON) — both decoded and validated by the
 // validateFiscalApprovalPreAuth middleware BEFORE authentication runs. Every
 // field here remains part of the frozen strict shape: DisallowUnknownFields
 // still rejects any caller-declared authority field (actorId/actorKind/
@@ -771,8 +771,11 @@ type approvalApproveInput struct {
 	ReviewChecks         json.RawMessage `json:"reviewChecks,omitempty"`
 }
 
-// handleApprovalApprove is the authenticated approval route.
-func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Request) {
+// handleApprovalApprove is the authenticated approval route. It takes the
+// already-validated body as an argument (approvalRoute is the only composition
+// that can produce one), so it never re-reads the drained r.Body and there is
+// no "validation did not run" state left to check at runtime.
+func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Request, approval approvalRequest) {
 	principal, err := RequirePrincipal(r.Context())
 	if err != nil {
 		if rejected := AuthErrorFromContext(r.Context()); rejected != nil {
@@ -788,15 +791,6 @@ func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Reques
 		writeHTTPError(w, http.StatusBadRequest, "INVALID", "Idempotency-Key header is required")
 		return
 	}
-	// The body was already read, strictly decoded and fiscal-validated by the
-	// validateFiscalApprovalPreAuth middleware BEFORE authenticate() ran
-	// (design.md boundary matrix "HTTP approval"); re-reading it here would
-	// find an already-drained r.Body.
-	pre, ok := r.Context().Value(fiscalApprovalPreAuthKey{}).(*fiscalApprovalPreAuth)
-	if !ok || pre == nil {
-		writeHTTPError(w, http.StatusInternalServerError, "INTERNAL", "fiscal pre-auth validation missing")
-		return
-	}
 	// The mux route is POST /accounting/memories/{memoryId}/approve; the memory
 	// id is the single path segment between the fixed prefixes/suffixes.
 	memoryID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/accounting/memories/"), "/approve")
@@ -806,11 +800,11 @@ func (h *HTTPServer) handleApprovalApprove(w http.ResponseWriter, r *http.Reques
 	}
 	cmd := core.ApproveMemoryCommand{
 		MemoryID:             memoryID,
-		ExpectedEnvelopeHash: pre.expectedEnvelopeHash,
-		Reason:               pre.reason,
+		ExpectedEnvelopeHash: approval.expectedEnvelopeHash,
+		Reason:               approval.reason,
 		RequestID:            requestID,
-		ReviewChecks:         pre.reviewChecks,
-		FiscalIntent:         pre.fiscalIntent,
+		ReviewChecks:         approval.reviewChecks,
+		FiscalIntent:         approval.fiscalIntent,
 	}
 	result, err := ApproveMemory(r.Context(), h.approvalStore, authz.NewApprovalPolicy(), cmd, principal)
 	if err != nil {
