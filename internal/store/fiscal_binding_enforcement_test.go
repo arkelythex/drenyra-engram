@@ -79,7 +79,7 @@ func TestSaveWithFiscalIntentPersistsImmutableActEvidence(t *testing.T) {
 	s = reopenTestStoreMode(t, s, path, "enforce")
 	bound := validInput("topic/fiscal/bound", "bound save")
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	boundSaved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -178,7 +178,7 @@ func TestSupersedeDirectBypassOfV1BoundSubjectDenied(t *testing.T) {
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-bypass", "v1 subject")
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -225,7 +225,7 @@ func TestSupersedeMismatchedFiscalIntentDenied(t *testing.T) {
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-mismatch", "v1 subject")
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -266,7 +266,7 @@ func TestSupersedeWithMatchingFiscalIntentAppendsSecondLink(t *testing.T) {
 	scope := testScope(fiscalRucA)
 	bound := validInput("topic/fiscal/supersede-ok", "v1 subject")
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -495,7 +495,7 @@ func TestStoreObjectWithFiscalIntentPersistsActEvidence(t *testing.T) {
 		t.Fatalf("bindings=%d links=%d, want 0/0 on rejection", bindings, links)
 	}
 
-	goodIntent := fiscalIntentFor("evidence.store", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	goodIntent := fiscalIntentFor("evidence.store", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	result, err := s.StoreObjectWithFiscalIntent(context.Background(), input, goodIntent)
 	if err != nil {
 		t.Fatalf("bound object store: %v", err)
@@ -528,7 +528,7 @@ func TestBoundSaveIntoClosedPeriodFailsWithZeroFiscalState(t *testing.T) {
 	s = reopenTestStoreMode(t, s, path, "enforce")
 	input := validInput("topic/fiscal/closed-period", "must not land")
 	input.Scope = scope
-	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	_, err := s.Save(input)
 	if err == nil || !strings.Contains(err.Error(), "PERIOD_CLOSED") {
 		t.Fatalf("error = %v, want PERIOD_CLOSED", err)
@@ -579,7 +579,7 @@ func TestFiscalBindingEvidenceResolvesAuditAnchorForBoundSubject(t *testing.T) {
 	bound := validInput("topic/fiscal/evidence-bound", "bound")
 	scope := testScope(fiscalRucA)
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -621,14 +621,14 @@ func TestFiscalBindingEvidenceDetectsUnresolvedAuditAnchor(t *testing.T) {
 	bound := validInput("topic/fiscal/evidence-tampered", "bound")
 	scope := testScope(fiscalRucA)
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(bound)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
 	}
 	memoryID := saved.Memory.Identity.ID
 
-	binding := fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod).Binding
+	binding := fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod).Binding
 	bindingHash := core.FiscalScopeHash(binding)
 	// reviewedEnvelopeHash MUST differ from the first (real) act's ("") so this
 	// synthetic second act's act_evidence_hash differs too — otherwise it

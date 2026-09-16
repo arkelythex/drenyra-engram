@@ -404,7 +404,11 @@ func httpFiscalScopeJSON(mem core.AccountingMemory, operationType string, author
 		OperationType:  operationType,
 		SourceSnapshot: strings.Repeat("a", 64),
 		PolicyVersion:  "fiscal-v1",
-		Actor:          "controller-1",
+		// seedApprovalIdentity always seeds SubjectID "maria.torres" — the
+		// binding's Actor must match the trusted principal performing the
+		// approve for a genuinely successful case (verifyFiscalIntentAxes now
+		// compares Binding.Actor against principal.SubjectID()).
+		Actor:          "maria.torres",
 		AuthorityLevel: authorityLevel,
 	}
 }
