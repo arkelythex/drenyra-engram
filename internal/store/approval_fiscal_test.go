@@ -97,13 +97,14 @@ func TestApproveMemoryWithFiscalIntentSucceedsAndPersistsActEvidence(t *testing.
 	}
 	id := saved.Memory.Identity.ID
 	h1 := currentEnvelope(saved)
-	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+	principal := controllerPrincipal(t)
+	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, principal.SubjectID(), fiscalRucA, testPeriod)
 
 	s = reopenTestStoreMode(t, s, path, "enforce")
 	res, err := s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed evidence and applicable rules",
 		RequestID: "req-fiscal-approve-ok", ReviewChecks: bothTrueChecks(), FiscalIntent: intent,
-	}, controllerPrincipal(t), authz.NewApprovalPolicy())
+	}, principal, authz.NewApprovalPolicy())
 	if err != nil {
 		t.Fatalf("fiscal-bound material approval must succeed: %v", err)
 	}
@@ -165,14 +166,15 @@ func TestApproveMemoryFiscalReviewChecksTriState(t *testing.T) {
 			}
 			id := saved.Memory.Identity.ID
 			h1 := currentEnvelope(saved)
-			intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+			principal := controllerPrincipal(t)
+			intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, principal.SubjectID(), fiscalRucA, testPeriod)
 
 			s = reopenTestStoreMode(t, s, path, "enforce")
 			_, err = s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 				MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed",
 				RequestID: "req-" + c.name, ReviewChecks: core.ReviewChecksV1{EvidenceInspected: c.evidence, RuleInspected: c.rule},
 				FiscalIntent: intent,
-			}, controllerPrincipal(t), authz.NewApprovalPolicy())
+			}, principal, authz.NewApprovalPolicy())
 
 			if c.wantSuccess {
 				if err != nil {
@@ -274,7 +276,7 @@ func TestApproveMemoryDirectBypassDeniedForV1BoundMemory(t *testing.T) {
 	s := newTestStoreMode(t, "enforce")
 	seedAcmeIdentity(t, s, []auth.AccountingRole{auth.RoleController})
 	input := fiscalMaterialGatedInput("topic/fiscal/approve-bypass", "v1-bound at save time")
-	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	saved, err := s.Save(input)
 	if err != nil {
 		t.Fatalf("bound save: %v", err)
@@ -343,11 +345,12 @@ func TestApproveCloseMemoryRequiresCloseApproveOperationToken(t *testing.T) {
 		t.Fatalf("error = %v, want SCOPE_BINDING_INVALID/SCOPE_MISMATCH", err)
 	}
 
-	rightToken := fiscalIntentFor("close.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+	closePrincipal := controllerPrincipal(t)
+	rightToken := fiscalIntentFor("close.approve", core.AuthorityLevelExecute, closePrincipal.SubjectID(), fiscalRucA, testPeriod)
 	res, err := s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "cierre revisado",
 		RequestID: "req-close-right-token", ReviewChecks: bothTrueChecks(), FiscalIntent: rightToken,
-	}, controllerPrincipal(t), authz.NewApprovalPolicy())
+	}, closePrincipal, authz.NewApprovalPolicy())
 	if err != nil {
 		t.Fatalf("close.approve token must succeed: %v", err)
 	}
@@ -382,7 +385,7 @@ func TestApproveMemoryFiscalIdempotencyConflictOnDifferentBinding(t *testing.T) 
 	policy := authz.NewApprovalPolicy()
 
 	s = reopenTestStoreMode(t, s, path, "enforce")
-	first := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+	first := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, principal.SubjectID(), fiscalRucA, testPeriod)
 	if _, err := s.ApproveMemory(context.Background(), core.ApproveMemoryCommand{
 		MemoryID: id, ExpectedEnvelopeHash: h1, Reason: "reviewed",
 		RequestID: "req-conflict", ReviewChecks: bothTrueChecks(), FiscalIntent: first,
@@ -426,7 +429,7 @@ func TestApproveMemoryFiscalIdempotentReplayReturnsStoredResult(t *testing.T) {
 	h1 := currentEnvelope(saved)
 	principal := controllerPrincipal(t)
 	policy := authz.NewApprovalPolicy()
-	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, "controller-1", fiscalRucA, testPeriod)
+	intent := fiscalIntentFor("memory.approve", core.AuthorityLevelExecute, principal.SubjectID(), fiscalRucA, testPeriod)
 
 	s = reopenTestStoreMode(t, s, path, "enforce")
 

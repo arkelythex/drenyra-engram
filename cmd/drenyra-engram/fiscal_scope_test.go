@@ -95,7 +95,7 @@ func fiscalScopeFixtureJSON(ruc, period, operationType, authorityLevel string) s
 		"operationType": %q,
 		"sourceSnapshot": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"policyVersion": "fiscal-v1",
-		"actor": "controller-1",
+		"actor": "maria.torres",
 		"authorityLevel": %q
 	}`, cliOrganizationID, ruc, ruc, period, operationType, authorityLevel)
 }

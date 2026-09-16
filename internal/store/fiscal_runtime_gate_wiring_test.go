@@ -61,7 +61,7 @@ func TestEnforceModeAllowsV1DeniesLegacyThroughSave(t *testing.T) {
 
 	bound := validInput("topic/fiscal/gate-wiring-v1", "v1 write under enforce")
 	bound.Scope = scope
-	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "agent-1", fiscalRucA, testPeriod)
+	bound.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
 	if _, err := s.Save(bound); err != nil {
 		t.Fatalf("v1 save under enforce must succeed: %v", err)
 	}

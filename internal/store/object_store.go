@@ -140,7 +140,7 @@ func (s *SQLiteStore) storeObject(ctx context.Context, input core.ObjectStoreInp
 	// connection is even acquired — before any reservation, byte write or
 	// object access (spec.md "invalid input before reservation/object
 	// access").
-	if err := verifyFiscalIntentAxes(intent, "evidence.store", input.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(intent, "evidence.store", input.Scope, input.Source.ActorID); err != nil {
 		return core.ObjectStoreResult{}, err
 	}
 	objectID := core.ComputeObjectID(input.Bytes)

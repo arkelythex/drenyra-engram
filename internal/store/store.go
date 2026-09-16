@@ -2710,7 +2710,7 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 	if input.CloseSnapshot != nil {
 		expectedFiscalOperation = "close.create"
 	}
-	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope, input.Source.ActorID); err != nil {
 		return core.WriteResult{}, err
 	}
 	// design.md "Runtime and downgrade modes" / proposal.md "protected fiscal
@@ -3840,10 +3840,19 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	if core.IsCloseMemory(memory) {
 		expectedFiscalOperation = "close.approve"
 	}
+	// R3-1 fix: the bypass guard must decide from an error-propagating read of
+	// fiscal_binding_links, never from readMemoryWithLinks' tolerant
+	// best-effort population (a transient read failure there must abort the
+	// approval, not silently wave an already-bound subject through as legacy).
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, conn, cmd.MemoryID)
+	if err != nil {
+		return core.ApprovalResult{}, err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, cmd.FiscalIntent); err != nil {
 		return core.ApprovalResult{}, err
 	}
-	if err := verifyFiscalIntentAxes(cmd.FiscalIntent, expectedFiscalOperation, memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(cmd.FiscalIntent, expectedFiscalOperation, memory.Scope, principal.SubjectID()); err != nil {
 		return core.ApprovalResult{}, err
 	}
 
@@ -5632,9 +5641,16 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	// caller (nil intent) or a mismatched binding against an already
 	// v1-bound subject fails closed here, before the closed-period gate or
 	// any exec.
-	if err := verifyFiscalIntentAxes(meta.FiscalIntent, "memory.supersede", memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(meta.FiscalIntent, "memory.supersede", memory.Scope, meta.Actor); err != nil {
 		return core.AccountingMemory{}, err
 	}
+	// R3-1 fix: re-verify with the error-propagating read before the bypass
+	// guard — see verifiedFiscalLinksOrAbort's doc comment.
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, tx, memoryID)
+	if err != nil {
+		return core.AccountingMemory{}, err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, meta.FiscalIntent); err != nil {
 		return core.AccountingMemory{}, err
 	}
@@ -6183,9 +6199,20 @@ func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []st
 		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
 	}
 	// Slice 3 fiscal guard — before the closed-period gate and any exec.
-	if err := verifyFiscalIntentAxes(intent, operation, memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(intent, operation, memory.Scope, actor); err != nil {
 		return err
 	}
+	// R3-1 fix: re-verify with the error-propagating read before the bypass
+	// guard — see verifiedFiscalLinksOrAbort's doc comment. Without this, a
+	// transient fiscal_binding_links read failure makes an already-bound
+	// subject look legacy here, and — because the link-append block below is
+	// itself gated on intent != nil — a nil-intent caller then proceeds to
+	// insert new refs with NO fiscal enforcement and NO error at all.
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, conn, memoryID)
+	if err != nil {
+		return err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, intent); err != nil {
 		return err
 	}
@@ -7347,6 +7374,16 @@ type DoctorReport struct {
 	ObjectsRoot      string                `json:"objectsRoot"`
 	ObjectFindings   []ObjectDoctorFinding `json:"objectFindings,omitempty"`
 
+	// FiscalRuntimeMode is the DRENYRA_FISCAL_RUNTIME_MODE resolved once at
+	// Open (design.md "Runtime and downgrade modes"). The only other
+	// production signal for this value is a single stderr line at store-open
+	// time (openStoreWithRoot) — invisible to a daemonized serve/mcp process
+	// that does not capture startup stderr. Surfacing it here gives every
+	// doctor call an ONGOING, queryable signal for the entire process
+	// lifetime, closing that observability gap without weakening the gate
+	// itself (read-only).
+	FiscalRuntimeMode string `json:"fiscalRuntimeMode"`
+
 	// Purge lifecycle table counts (design §13.3): every v10–v12 lifecycle
 	// table — the hold ledger, the purge aggregate/decision/event/projection
 	// tables and the immutable execution-attempt ledger.
@@ -7416,9 +7453,10 @@ func (s *SQLiteStore) Doctor(ctx context.Context, opts DoctorOptions) (DoctorRep
 	}
 
 	report := DoctorReport{
-		SchemaVersion: version,
-		Storage:       "sqlite (modernc.org/sqlite)",
-		DBPath:        s.dbPath(),
+		SchemaVersion:     version,
+		Storage:           "sqlite (modernc.org/sqlite)",
+		DBPath:            s.dbPath(),
+		FiscalRuntimeMode: string(s.fiscalRuntimeMode),
 	}
 
 	// G-6 health checks (FZ-4/FR-4). Routine = quick_check then

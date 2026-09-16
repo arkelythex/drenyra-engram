@@ -440,12 +440,19 @@ func storeFiscalScopeBindingTx(ctx context.Context, q Queryer, binding core.Fisc
 
 // verifyFiscalIntentAxes validates a caller-supplied intent's SHAPE (a nil
 // intent is always accepted — the legacy path) and, when present, that it
-// names the exact protected boundary being invoked and that its trusted
-// company axes (tenant, organization, company/RUC, fiscal period) agree with
-// the subject's OWN immutable scope. It never inspects or requires any prior
-// binding history — operationType/actor/authorityLevel MAY legitimately
-// differ across acts on the same subject (design.md).
-func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation string, scope core.Scope) error {
+// names the exact protected boundary being invoked, that its trusted company
+// axes (tenant, organization, company/RUC, fiscal period) agree with the
+// subject's OWN immutable scope, and that its Actor matches expectedActor —
+// the trusted provenance identity performing THIS act (input.Source.ActorID
+// for Save/Supersede/link/store paths, the verified principal's SubjectID()
+// for ApproveMemory). A caller-supplied actor never creates authority
+// (proposal.md capability 2, design.md's trusted-comparison table): without
+// this check any authenticated caller could stamp an arbitrary Actor into the
+// immutable fiscal audit trail. It never inspects or requires any prior
+// binding history — operationType/authorityLevel MAY legitimately differ
+// across acts on the same subject (design.md); actor is compared per-act
+// against the trusted identity, never against history.
+func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation string, scope core.Scope, expectedActor string) error {
 	if intent == nil {
 		return nil
 	}
@@ -460,6 +467,9 @@ func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation st
 		intent.Binding.Company != scope.RUC ||
 		(scope.Period != "" && intent.Binding.FiscalPeriod != scope.Period) {
 		return &core.FiscalScopeError{Code: core.ScopeMismatch, Message: "binding does not match the trusted scope axes"}
+	}
+	if intent.Binding.Actor != expectedActor {
+		return &core.FiscalScopeError{Code: core.ScopeMismatch, Message: "binding actor does not match the trusted provenance actor"}
 	}
 	return nil
 }
@@ -479,6 +489,29 @@ func requireFiscalIntentForBoundSubject(existing []core.FiscalBindingLinkContrib
 		return &core.FiscalScopeError{Code: core.ScopeBindingRequired, Message: "a v1-bound subject requires the complete current binding"}
 	}
 	return nil
+}
+
+// verifiedFiscalLinksOrAbort re-reads a subject's fiscal binding links with
+// the ERROR-PROPAGATING form (fiscalBindingLinkContributionsTx), on the
+// caller's own connection/transaction, immediately before a write path
+// evaluates requireFiscalIntentForBoundSubject / checkFiscalRuntimeGate.
+// Those two guards decide enforcement from "does this subject have existing
+// links", so feeding them memory.FiscalLinks as populated by the read path's
+// TOLERANT fiscalBindingLinkContributionsBestEffort (which degrades ANY
+// transient read failure to nil/"no links") would silently wave an
+// already-bound subject through as legacy — a complete, undetected bypass of
+// fiscal enforcement on a transient error, not a deliberate legacy write.
+// This mirrors the precedent already established for refreshEnvelopeCache:
+// a read failure here aborts the write instead of being tolerated.
+func verifiedFiscalLinksOrAbort(ctx context.Context, q Queryer, subjectID string) ([]core.FiscalBindingLinkContribution, error) {
+	if !fiscalLinksTableExists(ctx, q) {
+		return nil, nil
+	}
+	links, err := fiscalBindingLinkContributionsTx(ctx, q, "memory", subjectID)
+	if err != nil {
+		return nil, fmt.Errorf("persistence error: verify fiscal binding links: %w", err)
+	}
+	return links, nil
 }
 
 // checkFiscalRuntimeGate enforces DRENYRA_FISCAL_RUNTIME_MODE (design.md
