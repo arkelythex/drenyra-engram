@@ -279,6 +279,7 @@ company-B memory — this is a tested invariant, not a filter.
 - [contracts/](contracts/README.md) — the frozen contract set (memory, scope, lifecycle, provenance, receipts, verification, approval, closing)
 - [ROADMAP.md](ROADMAP.md) — delivered milestones and the v1.0 gate
 - [docs/due-diligence/2026-08-product-architecture-audit.md](docs/due-diligence/2026-08-product-architecture-audit.md) — evidence-based product audit
+- [Ecosystem diagram convention](https://github.com/arkelythex/drenyra-ai/blob/main/docs/documentation-standard.md#5-diagrams) — how diagrams are authored, validated and delivered
 
 ## Ecosystem
 
