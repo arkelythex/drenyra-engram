@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Drenyra Engram — Layer Model",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/arkelythex/drenyra-engram",
+      "provider": "github",
+      "revision": "76772a188c9623f8b64d7e3f2b03b31b3ba3c43b"
+    },
+    "views": [
+      {
+        "id": "top-to-bottom",
+        "label": "Top to bottom",
+        "focus": ["surfaces", "domain", "core", "store", "objects"],
+        "note": "Surfaces are adapters over the same domain services — the principal is derived only from the session."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "surfaces",
+      "type": "frontend",
+      "label": "Surfaces",
+      "sublabel": "mcp / http / cli",
+      "sources": [
+        { "path": "internal/server/http.go", "label": "http surface" },
+        { "path": "cmd/drenyra-engram/main.go", "label": "cli surface" }
+      ],
+      "pos": [40, 140],
+      "size": [190, 120]
+    },
+    {
+      "id": "domain",
+      "type": "backend",
+      "label": "Domain services",
+      "sublabel": "review, rules, judgments",
+      "sources": [
+        { "path": "internal/core/review.go", "label": "review" },
+        { "path": "internal/core/judgment.go", "label": "judgments" },
+        { "path": "internal/search/search.go", "label": "search" }
+      ],
+      "pos": [300, 140],
+      "size": [190, 120]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "Core",
+      "sublabel": "domain model + verification",
+      "sources": [
+        { "path": "internal/core/approval.go", "label": "core package" }
+      ],
+      "pos": [560, 140],
+      "size": [190, 120]
+    },
+    {
+      "id": "store",
+      "type": "database",
+      "label": "Store",
+      "sublabel": "SQLite, single-writer",
+      "sources": [
+        { "path": "internal/store/crypto.go", "label": "store package" }
+      ],
+      "pos": [820, 140],
+      "size": [190, 120]
+    },
+    {
+      "id": "objects",
+      "type": "database",
+      "label": "Objects",
+      "sublabel": "WORM, content-addressed",
+      "sources": [
+        { "path": "internal/store/object_store.go", "label": "object store" },
+        { "path": "internal/core/evidence_object.go", "label": "evidence object" }
+      ],
+      "pos": [1080, 140],
+      "size": [190, 120]
+    }
+  ],
+  "connections": [
+    { "from": "surfaces", "to": "domain" },
+    { "from": "domain", "to": "core" },
+    { "from": "core", "to": "store" },
+    { "from": "store", "to": "objects" }
+  ]
+}

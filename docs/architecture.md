@@ -63,17 +63,8 @@ gate) → `approved | rejected | returned`; `active|approved → voided|supersed
 
 ## Layer model
 
-```text
-mcp / http / cli                      surfaces (adapters — never invent authority)
-        │
-review / rules / judgments / search  domain services
-        │
-core                                  pure domain model + verification layers
-        │
-store                                 SQLite (immutable history, single-writer)
-        │
-objects/                              WORM evidence bytes (content-addressed)
-```
+![Drenyra Engram — Layer Model](diagrams/drenyra-engram-layers.architecture.light.svg#gh-light-mode-only)
+![Drenyra Engram — Layer Model](diagrams/drenyra-engram-layers.architecture.dark.svg#gh-dark-mode-only)
 
 - **Scope is structural.** `organization/company/RUC/period` lives in the
   schema and in every query — a company-A query can never see company-B
