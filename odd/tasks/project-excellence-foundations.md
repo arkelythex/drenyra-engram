@@ -111,3 +111,18 @@ evidence.
 None outstanding for this feature. Follow-up documentation work (case-collision rename, orphaned-doc linking)
 belongs to `docs-product-quality-v2.md` (DOC-005/DOC-007), which still carries its own "do not commit or push"
 constraint from the user's prior session and should be resumed under its own name, not this one.
+
+## Verification evidence
+
+- Branch: `chore/project-excellence-foundations` (created off `feat/fiscal-runtime-foundations-slice-6` @
+  `f8c9b0a`, so as not to disturb its uncommitted in-progress state).
+- Commit `798d030`: `chore(odd): add engineering philosophy and excellence-foundations tracking` — only
+  `odd/PHILOSOPHY.md` and `odd/tasks/project-excellence-foundations.md` staged; unrelated modified/untracked
+  files (`README.md`, `internal/store/doctor_test.go`, `internal/store/fiscal_binding_enforcement_test.go`,
+  the three `docs/*.md` files from `docs-product-quality-v2`) were left untouched, confirmed via `git status`
+  before and after the commit.
+- `gentle-ai review assess --base-ref f8c9b0a... --committed-only --json` → `"risk": "passive"`,
+  `"review_due": false`, `"review_due_reason": "passive"` — no reviewer/consent ceremony required for this
+  work unit per the RDD contract.
+- CLEAN-001 verified via `git status --short` immediately after deleting the binary/`dist/`/`.ruff_cache/`:
+  zero diff produced, confirming these were purely local, gitignored build byproducts.
