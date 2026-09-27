@@ -668,3 +668,63 @@ func TestFiscalBindingEvidenceDetectsUnresolvedAuditAnchor(t *testing.T) {
 		t.Fatalf("layer status = %s, want failed for an unresolved audit anchor", layer.Status)
 	}
 }
+
+// TestSaveFiscalIntentActorMismatchDenied proves R1-fiscal-actor-forgery is
+// closed: a FiscalIntent whose Binding.Actor does not match the trusted
+// provenance actor (input.Source.ActorID for Save) is rejected BEFORE
+// anything is persisted, exactly like an axis mismatch. Without this check
+// any caller could stamp an arbitrary Actor into the immutable fiscal audit
+// trail regardless of who actually performed the act.
+func TestSaveFiscalIntentActorMismatchDenied(t *testing.T) {
+	s := newTestStoreMode(t, "enforce")
+	input := validInput("topic/fiscal/actor-forgery", "forged actor")
+	input.Scope = testScope(fiscalRucA)
+	// validInput's Source is testAgentSource (ActorID "test-agent"); the
+	// binding claims a DIFFERENT actor performed the act.
+	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, "someone-else", fiscalRucA, testPeriod)
+
+	if _, err := s.Save(input); err == nil {
+		t.Fatal("a FiscalIntent whose Binding.Actor does not match the trusted provenance actor must be denied")
+	} else if !strings.Contains(err.Error(), core.ScopeMismatch) {
+		t.Fatalf("error = %v, want SCOPE_MISMATCH", err)
+	}
+	if bindings, links := fiscalRowCounts(t, s); bindings != 0 || links != 0 {
+		t.Fatalf("bindings=%d links=%d, want 0/0 — a forged-actor intent must persist nothing", bindings, links)
+	}
+}
+
+// TestAddEvidenceLinksBoundAbortsOnFiscalLinkReadFailure proves R3-1 is
+// closed for the addLinksBound entry point (the finding's worst case: because
+// the link-append block is gated on intent != nil, a nil-intent caller whose
+// bypass check was wrongly waved through would otherwise insert new refs with
+// NO fiscal enforcement and NO error at all). Mirrors the precedent in
+// envelope_cache_fiscal_test.go: an EXISTING fiscal_binding_links table whose
+// read genuinely fails (recreated without the selected columns, the same
+// observable symptom as a transient failure) must abort the write, never
+// silently treat the subject as legacy/unbound.
+func TestAddEvidenceLinksBoundAbortsOnFiscalLinkReadFailure(t *testing.T) {
+	s := newTestStoreMode(t, "enforce")
+	input := validInput("topic/fiscal/read-failure-bypass", "v1 subject")
+	input.Scope = testScope(fiscalRucA)
+	input.FiscalIntent = fiscalIntentFor("memory.save", core.AuthorityLevelPrepare, testAgentSource.ActorID, fiscalRucA, testPeriod)
+	saved, err := s.Save(input)
+	if err != nil {
+		t.Fatalf("bound save: %v", err)
+	}
+	memoryID := saved.Memory.Identity.ID
+
+	if _, err := s.db.Exec(`DROP TABLE fiscal_binding_links`); err != nil {
+		t.Fatalf("drop fiscal_binding_links: %v", err)
+	}
+	if _, err := s.db.Exec(`CREATE TABLE fiscal_binding_links(id TEXT PRIMARY KEY)`); err != nil {
+		t.Fatalf("recreate fiscal_binding_links: %v", err)
+	}
+
+	if _, err := s.AddEvidenceLinksBound(memoryID, []string{"evidence/a"}, testAgentSource.ActorID, nil); err == nil {
+		t.Fatal("a fiscal_binding_links read failure against an already-bound subject must abort the write, not silently wave a nil-intent caller through as legacy")
+	}
+	refs, _ := s.EvidenceRefs(memoryID)
+	if len(refs) != 0 {
+		t.Fatalf("refs = %v, want none — the aborted write must persist nothing", refs)
+	}
+}

@@ -183,3 +183,28 @@ func TestDoctorFullRequiresMarkedDrillCopy(t *testing.T) {
 		t.Fatalf("err = %v, want ErrDrillCopyRequired", err)
 	}
 }
+
+// TestDoctorReportSurfacesFiscalRuntimeMode proves R4-2 is closed: the
+// resolved DRENYRA_FISCAL_RUNTIME_MODE is visible on every Doctor call, not
+// just as a one-time stderr line at store-open — the only prior signal, which
+// a daemonized serve/mcp process that doesn't capture startup stderr would
+// never see.
+func TestDoctorReportSurfacesFiscalRuntimeMode(t *testing.T) {
+	s := newTestStoreMode(t, "enforce")
+	report, err := s.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if report.FiscalRuntimeMode != "enforce" {
+		t.Fatalf("doctor.fiscalRuntimeMode = %q, want %q", report.FiscalRuntimeMode, "enforce")
+	}
+
+	shadow := newTestStoreMode(t, "shadow")
+	shadowReport, err := shadow.Doctor(context.Background(), DoctorOptions{Mode: ModeRoutine})
+	if err != nil {
+		t.Fatalf("doctor: %v", err)
+	}
+	if shadowReport.FiscalRuntimeMode != "shadow" {
+		t.Fatalf("doctor.fiscalRuntimeMode = %q, want %q", shadowReport.FiscalRuntimeMode, "shadow")
+	}
+}
