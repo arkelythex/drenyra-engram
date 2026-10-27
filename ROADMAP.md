@@ -372,7 +372,7 @@ no backfill. Authority boundary unchanged: memory is never evidence.
 
 ## Phase 6g — v1-readiness engineering evidence (DELIVERED 2026-08-11, SDD v1-readiness)
 
-> The SDD change v1-readiness (openspec/changes/v1-readiness, archived) delivered the
+> The SDD change v1-readiness (requirements now in specs/v1-readiness/spec.md) delivered the
 > implementable v1.0-gate engineering evidence:
 >
 > - **G-6 (resilience drills):** Go fuzz targets (comprobante XML, receipt payload
