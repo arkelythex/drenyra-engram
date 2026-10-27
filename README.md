@@ -84,12 +84,12 @@ altered the act — never that the professional decision was correct.
 
 ### Drenyra Dominion Program
 
-Drenyra Engram is a participant in the [Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion) — the federated program master that fixes vision, authority, contracts, dependencies, gates, and sequencing across every Drenyra repository. A single master SDD governs the ecosystem while vertical SDDs deliver complete, implementable capabilities across the repositories they need; each repository keeps its own implementation, versioning, and tests and references the master instead of copying its specs.
+Drenyra Engram is a participant in the [Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion) — the federated program master that fixes vision, authority, contracts, dependencies, gates, and sequencing across every Drenyra repository. A single master SDD governs the ecosystem while vertical SDDs deliver complete, implementable capabilities across the repositories they need; each repository keeps its own implementation, versioning, and tests and references the master instead of copying its specs.
 
 | SDD | Role | Engram's one-line role |
 | --- | --- | --- |
-| [SDD-080 — Engram Institutional Memory](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion/sdds/sdd-080-engram) | Useful, persistent memory that informs missions but never authorizes them | Institutional memory — prior decisions and context, scope-first and offline-verifiable (this repository) |
-| [SDD-050 — Peruvian Monthly Close](https://github.com/arkelythex/drenyra-ai/tree/main/openspec/programs/drenyra-dominion/sdds/sdd-050-monthly-close) | First complete vertical: ERP/SIRE/banks → verifiable close | Consumes Engram's prior-decision context for the close journey (informs only) |
+| [SDD-080 — Engram Institutional Memory](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-080-engram) | Useful, persistent memory that informs missions but never authorizes them | Institutional memory — prior decisions and context, scope-first and offline-verifiable (this repository) |
+| [SDD-050 — Peruvian Monthly Close](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-050-monthly-close) | First complete vertical: ERP/SIRE/banks → verifiable close | Consumes Engram's prior-decision context for the close journey (informs only) |
 
 Engram's ecosystem-side evidence for the Dominion cuts (SDD-010 release-train
 manifest, SDD-050 close context, SDD-060 isolation, SDD-100 Review Workspace API,

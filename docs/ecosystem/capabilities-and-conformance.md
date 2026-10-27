@@ -3,7 +3,7 @@
 > Status: maintained · Owner: `drenyra-engram` · Updated: 2026-08-15
 > Purpose: the engram-side manifest for the Drenyra Dominion Program's SDD-010
 > (Contracts & Release Train). This document is the source of truth the Dominion
-> program-lock (`drenyra-ai/openspec/programs/drenyra-dominion/program-lock.json`)
+> program-lock (`drenyra-ai/program/drenyra-dominion/program-lock.json`)
 > consumes for the `drenyra-engram` sibling row; refresh the lock's sibling facts
 > from this document after every verified release.
 
