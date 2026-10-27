@@ -9,6 +9,14 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
 ## Unreleased — post-v0.5 milestones (delivered on main, unreleased)
 
+### Workflow — SDD/OpenSpec retired, ODD is the only workflow
+
+- `openspec/` is removed. The 7 archived changes keep their requirements as
+  `specs/<change>/spec.md` (verbatim); their other artifacts stay in git history.
+- The conventions and verification order from `openspec/config.yaml` move to the
+  new `AGENTS.md`. `CONTRIBUTING.md` points to ODD feature documents under
+  `odd/tasks/`. See `odd/tasks/sdd-to-odd-migration.md`.
+
 > Milestone-by-milestone detail: [ROADMAP.md](ROADMAP.md) Phases 3–6f.
 
 ### v0.7.0 — Evidence Objects (local-first slice)

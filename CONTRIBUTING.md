@@ -12,13 +12,14 @@
 
 ## Workflow
 
-1. Create a dedicated branch (or isolated worktree for medium/large changes).
-2. Keep `main` clean.
-3. Prefer small, verifiable, reversible changes. Split changes over 400 lines into chained PRs.
-4. Update docs in the same PR as code (docs-as-code). Stale docs are a bug.
-5. Add tests for changed behavior — scope-first search, lifecycle transitions, sync semantics, relation judgments.
-6. Conventional commits only (no AI attribution).
-7. The review gate rejects: silent error handling, production `console.log`, missing scope checks, missing provenance, missing tests, contract changes without docs.
+1. Follow ODD ([`AGENTS.md`](AGENTS.md)): substantial work gets a feature document under `odd/tasks/` before the first source write; behavior changes are strict TDD.
+2. Create a dedicated branch (or isolated worktree for medium/large changes).
+3. Keep `main` clean.
+4. Prefer small, verifiable, reversible changes. Split changes over 400 lines into chained PRs.
+5. Update docs in the same PR as code (docs-as-code). Stale docs are a bug.
+6. Add tests for changed behavior — scope-first search, lifecycle transitions, sync semantics, relation judgments.
+7. Conventional commits only (no AI attribution).
+8. The review gate rejects: silent error handling, production `console.log`, missing scope checks, missing provenance, missing tests, contract changes without docs.
 
 ## Contract changes
 

@@ -38,7 +38,7 @@ Dominion program-lock:
 
 Compatibility policy: versioned contracts with a declared compatibility policy
 (`contracts/README.md` rule 1); contract changes are high-materiality and require
-explicit approval per `openspec/config.yaml`.
+explicit approval per [`AGENTS.md`](../../AGENTS.md).
 
 ## Capability matrix (implemented and tested)
 
