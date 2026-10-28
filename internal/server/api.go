@@ -5,7 +5,7 @@
 // probability (0..1), never money. No money value is computed here.
 //
 // Shared API — the single semantic surface exercised by every transport.
-// docs/architecture.md: "Surfaces are adapters. MCP, HTTP, TUI, and CLI exercise
+// docs/SYSTEM-BOUNDARIES.md: "Surfaces are adapters. MCP, HTTP, TUI, and CLI exercise
 // the same domain services." All transports (CLI, HTTP, MCP) call this layer so
 // approval gates, lifecycle transitions, and scope semantics stay identical
 // everywhere — the CLI never re-derives them.

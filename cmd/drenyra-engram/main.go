@@ -1943,7 +1943,7 @@ func oidcSuffix(cfg *auth.OIDCConfig) string {
 // sync — additive, conflict-visible store reconciliation
 // ──────────────────────────────────────────────
 
-// cmdSync reconciles one store into another (docs/architecture.md sync
+// cmdSync reconciles one store into another (docs/SYSTEM-BOUNDARIES.md sync
 // semantics: additive, provenance-preserving, conflict-visible). It imports the
 // source's full revision history, relations and lifecycle audit trail into the
 // sink, replays transitions through the lifecycle machine, and SURFACES
