@@ -7,7 +7,30 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
-## Unreleased — post-v0.5 milestones (delivered on main, unreleased)
+## Unreleased
+
+## v0.9.0 — 2026-10-27 (GitHub release)
+
+First tagged Go engine release since `v0.2.1`. It ships every milestone
+delivered on `main` since then: v0.3.0 Accounting Memory Kernel, v0.4.0
+Evidence, Conflict and Judgment, v0.5.0 Close Intelligence, v0.6.0 Fiscal Policy
+Memory, v0.7.0 Evidence Objects, v0.8.0 Evidence Lifecycle, and v0.9.0 Review
+Workspace, plus the 2026-08-19 slices listed below. Those milestones were
+recorded here as "released-on-main" or "unreleased" but were never tagged, so
+`v0.2.1` was the last installable engine until now.
+
+> **Breaking for v0.2.1 consumers — lifecycle model.** The observation lifecycle
+> changed from `draft → reviewed → promoted → superseded` (contract `lifecycle`
+> 0.1) to the approval-gated model in `contracts/lifecycle.md` 0.5 (frozen-for-0.5):
+> `pending_review → approved | rejected | returned`, plus `voided` and
+> `superseded`. Under the 0.x version policy (`RELEASING.md`) this ships as a
+> MINOR. Consumers that only read through `engram_context` or `engram_search`
+> are unaffected. The read-only consumer Drenyra Shell was probed against this
+> build before it re-pinned.
+
+The TypeScript reference package keeps its own `0.0.1-prealpha.x` track
+(`RELEASING.md` → Version policy) and is not part of this tag.
+
 
 ### Workflow — SDD/OpenSpec retired, ODD is the only workflow
 
