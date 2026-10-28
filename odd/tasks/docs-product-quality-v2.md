@@ -170,9 +170,14 @@ Branch `chore/project-excellence-foundations`, restacked on `origin/main` (bbfad
 
 - DOC-003 completed: `docs/DATA-SECURITY-PRIVACY.md` covers persistence, encryption scope, tenant isolation, receipts, lifecycle, sync, recovery, OIDC, telemetry posture, and explicit non-claims.
 
+## Native review (RDD)
+
+- Whole range `a0e48e1..7525fa1`: `lens_context_budget_exceeded` (3633 lines); no authority created.
+- High-risk unit `f0c3e28` alone (base `a0e48e1`, worktree `../drenyra-engram-review-mcp`, branch `review/mcp-schema-fix`): lineage `review-a1c054860cb98751`, tier medium, 137 lines, lenses risk + reliability. Collect blocked: "no model is configured for review-risk; assign it a model in the agent model routing config". Lineage stays open at `collect`; resume with bound STATUS after assigning reviewer models.
+
 ## Next step
 
-All tasks complete. Open user decisions: branch base versus main (v0.9.0), the MCP inputSchema casing defect, the sync-test runtime-mode failure, and whether to commit.
+All tasks complete and committed. Remaining user actions: assign models to the review-risk/review-reliability agents and resume lineage review-a1c054860cb98751; push the restacked branches (force-with-lease for slices 1-6) and open the PR for this slice.
 
 ## Log
 
