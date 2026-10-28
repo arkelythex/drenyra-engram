@@ -14,9 +14,9 @@
 > [!IMPORTANT]
 > **Drenyra Engram is the open component of the Drenyra ecosystem** —
 > licensed under Apache-2.0 and publicly visible, mirroring
-> `Gentleman-Programming/engram`. The commercial core (drenyra-command-center,
+> `Gentleman-Programming/engram`. The commercial core (drenyra-desktop,
 > drenyra-skills, drenyra-guardian-angel) is **private** and proprietary;
-> drenyra-ai and drenyra-pi are publicly visible source under the Drenyra
+> drenyra-ai and drenyra-shell are publicly visible source under the Drenyra
 > open-core transition intention (intention, not contractual promise), with
 > commercial artifacts and services remaining contractual. Engram informs,
 > never authorizes — memory is context, not authority.
@@ -285,12 +285,12 @@ company-B memory — this is a tested invariant, not a filter.
 
 | Project | Role |
 | --- | --- |
-| [Drenyra Command Center](https://github.com/arkelythex/drenyra-command-center) | Command Center — web application (consumes memory) |
+| [Drenyra Desktop](https://github.com/arkelythex/drenyra-desktop) | Desktop — web application (consumes memory) |
 | [Drenyra AI](https://github.com/arkelythex/drenyra-ai) | Agent ecosystem (may integrate) |
-| [Drenyra Pi](https://github.com/arkelythex/drenyra-pi) | Pi-native harness (reads context) |
+| [Drenyra Shell](https://github.com/arkelythex/drenyra-shell) | Pi-native harness (reads context) |
 
 **Direction rule:** Drenyra Engram is independent. It has no dependencies on
-Drenyra, Drenyra AI, or Drenyra Pi, and it never authorizes operations in any
+Drenyra, Drenyra AI, or Drenyra Shell, and it never authorizes operations in any
 of them.
 
 ## License
