@@ -286,7 +286,7 @@ SUNAT/ERP object ingestion, and production object-store operations
 Architecture: docs/architecture/evidence-object-v0.7.md;
 threat model: docs/security/evidence-lifecycle-and-threat-model.md.
 
-## Phase 6c — Review Workspace (v0.9.0) — DELIVERED (engine-side slice)
+## Phase 6c — Review Workspace (v0.9.0) — DELIVERED (engine-side slice; tagged `v0.9.0` 2026-10-27)
 
 > The professional review layer over the existing `pending_review` state
 > (design brief §6; docs/architecture/review-workspace-v0.9.md). Headless and
