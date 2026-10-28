@@ -20,6 +20,10 @@ const testOrgID = "org-acme"
 
 func newTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
+	// These tests exercise legacy-class (unbound) saves. Since the store
+	// defaults DRENYRA_FISCAL_RUNTIME_MODE to the fail-closed shadow mode,
+	// select legacy_compat explicitly, as the server and CLI suites do.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := store.Open(path)
 	if err != nil {
@@ -578,6 +582,10 @@ func TestSyncFailsClosedOnNonAdjacentRecord(t *testing.T) {
 // key material both sides use in the both-encrypted rows).
 func newEncryptedTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
+	// These tests exercise legacy-class (unbound) saves. Since the store
+	// defaults DRENYRA_FISCAL_RUNTIME_MODE to the fail-closed shadow mode,
+	// select legacy_compat explicitly, as the server and CLI suites do.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := store.OpenWithOptions(path, store.Options{EncryptionKey: bytes.Repeat([]byte{0x42}, 32)})
 	if err != nil {
