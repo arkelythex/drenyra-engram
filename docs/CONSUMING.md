@@ -2,7 +2,11 @@
 
 > How to wire any MCP agent (Claude, pi, OpenCode, Gemini CLI, Codex, …) or a
 > program (HTTP / CLI) to the engine. For the model and semantics see
-> [architecture.md](architecture.md) and the [contracts](../contracts/).
+> [SYSTEM-BOUNDARIES.md](SYSTEM-BOUNDARIES.md) and the [contracts](../contracts/).
+>
+> **Runtime:** consume the Go binary. The TypeScript package is an unpublished
+> reference mirror for contract parity, not a client library or a runtime
+> ([compatibility](COMPATIBILITY.md#typescript-reference-mirror)).
 
 ## 1. Run the engine
 
@@ -16,9 +20,12 @@ Install → [INSTALLATION.md](INSTALLATION.md).
 ## 2. Connect an MCP agent
 
 `drenyra-engram mcp` speaks the Model Context Protocol over stdio. The server
-advertises **57 tools** (13 `engram_*` general memory + 44 `accounting_*`
-fiscal) — there is **no authorize/approve/allow tool** (memory never
-authorizes).
+advertises **58 tools** (13 `engram_*` general memory + 45 `accounting_*`
+fiscal) — there is **no authorize/allow/execute tool** (memory never
+authorizes). `accounting_approve` is the professional review of a memory; it
+takes identity only from an authenticated session and fails closed with
+`AUTHENTICATION_REQUIRED` on stdio. Protocol versions and client notes:
+[COMPATIBILITY.md](COMPATIBILITY.md#mcp).
 
 ### Claude Desktop
 
