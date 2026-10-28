@@ -553,11 +553,11 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_approve",
 			"description": "Approve a pending_review memory against the envelope hash the reviewer actually saw (v0.4.0 Step 1, ADR-003). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("human-readable justification (required)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("human-readable justification (required)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		// ── accounting_review_* (v0.9.0 review workspace, design §3/§5/§7): queue
 		// and detail are SCOPE-FIRST READS whose exact scope tuple is part of the
@@ -579,29 +579,29 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_review_detail",
 			"description": "Compose the review of ONE pending revision (v0.9.0 review workspace, design §4), scope-guarded: the full pending revision, the structured content diff vs its chain predecessor, the evidence state with WORM availability, the best-effort rule state, the open proposed judgments, the review metadata (H1 to sign, proposer, risk class) and the boundary notice. Reads never authorize.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId": stringSchema("memory id (required)"),
-				"scope":    stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
-			}, "memoryId", "scope"),
+				"memory_id": stringSchema("memory id (required)"),
+				"scope":     stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
+			}, "memory_id", "scope"),
 		},
 		{
 			"name":        "accounting_review_reject",
 			"description": "Reject a pending_review memory (v0.9.0 review workspace, design §5): pending_review → rejected (terminal), authenticated + idempotent by (tenant, requestId) + hash-guarded, with the human reason in the decision event and the memory_rejected receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("human rejection reason (required for material/critical or closing/declaration/sunat_filing; optional otherwise; always persisted)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("human rejection reason (required for material/critical or closing/declaration/sunat_filing; optional otherwise; always persisted)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		{
 			"name":        "accounting_review_return",
 			"description": "Return a pending_review memory to its proposer for correction (v0.9.0 review workspace, design §5): pending_review → returned (NON-terminal — an agent Save on the returned memory creates a NEW revision that re-enters pending_review). Authenticated + idempotent + hash-guarded; the reason is REQUIRED (a correction request — the reason tells the agent what to fix) and lands in the decision event and the memory_returned receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("correction request reason (REQUIRED)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("correction request reason (REQUIRED)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		// ── accounting_rule_* (v0.6.0 fiscal policy memory, design §6): show and
 		// history are SCOPE-FIRST READS (the exact scope tuple is part of the
