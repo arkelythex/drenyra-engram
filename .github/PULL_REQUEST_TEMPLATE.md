@@ -28,13 +28,23 @@ _Where should review start, and in what order? What is the riskiest decision in 
 
 ## Tests
 
-- [ ] Typecheck passes
-- [ ] Tests pass
-- [ ] Conformance vectors updated and passing (search ranking / lifecycle / relations / scope filtering)
+- [ ] `go vet ./...`, `gofmt -l internal/ cmd/` (prints nothing), and `go test ./... -count=1` pass
+- [ ] Typecheck and tests pass if the TypeScript mirror changed (`bun run typecheck`, `bun run test`)
+- [ ] Conformance vectors updated and passing in Go and TypeScript if behavior changed (`testdata/golden/`; search ranking / lifecycle / relations / scope filtering)
 - [ ] Packed-install smoke test (if the package surface changed)
+
+## Accounting safety
+
+- [ ] Test data and examples are synthetic: no real taxpayer data, RUCs, credentials, or tokens
+- [ ] No fail-closed behavior weakened (scope, runtime-mode gate, closed period, encryption, token validation)
+- [ ] No path gives an agent or an unauthenticated caller approval authority
+- [ ] Non-authorization boundary unaffected (if contracts/provenance changed)
+
+## Contracts
+
+- [ ] No change under `contracts/`, **or** the contract version, Go, TypeScript mirror, golden vectors, and docs all changed together (see CONTRIBUTING.md → Contract changes)
 
 ## Docs-as-code
 
-- [ ] Docs updated in this same PR (markdownlint + link check)
-- [ ] `CHANGELOG.md` updated
-- [ ] Non-authorization boundary unaffected (if contracts/provenance changed)
+- [ ] Docs updated in this same PR; relative links resolve and `git diff --check` is clean
+- [ ] `CHANGELOG.md` updated under `## [Unreleased]` for user-visible changes
