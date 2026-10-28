@@ -1,0 +1,26 @@
+{
+  "topicKey": "examples/synthetic-policy",
+  "title": "Synthetic depreciation policy",
+  "kind": "fact",
+  "scope": {
+    "kind": "company",
+    "organizationId": "cli",
+    "companyId": "20100039201",
+    "ruc": "20100039201",
+    "period": "202401"
+  },
+  "content": {
+    "what": "Synthetic example memory for documentation",
+    "why": "Exercise the engine without operational or taxpayer data",
+    "where": "examples/fixtures/synthetic-memory.json",
+    "learned": "Every read must present the exact company and period scope"
+  },
+  "fiscalEffect": "none",
+  "confidence": 0.9,
+  "effectiveAt": "2024-01-15T00:00:00Z",
+  "source": {
+    "system": "examples",
+    "actorId": "example-agent",
+    "actorKind": "agent"
+  }
+}
