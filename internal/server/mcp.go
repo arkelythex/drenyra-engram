@@ -47,8 +47,11 @@ var supportedProtocolVersions = []string{
 const latestProtocolVersion = "2025-06-18"
 
 // engineVersion is the semantic version of the Go engine reported in the MCP
-// serverInfo and the HTTP surface.
-const engineVersion = "0.3.0"
+// serverInfo and the HTTP surface. It is a var, not a const, so release
+// builds can stamp the tag through goreleaser's
+// -X github.com/arkelythex/drenyra-engram/internal/server.engineVersion ldflag;
+// a plain source build reports the default below.
+var engineVersion = "0.9.0"
 
 // ──────────────────────────────────────────────
 // JSON-RPC 2.0 wire shapes

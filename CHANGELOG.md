@@ -28,6 +28,14 @@ recorded here as "released-on-main" or "unreleased" but were never tagged, so
 > are unaffected. The read-only consumer Drenyra Shell was probed against this
 > build before it re-pinned.
 
+### Fixed — the engine reports its real version
+
+- The MCP `serverInfo.version` was a hard-coded `const` (`0.3.0`; the
+  `0.2.1` snapshot reported `0.2.0`), and goreleaser stamped
+  `-X main.version`, a symbol that does not exist, so no build ever reported
+  its tag. `engineVersion` is now a `var` (default `0.9.0`), and `.goreleaser.yml`
+  stamps `internal/server.engineVersion` with the tag.
+
 The TypeScript reference package keeps its own `0.0.1-prealpha.x` track
 (`RELEASING.md` → Version policy) and is not part of this tag.
 

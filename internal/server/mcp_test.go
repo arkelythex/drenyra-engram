@@ -110,6 +110,18 @@ func TestMCPInitialize(t *testing.T) {
 	if result.ServerInfo["name"] != "drenyra-engram" {
 		t.Fatalf("serverInfo = %v, want name drenyra-engram", result.ServerInfo)
 	}
+	if result.ServerInfo["version"] != engineVersion {
+		t.Fatalf("serverInfo.version = %q, want the engine version %q", result.ServerInfo["version"], engineVersion)
+	}
+}
+
+// TestEngineVersionDefault pins the version a source build reports. Release
+// builds override engineVersion through goreleaser's -X ldflag, which only
+// works on a string var — never a const.
+func TestEngineVersionDefault(t *testing.T) {
+	if engineVersion != "0.9.0" {
+		t.Fatalf("engineVersion = %q, want 0.9.0 (the current release)", engineVersion)
+	}
 }
 
 func TestMCPInitializeUnsupportedVersion(t *testing.T) {
