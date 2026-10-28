@@ -29,6 +29,33 @@ Composition: editorial, audit-grade, calm. One strong archive object, generous n
 Signature detail: the verifiable seal engraving and the printed reconstructible timeline resolving under it.
 ```
 
+## Light and dark variants
+
+The README serves each visual through `<picture>` with
+`prefers-color-scheme`, so readers see the asset that matches their GitHub
+theme.
+
+- **Light is the source of truth.** Edit only the light `*.svg` files. They may
+  use only Dreamcoder Light token values.
+- **Dark is derived.** `scripts/brand-dark-variants.mjs` writes each
+  `*-dark.svg` by mapping every Dreamcoder Light token to the Dreamcoder Dark
+  token with the same role (accent, diagnostic, sage, lavender, surfaces,
+  text ladder). A colour outside the token table fails the run. Drop shadows
+  stay black so they never become a glow.
+- **Text flows.** Put adjacent phrases in one `<text>` with `<tspan>` runs
+  instead of fixed `x` positions; fixed offsets overlap when the renderer's
+  font differs from the author's.
+
+```bash
+node scripts/brand-dark-variants.mjs          # regenerate *-dark.svg
+node scripts/brand-dark-variants.mjs --check  # fail if any is missing or stale
+cd assets/branding
+for f in *.svg; do rsvg-convert -w 1400 -h 460 "$f" -o "${f%.svg}.png"; done
+```
+
+The palettes come from the Dreamcoder theme tokens (`modes.light` and
+`modes.dark` in the dreamcoder-dots `DreamcoderThemes/dreamcoder/tokens.json`).
+
 ## Validate
 
 ```bash
