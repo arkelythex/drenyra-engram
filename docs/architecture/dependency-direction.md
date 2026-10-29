@@ -21,7 +21,7 @@
                     │
            ┌────────┴────────┐
            │ Drenyra         │
-           │ Command Center  │
+           │ Drenyra Console │
            └─────────────────┘
 ```
 

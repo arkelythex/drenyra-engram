@@ -49,7 +49,7 @@ Drenyra Engram is **not**:
 
 ```mermaid
 flowchart TD
-    P["Profesional contable"] --> D["Drenyra Command Center"]
+    P["Profesional contable"] --> D["Drenyra Console"]
     D --> AI["Drenyra-AI Core"]
     PI["Drenyra Pi"] --> AI
     ERP["ERP · bancos · SUNAT"] --> AD["Adaptadores de evidencia"]

@@ -43,7 +43,7 @@ authority (RBAC/ABAC) stays in `drenyra-ai`.
   Identity-to-scope binding is a production identity prerequisite (block I /
   issue #18).
 
-## SDD-100 — Command Center (Review Workspace API for the Drenyra Web UI)
+## SDD-100 — Drenyra Console (Review Workspace API for the Drenyra Console UI)
 
 Engram exposes the engine-side Review Workspace surface; the Web UI belongs to
 Drenyra (`drenyra-app-web`). The engram API a Web UI consumes:
