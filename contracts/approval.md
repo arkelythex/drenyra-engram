@@ -175,6 +175,14 @@ implied. Minimum assurance `standard`; `sunat_filing` additionally `strong`.
       Reason: a high-risk memory must show the reviewer inspected the evidence
       and the applicable rule — the checks are reviewer acknowledgement, never
       authority (ADR-003 payload boundary unchanged).
+
+      **Additive v1 presence semantics:** public fiscal approval represents each
+      acknowledgement as `{present, value}`. Omitted, explicit `false`, and
+      explicit `true` remain distinct in command intent and immutable evidence.
+      Material/critical approval requires `present && value` for both evidence
+      and applicable-rules inspection. These declarations remain bound to the
+      exact reviewed envelope and fiscal scope; they never supply a principal
+      or create authorization.
     - **Reject reason policy:** `reject` requires a reason when materialityLevel
       is `material`/`critical` OR fiscalEffect ∈ {closing, declaration,
       sunat_filing}; `return` ALWAYS requires a reason (it is a correction

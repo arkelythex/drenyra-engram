@@ -189,7 +189,9 @@ interface GoldenCase {
 		| "judgment"
 		| "receipt"
 		| "reconstructibility"
-		| "topic-fold";
+		| "topic-fold"
+		| "fiscal-ruc-v1"
+		| "fiscal-scope-v1";
 	description?: string;
 	input: {
 		id: string;
@@ -537,6 +539,10 @@ describe("shared golden vectors (Go ↔ TS parity)", () => {
 		it(tc.name, async () => {
 			const contract = tc.contract ?? "legacy-hash";
 			switch (contract) {
+				case "fiscal-ruc-v1":
+				case "fiscal-scope-v1":
+					// Dedicated pure parity tests consume these focused vectors.
+					break;
 				case "legacy-hash": {
 					const input = tc.input;
 					const memory: AccountingMemory = {

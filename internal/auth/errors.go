@@ -112,8 +112,9 @@ const (
 // anti-rubber-stamp clause (a material/critical approval requires
 // reviewChecks.evidenceInspected && reviewChecks.ruleInspected).
 const (
-	CodeSODViolation         = "SOD_VIOLATION"
-	CodeReviewChecksRequired = "REVIEW_CHECKS_REQUIRED"
+	CodeSODViolation          = "SOD_VIOLATION"
+	CodeReviewChecksRequired  = "REVIEW_CHECKS_REQUIRED"
+	CodeFiscalWriteGateClosed = "FISCAL_WRITE_GATE_CLOSED"
 )
 
 // Error is the typed approval/judgment/reconciliation error: a frozen code
@@ -280,6 +281,7 @@ var (
 	// the pending revision's proposer (approver ≠ proposer, §5/§6.5.5).
 	// REVIEW_CHECKS_REQUIRED fails a material/critical approval closed when the
 	// two review checks (evidenceInspected, ruleInspected) are not both true.
-	ErrSODViolation         = &Error{Code: CodeSODViolation, Message: "the reviewer cannot decide their own proposal (separation of duties)"}
-	ErrReviewChecksRequired = &Error{Code: CodeReviewChecksRequired, Message: "material/critical approvals require both review checks (evidence inspected and rule inspected)"}
+	ErrSODViolation          = &Error{Code: CodeSODViolation, Message: "the reviewer cannot decide their own proposal (separation of duties)"}
+	ErrReviewChecksRequired  = &Error{Code: CodeReviewChecksRequired, Message: "material/critical approvals require both review checks (evidence inspected and rule inspected)"}
+	ErrFiscalWriteGateClosed = &Error{Code: CodeFiscalWriteGateClosed, Message: "fiscal protected writes are disabled by runtime mode"}
 )

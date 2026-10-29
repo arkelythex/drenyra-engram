@@ -459,6 +459,17 @@ export interface ReviewChecks {
 	ruleInspected: boolean;
 }
 
+/** Presence-aware reviewer declaration; metadata never grants authority. */
+export interface ReviewAcknowledgement {
+	present: boolean;
+	value: boolean;
+}
+
+export interface ReviewChecksV1 {
+	evidenceInspected: ReviewAcknowledgement;
+	applicableRulesInspected: ReviewAcknowledgement;
+}
+
 /**
  * The authenticated reject command (v0.9.0, design §5). Deliberately carries
  * NO principal fields (ADR-003). Mirrors core.RejectMemoryCommand.
@@ -858,10 +869,7 @@ export function assertValidRuleLinks(
 		assertValidRuleLink(link);
 		const prev = seen.get(link.ref);
 		if (prev !== undefined) {
-			if (
-				prev.version !== link.version ||
-				prev.effectiveAt !== link.effectiveAt
-			) {
+			if (prev.version !== link.version || prev.effectiveAt !== link.effectiveAt) {
 				throw new Error(
 					`RULE_LINK_VERSION_CONFLICT: ref "${link.ref}" is pinned to ${prev.version} at ${prev.effectiveAt} and cannot be re-pinned to ${link.version} at ${link.effectiveAt} (metadata is never updated in place)`,
 				);
@@ -957,9 +965,7 @@ export function cloneMemory(memory: AccountingMemory): AccountingMemory {
 		fiscalEffect: memory.fiscalEffect,
 		effectiveAt: memory.effectiveAt,
 		recordedAt: memory.recordedAt,
-		...(memory.observedAt === undefined
-			? {}
-			: { observedAt: memory.observedAt }),
+		...(memory.observedAt === undefined ? {} : { observedAt: memory.observedAt }),
 		source: { ...memory.source },
 		...(memory.validity === undefined
 			? {}
@@ -967,15 +973,11 @@ export function cloneMemory(memory: AccountingMemory): AccountingMemory {
 		...(memory.evidenceRefs === undefined
 			? {}
 			: { evidenceRefs: [...memory.evidenceRefs] }),
-		...(memory.ruleRefs === undefined
-			? {}
-			: { ruleRefs: [...memory.ruleRefs] }),
+		...(memory.ruleRefs === undefined ? {} : { ruleRefs: [...memory.ruleRefs] }),
 		...(memory.ruleLinks === undefined
 			? {}
 			: { ruleLinks: cloneRuleLinks(memory.ruleLinks) }),
-		...(memory.confidence === undefined
-			? {}
-			: { confidence: memory.confidence }),
+		...(memory.confidence === undefined ? {} : { confidence: memory.confidence }),
 		...(memory.materiality === undefined
 			? {}
 			: { materiality: memory.materiality }),

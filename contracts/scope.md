@@ -82,3 +82,15 @@ Every memory carries a fiscal scope:
     company, not the fiscal period. The binding therefore compares
     organization/company only; the period stays part of the exact effective scope
     as before.
+
+## Additive fiscal operation binding v1
+
+The frozen legacy tuple above is unchanged. Protected fiscal operations may opt
+into the separate ten-element contract in
+[`fiscal-scope-v1.md`](fiscal-scope-v1.md). A v1 binding is complete, strictly
+decoded, checksum-valid, canonically hashed, and compared as a whole. Missing
+fields are never inferred from this legacy tuple or from a session.
+
+The binding constrains an operation; it does not authorize one. Its `actor` and
+`authorityLevel` remain metadata and cannot grant identity, membership, role,
+approval, or business authority.
