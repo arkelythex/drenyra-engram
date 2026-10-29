@@ -30,7 +30,7 @@ Accounting software earns trust through precise boundaries, reproducible workflo
 - Source code and registered surfaces are authoritative when documentation conflicts.
 - Keep Gentleman Engram as a quality reference, not a branding or prose template.
 - Preserve unrelated uncommitted changes in `internal/store/doctor_test.go` and `internal/store/fiscal_binding_enforcement_test.go`.
-- Do not push. (Commit authorized on 2026-10-28, L4.)
+- Publication authorized by the user on 2026-10-28; publish new branches without rewriting existing remote refs. Preserve original PRs #35-#39 and the externally opened #57.
 - TDD is not applicable to documentation-only changes. Verification must still check examples, links, formatting, and factual catalogs.
 - The approximately 400 changed-line task size is advisory; do not sacrifice coherent reader journeys to meet it.
 
@@ -175,9 +175,30 @@ Branch `chore/project-excellence-foundations`, restacked on `origin/main` (bbfad
 - Whole range `a0e48e1..7525fa1`: `lens_context_budget_exceeded` (3633 lines); no authority created.
 - High-risk unit `f0c3e28` alone (base `a0e48e1`, worktree `../drenyra-engram-review-mcp`, branch `review/mcp-schema-fix`): lineage `review-a1c054860cb98751`, tier medium, 137 lines, lenses risk + reliability. Collect blocked: "no model is configured for review-risk; assign it a model in the agent model routing config". Lineage stays open at `collect`; resume with bound STATUS after assigning reviewer models.
 
+## Published delivery
+
+- Issue [#56](https://github.com/arkelythex/drenyra-engram/issues/56) tracks delivery. The maintainer's comment `6485633662` explicitly approved its scope and `status:approved`; host permissions and the resulting label were verified.
+- Ordinary atomic pushes published six `feat/fiscal-runtime-restacked-slice-N` branches, `docs/product-quality-v2`, and eight intermediate documentation branches. No remote history was rewritten.
+- All ten new PRs below were read back with matching title, body, head/base branches, draft status, and exactly one `type:*` label. Original PRs #35-#39 and externally opened #57 remain untouched. No merge or release was performed.
+
+| PR | Work unit | Changed text lines |
+| --- | --- | ---: |
+| [#58](https://github.com/arkelythex/drenyra-engram/pull/58) | Fiscal slice 6; depends on existing #57 | 2727 |
+| [#59](https://github.com/arkelythex/drenyra-engram/pull/59) | Engineering foundations and legacy test stores | 248 |
+| [#60](https://github.com/arkelythex/drenyra-engram/pull/60) | MCP schema/decoder alignment | 137 |
+| [#61](https://github.com/arkelythex/drenyra-engram/pull/61) | Boundary-document rename and Dreamcoder dark visuals | 333 |
+| [#62](https://github.com/arkelythex/drenyra-engram/pull/62) | Executable examples and troubleshooting | 503 |
+| [#63](https://github.com/arkelythex/drenyra-engram/pull/63) | Onboarding, product, and data-protection guides | 458 |
+| [#64](https://github.com/arkelythex/drenyra-engram/pull/64) | Runtime reference, compatibility, and index | 420 |
+| [#65](https://github.com/arkelythex/drenyra-engram/pull/65) | Roadmap, history, and contribution guidance | 913 |
+| [#66](https://github.com/arkelythex/drenyra-engram/pull/66) | Product landing page | 481 |
+| [#67](https://github.com/arkelythex/drenyra-engram/pull/67) | Feature evidence and review status | 189 at creation |
+
+Each new PR targets its immediate predecessor's branch, not `main`. Sizes count additions plus deletions and exclude binary payloads. Oversized drafts explicitly require a bounded split or maintainer acceptance before merge; no `size:exception` approval was inferred. Recorded final-tip local checks do not establish that every intermediate slice independently passes.
+
 ## Next step
 
-All tasks complete and committed. Remaining user actions: assign models to the review-risk/review-reliability agents and resume lineage review-a1c054860cb98751; push the restacked branches (force-with-lease for slices 1-6) and open the PR for this slice.
+Publication is complete, not merge acceptance. Complete CI, resolve the live reviewer-model selection, and resume native lineage `review-a1c054860cb98751` with fresh bound STATUS. The last capture still selected unavailable `openai/gpt-6.1-terra` despite the saved OpenAI profile correction. Accept or split oversized slices before merging in dependency order; Docker execution and Node 26 crypto failures remain explicit limitations.
 
 ## Log
 
@@ -186,4 +207,10 @@ All tasks complete and committed. Remaining user actions: assign models to the r
 - L3 (2026-10-28, user, verbatim): "para los visuales , diagramas , svgs , inspirate de themes dreamcoder light y dreamcoder dark , ❯ pwd /home/dreamcoder08/Documents/PROYECTOS/dreamcoder-dots"
 - Decision (2026-10-28): added DOC-009; dark assets derive from the light sources by Dreamcoder token mapping instead of hand-edited copies.
 - L4 (2026-10-28, user, verbatim): "yes te autorizo todo y avanza de forma autonoma"
-- Decision (2026-10-28): authorized items were the rebase onto main, the MCP schema fix, the sync-test fix, and commits; push and pull requests stay with the user. The whole fiscal stack was restacked locally with --update-refs because the branch sits on top of it.
+- Decision (2026-10-28): authorized items were the rebase onto main, the MCP schema fix, the sync-test fix, and commits; push and pull requests initially stayed with the user. The whole fiscal stack was restacked locally with --update-refs because the branch sits on top of it.
+- L5 (user, verbatim): "yes te autorizo todo y continua"
+- Decision: after the harness denied force-with-lease, the user authorized publication on new branches without rewriting existing PR refs; ordinary atomic pushes succeeded.
+- L6 (user, verbatim): "confirmo"
+- Decision: the user affirmed both required ecosystem/non-authorization issue-form declarations. Issue #56 was created once; subsequent host readback established its identity.
+- L7 (host evidence): GitHub issue comment `6485633662` by maintainer `Dreamcoder08` explicitly approved the scope and the `status:approved` action for #56; the protected label was applied atomically and verified.
+- Delivery evidence: background job 6 exited 0 after creating and verifying draft PRs #58-#67. This is publication evidence, not an independent code-review verdict.
