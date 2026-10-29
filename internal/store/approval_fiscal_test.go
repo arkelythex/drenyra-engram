@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module is the Delivery Slice 5 RED/
-// GREEN/TRIANGULATE suite (openspec/changes/fiscal-runtime-foundations,
-// design.md "Authenticated approval transaction"): ApproveMemory carries an
+// GREEN/TRIANGULATE suite (docs/decisions/fiscal-runtime-foundations-design.md,
+// "Authenticated approval transaction"): ApproveMemory carries an
 // OPTIONAL v1 fiscal binding intent through the existing atomic transaction —
 // structural/axis validation before any status change, the direct-store-
 // bypass guard applied to the approval boundary, a v1-specific idempotency

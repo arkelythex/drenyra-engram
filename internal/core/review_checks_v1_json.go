@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module owns the CANONICAL
 // presence-aware decoder for the v1 anti-rubber-stamp review acknowledgements
-// (openspec/changes/fiscal-runtime-foundations, design.md "The raw DTO uses
+// (docs/decisions/fiscal-runtime-foundations-design.md, "The raw DTO uses
 // presence-aware nullable booleans").
 //
 // It lives in core — beside the ReviewChecksV1 contract it decodes — and not

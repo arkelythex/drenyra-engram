@@ -10,7 +10,9 @@
 - **S3 — No rule is lost.** The project conventions and verification order in `openspec/config.yaml` move to a new `AGENTS.md`.
 - **S4 — No pending work is dropped silently.** Unchecked tasks in archived changes are checked against the code and recorded in L3.
 - **S5 — No live reference to `openspec/` in this repository.** Links into Drenyra AI's program master (`drenyra-ai/openspec/programs/drenyra-dominion`) are out of scope: they change when Drenyra AI converts that program master.
-- **S6 — Coexistence with in-flight work.** The open fiscal stack (PRs #35–#39) and the local `chore/project-excellence-foundations` branch add `openspec/changes/fiscal-runtime-foundations/`. This migration does not touch that path. When the stack lands, that change moves to `odd/tasks/` in a follow-up.
+- **S6 — Coexistence with in-flight work.** Retire the fiscal workflow on the current feature branch without waiting for every fiscal PR to merge. Preserve the unique fiscal requirements, design rationale, historical evidence, and unfinished Slice 7 work. This is a documentation migration, not a claim that the fiscal stack is merged or that its pending work is complete.
+- **S7** (user, verbatim): "hey bro has limpiea y elimiina todo sobre SDD , ahora el flujo de vanguardia en gentle-shell 4.5.1 es con ODD y mas".
+- **S8** (user selection, verbatim): "Retirar el workflow SDD/OpenSpec (recomendado)". Preserve historical requirement IDs, golden vectors, valid external URLs, contracts, and Git history.
 
 ## Tasks
 
@@ -18,7 +20,9 @@
 - [x] **T2** — `AGENTS.md` with the conventions and verification order; ODD in `CONTRIBUTING.md`. *(S3)*
 - [x] **T3** — Fix the 3 local `openspec/` references; CHANGELOG entry. *(S5)*
 - [x] **T4** — Verify unchecked tasks against the code. *(S4)*
-- [ ] **T5** — After the fiscal stack merges, move `openspec/changes/fiscal-runtime-foundations/` to `odd/tasks/` and its spec to `specs/`. *(S6)* — blocked on PRs #35–#39
+- [x] **T5** — Migrate the fiscal requirements verbatim to `specs/`, historical records to `docs/decisions/`, and unfinished work to an ODD feature document. *(S2, S4, S6–S8)* — done; route: parent; commit: pending work-unit closure. All five payload hashes matched; five unfinished Slice 7 outcomes and final evidence gap retained.
+- [x] **T6** — Repoint active comment references and workflow guidance without changing executable code or historical IDs. *(S3, S5, S7–S8)* — done; route: parent; commit: pending work-unit closure. Eleven changed source files have identical executable code; the sole protected historical citation is explicitly documented.
+- [x] **T7** — Verify byte preservation, pending-work continuity, links, unchanged code/contracts/goldens/user edits, and the absence of an active OpenSpec tree. *(S2–S8)* — done; route: parent; commit: pending work-unit closure. Structural checks and focused public checks passed; no native verdict is implied.
 
 ## Log
 
@@ -44,3 +48,27 @@
 - The diff contains only Markdown files and deletions under `openspec/` (no code, test, or config that runs).
 - Local: `go vet` clean, `gofmt -l` empty, `go build` OK, `go test ./... -count=1` 10/10 packages ok, `bun run typecheck` OK.
 - Local `bun run test`: 285 passed, 34 failed, all with `TypeError: Invalid JWK OKP key` (Ed25519 key import). The cause is the local runtime (Node 26.7.0, Bun 1.4.0), the Node 26 defect tracked as #45. CI pins Bun 1.3.11; CI is the verification of record for the TS suite.
+
+### L6 — Fiscal follow-up request (verbatim)
+
+> hey bro has limpiea y elimiina todo sobre SDD , ahora el flujo de vanguardia en gentle-shell 4.5.1 es con ODD y mas
+
+### L7 — Scope decision (verbatim)
+
+> Retirar el workflow SDD/OpenSpec (recomendado)
+
+The selected scope retires workflow artifacts, not historical identifiers or business requirements. Fiscal slices 5/6 and the original PRs are not assumed merged. Migrate all five fiscal records without losing their payloads, keep unfinished work explicitly blocked on separate fiscal delivery, and preserve the existing native review authority. Do not change contracts, golden vectors, external program links, unrelated user tests, or the installed Gentle Shell configuration. No runtime behavior changes, so no meaningful RED test applies; use content/hash, link, and executable-source invariance checks instead. The work-unit boundary is `645721f`, which closes the prior non-destructive audit; prior published/tested tip `6e57f93` is not rewritten. T5 preservation checks passed: all five original payloads match their pre-move SHA-256 values, and the five unfinished Slice 7 outcomes plus the final evidence gap remain explicitly blocked in the ODD continuity document.
+
+### L8 — Reference-check correction and source invariance
+
+The first T6 structural check exited 1: the initial map omitted six source comment references. Five additional citations were repointed; the sixth is the historical header in the user-modified `internal/store/fiscal_binding_enforcement_test.go` and remains untouched. The passing check explicitly allowlists only that exact header and verifies the original binary user diff. It does not claim zero textual historical references. All eleven changed Go/TypeScript files retain byte-identical executable code, with only header/line comments changed. Active project guidance now points to `specs/`, `odd/tasks/`, and `docs/decisions/`; historical records are not workflow instructions.
+
+### L9 — Follow-up verification
+
+- Five original payload hashes matched, including the unchanged fiscal spec. All five unfinished Slice 7 outcomes and the final evidence gap remain recorded.
+- The link check passed for 121 relative links/anchors across 12 changed Markdown documents. `gofmt` is clean for the 10 changed Go files. No CI, script, or package workflow depends on the retired tree.
+- Job 21 exited 0: `go test ./internal/core -run '^TestGoldenVectorsGo$' -count=1` exited 0; `npm run typecheck` exited 0.
+- Contracts, golden vectors, historical IDs/external URLs, and the two unrelated user-test diffs are unchanged. Only exact migration surfaces were staged.
+- Full runtime suites were not rerun: executable code is byte-identical. No meaningful RED applies to this documentation/comment-only change. The previously reported Node 26 crypto issue is not claimed fixed.
+- The human-owned RDD switch reads on. Native assessment uses the committed work-unit range to exclude unrelated unstaged user edits; no review verdict or delivery approval is asserted by these functional checks.
+- Risk: none — source changes are comments only, with executable-byte invariance proved; no shared parser, option, guard, contract, concurrency, data, or environment behavior changes.

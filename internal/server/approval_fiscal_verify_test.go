@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module is the Delivery Slice 5
-// TRIANGULATE audit/verification assertion (openspec/changes/
-// fiscal-runtime-foundations, tasks.md: "audit/verification assertions for
+// TRIANGULATE audit/verification assertion (docs/decisions/
+// fiscal-runtime-foundations-task-history.md: "audit/verification assertions for
 // trusted actor, RUC, period, reason, receipt continuity, and 'Accounting
 // correctness: NOT ASSERTED'"): a memory approved with a v1 fiscal intent
 // must be reported by the EXISTING offline verification layer (wired in

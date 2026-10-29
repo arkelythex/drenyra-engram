@@ -1,33 +1,33 @@
 # Drenyra Engram — Engineering Philosophy
 
 This is the durable reference for how work gets planned, built, reviewed, and kept clean in this repository.
-It does not replace the spec/design docs under `openspec/` or `docs/` — it sets the standard those documents
-and every code change are held to. Update this file when a convention genuinely changes; do not fork it per
+It does not replace requirements under `specs/` or decision records under `docs/decisions/` — it sets the standard those documents
+and every code change are held to. Historical records are evidence, not an alternative workflow. Update this file when a convention genuinely changes; do not fork it per
 feature.
 
 ## 1. Organic Driven Development (ODD)
 
-ODD is the default workflow for every change here, not a ceremony reserved for big features.
+ODD is the only development workflow here, not a ceremony reserved for big features.
 
 - **Investigate before writing.** Read the relevant code and requirements proportionally to the change before
   proposing or editing anything. A one-line fix does not need an essay; a cross-cutting change does not skip
   the reading.
-- **Track substantial work, not everything.** A change is "substantial" when it has two or more real steps or
-  represents progress worth recovering after an interruption — not when it crosses a line-count threshold.
-  Substantial work gets a feature document under `odd/tasks/<feature-name>.md` before the first source write:
-  objective, problem, why, scope, constraints, an ID'd task checklist, resolved TDD mode, and delivery strategy.
-  Small, understood fixes stay small and create no paperwork.
-- **One task, one outcome, one commit.** Each task closes with at least one work-unit commit on a feature
-  branch — tests and docs travel with the behavior they describe, not in a follow-up commit. Conventional
-  Commits only; no AI attribution in commit trailers.
+- **Track resumability, not step counts.** Small work is understood from a bounded read, has contained risk,
+  and can be resumed from the request and diff alone. It stays inline without a new feature document.
+  Work that fails that resume test gets `odd/tasks/<feature-name>.md` before the first source write:
+  a short header, `## Specs` quoting the request, `## Tasks` with IDs/status/routes/commits, and `## Log` last.
+  Keep the file, available memory mirror, and visible task list aligned after each transition.
+- **Commit work units, not checkboxes.** A feature-branch commit holds a cohesive, reviewable outcome,
+  including its tests and docs. Aim for about 400 authored changed lines without fragmenting an outcome
+  or deleting useful content to reach a number. Conventional Commits only; no AI attribution in trailers.
 - **Checkboxes are not approval.** A task is checked off only after its outcome and checks were actually
   observed. Failed, skipped, or pending checks are recorded honestly, not hidden.
 - **Findings drive scope, not silent expansion.** Review or verification findings update the task list with a
   reason; they never justify quietly widening what a "cleanup" or "fix" touches without saying so.
-- **Delegate the reading, not the deciding.** Broad exploration (4+ files) and any write touching 2+ non-trivial
-  files get delegated to a bounded agent so the main thread stays a coordinator, not a everything-context dump.
-  Product and scope decisions stay with the person driving the session — an agent returns gaps, it doesn't
-  invent answers to them.
+- **Delegate by mechanism, not file count.** Use bounded exploration when the evidence budget is exceeded;
+  independent writers only for sufficiently substantial, independent behavior units with disjoint edit
+  surfaces; and an independent verifier for a named high-risk item. Small, understood work stays inline.
+  Product and scope decisions remain with the person driving the session; an agent returns gaps, not consent.
 
 ## 2. Gentleman Programming principles
 
@@ -75,8 +75,10 @@ shape code should tend toward, not a checklist to satisfy for its own sake.
   dodge the count.
 - **Security and privilege boundaries reviewed like code.** Every write path that changes fiscal state,
   authorization, or actor identity gets the same scrutiny as the tests around it — this is exactly what the
-  RDD (receipt-driven development) review gate in this repo is for; it is opt-in and currently **on** globally
-  here, so treat its review-due findings as real blockers, not noise to route around.
+  RDD (receipt-driven development) outside view complements; it follows the human-owned switch and the
+  current native risk assessment, not a saved claim that it is enabled or a review per checkbox. Functional
+  checks and any required independent verifier remain necessary. Never invent a native verdict or route
+  around a review-due stop.
 
 ## 4. Current standards to hold this stack to
 

@@ -1,6 +1,6 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This test drives the Delivery Slice 6 HTTP
-// fiscal adapter (openspec/changes/fiscal-runtime-foundations, design.md
+// fiscal adapter (docs/decisions/fiscal-runtime-foundations-design.md,
 // "Public contracts > HTTP").
 //
 // It covers ONLY what is genuinely transport: the typed-error-to-HTTP-code

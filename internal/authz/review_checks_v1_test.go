@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This test is the Delivery Slice 5 RED/GREEN
 // suite for the presence-aware anti-rubber-stamp clause
-// (openspec/changes/fiscal-runtime-foundations, design.md "Immutable act
+// (docs/decisions/fiscal-runtime-foundations-design.md, "Immutable act
 // evidence and envelope linkage"): authz.ValidateReviewChecksV1 must fail
 // closed for a material/critical approval whenever EITHER acknowledgement is
 // omitted OR explicitly false, and succeed only when BOTH are explicitly

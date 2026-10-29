@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This test drives the canonical
-// presence-aware reviewChecks decoder (openspec/changes/
-// fiscal-runtime-foundations, design.md "The raw DTO uses presence-aware
+// presence-aware reviewChecks decoder (docs/decisions/
+// fiscal-runtime-foundations-design.md, "The raw DTO uses presence-aware
 // nullable booleans"). It lives beside the decoder it proves: the rule
 // "omitted is never a successful declaration" is a contract property, so it
 // is proven once here rather than once per transport adapter.

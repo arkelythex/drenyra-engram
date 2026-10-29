@@ -1,3 +1,8 @@
+> **Historical record, not an active workflow or authorization.** The original record is preserved verbatim below.
+> Current requirements: [Fiscal runtime foundations](../../specs/fiscal-runtime-foundations/spec.md). Current workflow and backlog: [ODD feature](../../odd/tasks/fiscal-runtime-foundations.md).
+
+<!-- preserved-record-begins -->
+
 # Apply Progress — Fiscal Runtime Foundations
 
 ## Cumulative status

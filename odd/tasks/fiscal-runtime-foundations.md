@@ -1,0 +1,33 @@
+# Fiscal runtime foundations — ODD continuity
+
+Preserve the fiscal feature's requirements, evidence, and unfinished work after retiring its legacy workflow.
+Recorded implementation status describes the feature branch, not merge readiness or authorization. No fiscal runtime work is authorized by this migration.
+
+## Specs
+
+- **S1** (user, verbatim): "hey bro has limpiea y elimiina todo sobre SDD , ahora el flujo de vanguardia en gentle-shell 4.5.1 es con ODD y mas".
+- **S2** (user selection, verbatim): "Retirar el workflow SDD/OpenSpec (recomendado)".
+- The unchanged [requirements of record](../../specs/fiscal-runtime-foundations/spec.md) remain authoritative for the domain. The [design](../../docs/decisions/fiscal-runtime-foundations-design.md) and [historical checklist](../../docs/decisions/fiscal-runtime-foundations-task-history.md) retain the original detail.
+
+## Tasks
+
+- **F1** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Contract and pure canonical foundation.
+- **F2** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Additive persistence, migration, inventory, and runtime modes.
+- **F3** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Envelope linkage and store enforcement for protected writes.
+- **F4** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Services, protected reads, verification, and parity enforcement.
+- **F5** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Authenticated approval transaction and acknowledgement evidence.
+- **F6** — S1–S2 — recorded complete in the imported checklist; not newly verified or assumed merged — route: historical record — commits: see [verification history](../../docs/decisions/fiscal-runtime-foundations-verification-history.md). Public CLI/HTTP/MCP adapters and local-dev seed hardening.
+- **F7.1** — S1–S2 — blocked: separate fiscal implementation/delivery authorization required — route: future fiscal work unit — commit: pending. RED: add rollout/evidence checks for inventory, contract/vector freeze, shadow gate, enforce gate, legacy compatibility selection, downgrade refusal, receipt changed-path denylist, complete verification evidence, and consumer handoff prerequisites.
+- **F7.2** — S1–S2 — blocked: separate fiscal implementation/delivery authorization required — route: future fiscal work unit — commit: pending. GREEN: document versioned scope/approval contracts, legacy/v1 classifications, fictional local-dev operation, rollback/read-only modes, non-authorization boundary, required commands, and the exact onboarding handoff without claiming onboarding implementation.
+- **F7.3** — S1–S2 — blocked: separate fiscal implementation/delivery authorization required — route: future fiscal work unit — commit: pending. TRIANGULATE: run the complete verification order `npm run typecheck`, `go vet ./...`, `gofmt -l .`, `go test ./...`, `npm test`; run compliance gates where applicable (`bun run compliance:sire-gate`, `bun run compliance:sire-repro`), inspect changed paths, and confirm all receipt goldens remain byte-identical.
+- **F7.4** — S1–S2 — blocked: separate fiscal implementation/delivery authorization required — route: future fiscal work unit — commit: pending. REFACTOR: remove stale workaround language, ensure docs match implemented version/error semantics, preserve explicit `Accounting correctness: NOT ASSERTED`, and produce a final trace from each specification requirement to evidence.
+- **F7.5** — S1–S2 — blocked: separate fiscal implementation/delivery authorization required — route: future fiscal work unit — commit: pending. Record final work-unit commit/rollback boundaries and mark the dependent onboarding consumer blocked pending a passing verify report; do not modify its implementation in this change.
+- **F8** — S1–S2 — blocked: final fiscal delivery evidence is incomplete — route: future fiscal verification — commit: pending. Reconcile all seven slices, focused evidence, changed-path boundaries, receipt freeze, and dependent-consumer readiness before claiming fiscal completion. Retired attempt-acquisition/archive ceremony is not an ODD gate.
+
+## Log
+
+- **L1** (user, verbatim): "hey bro has limpiea y elimiina todo sobre SDD , ahora el flujo de vanguardia en gentle-shell 4.5.1 es con ODD y mas".
+- **L2 — Imported status:** the historical checklist marks Slices 1–6 complete and leaves all five Slice 7 items plus final parent-owned evidence reconciliation unchecked. Those outstanding outcomes are carried above, not silently completed. Original tasks, boundaries, comments, and historical review facts remain verbatim in the historical checklist and verification record.
+- **L3 — Scope:** this migration neither merges the original or restacked fiscal PRs nor claims a new native verdict. The separate MCP review remains unresolved. No contract, receipt/golden vector, runtime behavior, professional authority, or onboarding implementation is changed.
+- **L4 — Current workflow:** follow [AGENTS.md](../../AGENTS.md) and the [engineering philosophy](../PHILOSOPHY.md). ODD is the only workflow. Historical review attempts and commands are evidence, not active instructions; native review follows the human-owned switch and the current risk assessment, never one review per checkbox. The preserved pending work requires a separate authorized fiscal work unit.
+- **L5 — Protected historical citation:** the header of `internal/store/fiscal_binding_enforcement_test.go` retains its original legacy path citation because that file contains unrelated user edits. It is a comment, not a runtime or workflow dependency. The canonical requirements and historical design are linked above. The file and the user's binary diff remain untouched; do not infer that the old workflow still exists from this preserved citation.

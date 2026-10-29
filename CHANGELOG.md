@@ -27,6 +27,15 @@ and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
 ## [Unreleased]
 
+### Workflow
+
+- Completed fiscal workflow retirement on the feature branch: the unique
+  requirements now live in `specs/fiscal-runtime-foundations/`, unfinished work
+  in `odd/tasks/fiscal-runtime-foundations.md`, and design/evidence records in
+  `docs/decisions/`. No active `openspec/` tree remains. ODD is the only workflow;
+  historical IDs, external program links, golden vectors, and contracts are
+  unchanged. This does not assert that every fiscal PR is merged or complete.
+
 ### Added
 
 - **Schema v18 (additive).** `fiscal_scope_bindings` and `fiscal_binding_links`

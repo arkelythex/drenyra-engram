@@ -405,8 +405,8 @@ func ToolCatalog() []map[string]any {
 					"actorKind": stringSchema("human|agent|system (required)"),
 					"session":   stringSchema("optional session id"),
 				}, "system", "actorKind"),
-				// Delivery Slice 6 (openspec/changes/fiscal-runtime-foundations,
-				// design.md "Public contracts > MCP"): OPTIONAL strict v1 fiscal
+				// Delivery Slice 6 (docs/decisions/fiscal-runtime-foundations-design.md,
+				// "Public contracts > MCP"): OPTIONAL strict v1 fiscal
 				// scope binding JSON string. No identity/role/assurance field is
 				// advertised — the binding is scope metadata (never authority)
 				// and a malformed/incomplete document fails closed before any

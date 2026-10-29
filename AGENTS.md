@@ -7,7 +7,7 @@ This file is for AI agents and their humans working in this repository. It answe
 
 ## Non-Negotiable Rules
 
-These rules were carried over verbatim from the former `openspec/config.yaml` conventions when the SDD/OpenSpec workflow was retired.
+These are the authoritative project conventions. Historical requirement and decision records do not define an alternative workflow.
 
 - **Commits:** conventional commits only (`feat:`, `fix:`, `docs:`, `test:`, `bench:`, `build:`, `refactor:`). Never add AI attribution (no `Co-Authored-By`).
 - **Money:** monetary values are WHOLE int64 cents (Go) / BigInt cents (TS). Never floats. Sequence/revision counters are JSON integers, never floats.
@@ -24,7 +24,7 @@ These rules were carried over verbatim from the former `openspec/config.yaml` co
 
 ## Delivery Workflow — ODD
 
-Organic Driven Development is the only delivery workflow. It replaced SDD/OpenSpec (see [`odd/tasks/sdd-to-odd-migration.md`](odd/tasks/sdd-to-odd-migration.md)).
+Organic Driven Development is the only delivery workflow. Follow the [engineering philosophy](odd/PHILOSOPHY.md); requirements live in `specs/`, feature tasks in `odd/tasks/`, and historical decisions in `docs/decisions/`.
 
 1. **Authorize.** A request to investigate, explain, review, or plan is read-only. Only explicit change intent authorizes writes.
 2. **Explore** the existing code and the relevant [`specs/`](specs) requirement before proposing anything.
@@ -58,6 +58,6 @@ Also available: `go test ./internal/core -run TestGoldenVectorsGo` (golden parit
 | `core/`, `store/`, `authz/`, `lifecycle/` | TypeScript reference and parity mirrors |
 | `contracts/` | Frozen contract set — public surface |
 | `testdata/golden` | Go↔TS golden vectors |
-| `specs/` | Requirements records migrated from the retired SDD changes |
+| `specs/` | Requirements of record, including verbatim historical specifications |
 | `odd/tasks/` | ODD feature documents |
 | `docs/` | Architecture, decisions, product, demo, benchmark, security |

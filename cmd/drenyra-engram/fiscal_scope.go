@@ -1,7 +1,7 @@
 // Fiscal convention: monetary values in the Drenyra ecosystem are int64 cents;
 // no float is ever used for money. This module is the Delivery Slice 6 CLI
 // fiscal-scope binding-file loader and presence-aware acknowledgement flag
-// helper (openspec/changes/fiscal-runtime-foundations, design.md "Public
+// helper (docs/decisions/fiscal-runtime-foundations-design.md, "Public
 // contracts > CLI"):
 //
 //   - loadFiscalScopeBindingFile reads one --fiscal-scope binding file and
