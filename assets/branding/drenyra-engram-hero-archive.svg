@@ -14,9 +14,7 @@
 
 <g transform="translate(70 202)">
   <line x1="0" y1="0" x2="540" y2="0" stroke="#8a7358" stroke-width="1"/>
-  <text x="0" y="40" fill="#824f16" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" text-anchor="start" letter-spacing="0">Memory guides.</text>
-  <text x="142" y="40" fill="#0d4a68" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" text-anchor="start" letter-spacing="0">Evidence demonstrates.</text>
-  <text x="345" y="40" fill="#315b31" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" text-anchor="start" letter-spacing="0">Humans authorize.</text>
+  <text x="0" y="40" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700" text-anchor="start" letter-spacing="0"><tspan fill="#824f16">Memory guides.</tspan> <tspan fill="#0d4a68">Evidence demonstrates.</tspan> <tspan fill="#315b31">Humans authorize.</tspan></text>
   <text x="0" y="80" fill="#554638" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="500" text-anchor="start" letter-spacing="0">Context survives sessions, agents, and departures.</text>
 </g>
 

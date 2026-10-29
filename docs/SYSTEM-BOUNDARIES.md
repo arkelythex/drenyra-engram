@@ -1,8 +1,14 @@
-# Drenyra Engram — Architecture
+# Drenyra Engram — System Boundaries
 
 > **Last updated:** 2026-08-10. This is the canonical boundary document the
-> contracts reference; the design overview lives in
-> [docs/ARCHITECTURE.md](ARCHITECTURE.md).
+> contracts reference. It was previously named `architecture.md`; it is renamed
+> so it no longer collides with [ARCHITECTURE.md](ARCHITECTURE.md) on
+> case-insensitive file systems. The design overview lives in
+> [ARCHITECTURE.md](ARCHITECTURE.md).
+>
+> **Runtime:** the Go binary is the shipped engine and the authority. The
+> TypeScript package is a reference mirror used for contract parity (see
+> [COMPATIBILITY.md](COMPATIBILITY.md#typescript-reference-mirror)).
 
 ## Position in the ecosystem
 
@@ -31,8 +37,10 @@ Profesional autoriza. A professional authorizes.
   offline integrity verification. Those certify **Engram's own state
   transitions** — never accounting correctness, never permission to execute an
   external action.
-- There is no `authorize`/`approve`/`allow`/`execute` tool; there is no
-  journal-entry posting and no SUNAT filing surface. Every verification report
+- There is no `authorize`/`allow`/`execute` tool; there is no journal-entry
+  posting and no SUNAT filing surface. `accounting_approve` is the professional
+  review of a memory: it derives identity only from an authenticated session
+  and fails closed with `AUTHENTICATION_REQUIRED` on stdio. Every verification report
   ends with exactly **"Accounting correctness: NOT ASSERTED"**.
 - Cross-consumer business authorization routes through the owning application
   policy and human professionals.

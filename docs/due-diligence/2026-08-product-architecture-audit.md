@@ -133,7 +133,7 @@ The supplied 660-question questionnaire is retained as the audit backlog. The fo
 
 1. `README.md` shows an MIT badge while `LICENSE` and the product policy state proprietary rights. This is a release-facing contradiction; the badge must say proprietary.
 2. `README.md` reports stale test/tool counts and calls the next milestone v0.4 even though the repository documents v0.5 complete and v0.6 in progress.
-3. `docs/architecture.md` says the repository does not contain authorization, receipts, or gates, but the current repository implements authenticated approvals, receipts, and verification. The architecture boundary must distinguish **business authorization** from the engine's professional approval and act receipts.
+3. `docs/SYSTEM-BOUNDARIES.md` (at audit time named `architecture.md`) says the repository does not contain authorization, receipts, or gates, but the current repository implements authenticated approvals, receipts, and verification. The architecture boundary must distinguish **business authorization** from the engine's professional approval and act receipts.
 4. `ROADMAP.md` contains completed v0.4 work followed by unchecked completion criteria and an old implementation sequence. The completed milestone must be marked consistently.
     5. `docs/architecture/fiscal-policy-memory-v0.6.md` is a design/integration document, not proof that all v0.6 capabilities are shipped. Its status must remain explicit until the rule-link, impact, verification, and surface batches land.
 
