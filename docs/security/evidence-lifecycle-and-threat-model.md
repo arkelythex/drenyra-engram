@@ -109,7 +109,7 @@ capture → canonical hash → store (WORM) → link → verify availability   [
 ### 4.2 Trust boundaries (frozen)
 
 1. **Scope is structural**: company/RUC/period filters precede ranking; cross-tenant leakage is a defect with a required negative test — [contracts/scope.md](../../contracts/scope.md).
-2. **Memory never authorizes**: no authorize/approve/allow tool; approval is professional review of a memory — [docs/architecture.md](../architecture.md), [contracts/provenance.md](../../contracts/provenance.md).
+2. **Memory never authorizes**: no authorize/allow tool; `accounting_approve` is an authenticated professional review of a memory that derives identity only from a session and fails closed without one — [docs/SYSTEM-BOUNDARIES.md](../SYSTEM-BOUNDARIES.md), [contracts/provenance.md](../../contracts/provenance.md).
 3. **Agents record, humans decide**: agents propose memories, links, judgments, reconciliations; only an authenticated principal confirms/approves; voiding admits human/system, never agents — [contracts/lifecycle.md](../../contracts/lifecycle.md), [contracts/judgment.md](../../contracts/judgment.md).
 4. **Local-first host boundary**: the SQLite file, keyring, and binary sit on the operator's host; host security is the effective boundary until production hardening (see §5, audit block Z).
 
