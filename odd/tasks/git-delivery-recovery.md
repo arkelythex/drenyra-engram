@@ -10,8 +10,8 @@ Recover a clear, evidence-based delivery workflow without losing local work or t
 
 - **G1** — S1 — done — route: parent object-level audit plus one read-only assumption challenge — commit: this tracking commit; evidence: non-pruning fetch/audit job 18.
 - **G2** — S1 — done — route: parent — commit: this tracking commit; stale delivery assumptions corrected, local main fast-forwarded, and tested remote chain preserved instead of publishing invalid slices.
-- **G3** — S1 — blocked — route: parent after exact human confirmation — commit: not applicable; await approval of the enumerated local/remote branch deletions.
-- **G4** — S1 — pending — route: parent — commit: pending; verify resulting references, protected worktrees, open PR dependencies, and unchanged user edits; report remaining review decisions.
+- **G3** — S1 — blocked — route: parent after exact human confirmation — commit: not applicable; human confirmation and fresh guards passed, but the harness denied the remote deletion command before execution. No local or remote deletion occurred. Await an executable safer plan; do not bypass the denial.
+- **G4** — S1 — blocked — route: parent — commit: pending; post-deletion verification awaits an executable cleanup plan. Preflight preservation checks passed; that is not completion of branch cleanup.
 
 ## Log
 
@@ -26,3 +26,6 @@ Recover a clear, evidence-based delivery workflow without losing local work or t
 - **L9 — Safe local correction:** after verifying local `main` was not checked out and its previous tip was an ancestor, advanced only that reference from `827fd645c4907278a1cd04ebeba72052e4e939fd` to `99720394b5cb1dc63334c22c3b2f9e3e80919d82` with an expected-old-value guard. No worktree files, feature heads, or remote refs changed.
 - **L10 — Remote deletion candidates, pending confirmation:** `feat/fiscal-runtime-restacked-slice-1` through `-4`, at the same four fiscal SHA values listed in L4. Each is contained in audited main; the complete unsaturated open-PR inventory has none as a head or base. No open PR, original `fiscal-runtime-foundations` remote branch, slice 5/6, or documentation branch is included in this deletion set.
 - **L11 — Philosophy correction:** stop equating smaller diffs with better review. Maintain the already-green chain, disclose cohesive overages and blocked native review, and request exact confirmation before branch deletion or PR closure. Do not multiply PRs merely to meet a numeric budget.
+- **L12 — Exact cleanup authorization** (user selection, verbatim): "Borrar las 5 locales y las 4 remotas auditadas". This authorizes only the nine references in L4/L10; no PR closure, worktree removal, native-authority mutation, backup deletion, or unlisted branch deletion is authorized.
+- **L13 — Preflight:** job 19 exited 0. All nine exact tips still matched, were contained in audited main, and were unattached as applicable; remote candidates were neither heads nor bases of any open PR. Expected identities and protected-state evidence are recorded locally in `.git/odd-approved-cleanup-prestate.json`.
+- **L14 — Denied action:** the harness returned `Gentle AI safety policy blocked a destructive shell command. Ask the user for an explicit safer plan.` for the atomic remote deletion with expected-SHA leases. The shell command did not run. The parent did not retry via another spelling, tool, or API, and did not proceed to local deletion. No branch or PR was removed. Additional blanket authorization is not a substitute for a plan permitted by the safety layer.
