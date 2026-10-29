@@ -5,13 +5,14 @@ Recover a clear, evidence-based delivery workflow without losing local work or t
 ## Specs
 
 - **S1** (user, verbatim): "usa buenas practicas de git y github , has limpieza de ramas , aplica la filosofia de gentleman para correjir los errores".
+- **S2** (user, verbatim): "yes hasloa como auditoriano destrucitva". This supersedes the deletion path: retain every audited reference and close as a non-destructive audit.
 
 ## Tasks
 
 - **G1** — S1 — done — route: parent object-level audit plus one read-only assumption challenge — commit: this tracking commit; evidence: non-pruning fetch/audit job 18.
 - **G2** — S1 — done — route: parent — commit: this tracking commit; stale delivery assumptions corrected, local main fast-forwarded, and tested remote chain preserved instead of publishing invalid slices.
-- **G3** — S1 — blocked — route: parent after exact human confirmation — commit: not applicable; human confirmation and fresh guards passed, but the harness denied the remote deletion command before execution. No local or remote deletion occurred. Await an executable safer plan; do not bypass the denial.
-- **G4** — S1 — blocked — route: parent — commit: pending; post-deletion verification awaits an executable cleanup plan. Preflight preservation checks passed; that is not completion of branch cleanup.
+- **G3** — S1, S2 — dropped — route: parent — commit: not applicable; the user replaced deletion with a non-destructive audit. No local or remote deletion occurred; do not revive the superseded deletion authorization.
+- **G4** — S1, S2 — done — route: parent — commit: this closure record; read-only preservation job 20 exited 0 and the worktree-registration check passed. All nine audited references, backup/review refs, and unrelated user changes were retained; no branch deletion, PR mutation, push, prune, or reset occurred.
 
 ## Log
 
@@ -29,3 +30,5 @@ Recover a clear, evidence-based delivery workflow without losing local work or t
 - **L12 — Exact cleanup authorization** (user selection, verbatim): "Borrar las 5 locales y las 4 remotas auditadas". This authorizes only the nine references in L4/L10; no PR closure, worktree removal, native-authority mutation, backup deletion, or unlisted branch deletion is authorized.
 - **L13 — Preflight:** job 19 exited 0. All nine exact tips still matched, were contained in audited main, and were unattached as applicable; remote candidates were neither heads nor bases of any open PR. Expected identities and protected-state evidence are recorded locally in `.git/odd-approved-cleanup-prestate.json`.
 - **L14 — Denied action:** the harness returned `Gentle AI safety policy blocked a destructive shell command. Ask the user for an explicit safer plan.` for the atomic remote deletion with expected-SHA leases. The shell command did not run. The parent did not retry via another spelling, tool, or API, and did not proceed to local deletion. No branch or PR was removed. Additional blanket authorization is not a substitute for a plan permitted by the safety layer.
+- **L15 — Scope replacement** (user, verbatim): "yes hasloa como auditoriano destrucitva". The deletion path is dropped, not completed. All audited branches are retained; no deletion, PR closure, push, prune, or history rewrite belongs to the final audit outcome. Native MCP review and the separate documentation-sizing decision remain outside this audit closure.
+- **L16 — Non-destructive closure:** job 20 exited 0: five local and four remote references matched the approved prestate; backup/review refs and the user's binary test diff were unchanged; local main remained at the safe fast-forward. A separate metadata-only check confirmed all worktree registrations, branches, and non-current HEADs preserved. The current HEAD differs only by the agent's tracking commits. The audit is complete; deletion remains dropped.
