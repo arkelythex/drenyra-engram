@@ -1,0 +1,28 @@
+# Git and GitHub delivery recovery
+
+Recover a clear, evidence-based delivery workflow without losing local work or treating review metadata as authorization.
+
+## Specs
+
+- **S1** (user, verbatim): "usa buenas practicas de git y github , has limpieza de ramas , aplica la filosofia de gentleman para correjir los errores".
+
+## Tasks
+
+- **G1** — S1 — done — route: parent object-level audit plus one read-only assumption challenge — commit: this tracking commit; evidence: non-pruning fetch/audit job 18.
+- **G2** — S1 — done — route: parent — commit: this tracking commit; stale delivery assumptions corrected, local main fast-forwarded, and tested remote chain preserved instead of publishing invalid slices.
+- **G3** — S1 — blocked — route: parent after exact human confirmation — commit: not applicable; await approval of the enumerated local/remote branch deletions.
+- **G4** — S1 — pending — route: parent — commit: pending; verify resulting references, protected worktrees, open PR dependencies, and unchanged user edits; report remaining review decisions.
+
+## Log
+
+- **L1** (user, verbatim): "usa buenas practicas de git y github , has limpieza de ramas , aplica la filosofia de gentleman para correjir los errores".
+- **L2 — Audit basis:** `origin/main` advanced from `bbfad20` to `99720394b5cb1dc63334c22c3b2f9e3e80919d82`. GitHub reports externally merged PRs #68 (restacked slice 4), #69 (slice 2), and #70 (slice 3). The assistant did not create or merge those PRs. Published documentation tip remains `6e57f93d960de0214610def733e79395a9e402d4`.
+- **L3 — Method:** determine normal ancestry containment first; otherwise enumerate additions, modifications, deletions, and renames and compare whole final blobs. Differing or ambiguous effects are retained, not declared redundant merely because an upstream ref is gone. No pruning or deletion occurred during the audit.
+- **L4 — Local deletion candidates, pending confirmation:** `docs/drenyra-dominion-program` at `53e95d9577b0195cc78c36d4cbeb959b31267055`; `feat/fiscal-runtime-foundations-slice-1` at `5d40d1bb646f39ba8e9cb221d9710ac4d2404864`; `feat/fiscal-runtime-foundations-slice-2` at `d5cfa59670d0c0519b0a513f476d80183941820b`; `feat/fiscal-runtime-foundations-slice-3` at `8dff23f853efa5ac99928e9745972bd12e32ab60`; `feat/fiscal-runtime-foundations-slice-4` at `4129088666f33ae7ddfe452157e720e987406120`. Every tip is contained in the audited main and none is attached to a worktree. Removing a local reference would not remove its similarly named remote PR branch.
+- **L5 — Preserve:** current branch and dirty worktree; every attached worktree; `review/mcp-schema-fix` and its open native lineage; provider-owned candidate views; `refs/backup/*`; branches with unresolved effects; all open PR heads/bases. Three local Dependabot refs marked `gone` still have differing final blobs and are not deletion candidates.
+- **L6 — Delivery correction:** all corrected PR snapshots #58–#67 passed CI (job 16). The prospective smaller documentation chain failed intermediate link checks (job 17), so no split branches or replacement PRs were published. A smaller diff is not a valid unit if it separates enforcement from tests or breaks its reading path. No size exception, protected label, native verdict, merge, or PR closure is inferred.
+- **L7 — User edits:** the unrelated changes in `internal/store/doctor_test.go` and `internal/store/fiscal_binding_enforcement_test.go` remain unstaged. Their combined binary diff SHA-256 is `b26bae423d83d9480b5ce33fd8011cce1762a42981fbded9a5153b989910fc4c`. The existing documentation feature file also has agent-owned, uncommitted tracking changes; do not mix those with user tests.
+- **L8 — Verification scope:** this is repository hygiene and tracking, not a runtime behavior change. No meaningful new RED test applies; use guarded ref identities, ancestry, complete blobs, worktree/PR inventories, and structural checks. Do not rerun green runtime CI merely for an audit or claim independent verification where unavailable.
+- **L9 — Safe local correction:** after verifying local `main` was not checked out and its previous tip was an ancestor, advanced only that reference from `827fd645c4907278a1cd04ebeba72052e4e939fd` to `99720394b5cb1dc63334c22c3b2f9e3e80919d82` with an expected-old-value guard. No worktree files, feature heads, or remote refs changed.
+- **L10 — Remote deletion candidates, pending confirmation:** `feat/fiscal-runtime-restacked-slice-1` through `-4`, at the same four fiscal SHA values listed in L4. Each is contained in audited main; the complete unsaturated open-PR inventory has none as a head or base. No open PR, original `fiscal-runtime-foundations` remote branch, slice 5/6, or documentation branch is included in this deletion set.
+- **L11 — Philosophy correction:** stop equating smaller diffs with better review. Maintain the already-green chain, disclose cohesive overages and blocked native review, and request exact confirmation before branch deletion or PR closure. Do not multiply PRs merely to meet a numeric budget.

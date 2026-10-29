@@ -34,6 +34,10 @@ Accounting software earns trust through precise boundaries, reproducible workflo
 - TDD is not applicable to documentation-only changes. Verification must still check examples, links, formatting, and factual catalogs.
 - The approximately 400 changed-line task size is advisory; do not sacrifice coherent reader journeys to meet it.
 
+## Specs — review-slicing follow-up
+
+- **S1** (user selection, verbatim): "Dividir los PRs grandes (recomendado)".
+
 ## Tasks
 
 - [x] **DOC-001: Establish the product landing page**
@@ -104,6 +108,8 @@ Accounting software earns trust through precise boundaries, reproducible workflo
   - Advertise the snake_case names from `contracts/approval.md` for `accounting_approve`, `accounting_review_detail`, `accounting_review_reject`, `accounting_review_return`; add `TestMCPInputSchemaMatchesDecoder` covering every property of every tool (strict and lenient decoders).
   - Checks: RED with 10 mismatches; GREEN after; docs updated from known issue to fixed.
 
+- [ ] **DOC-013: Split oversized review units — BLOCKED** — S1; route: parent with one read-only exploration handoff; commit: none. The single slicing pass preserved final content but failed intermediate link validation. Await a user decision on linked-document reorganization and residual size exceptions before publication; no split branches or replacement PRs were published.
+
 ## Progress
 
 - Scope selected by the user: complete documentation transformation.
@@ -128,7 +134,7 @@ Accounting software earns trust through precise boundaries, reproducible workflo
 
 ## Commits and delivery
 
-Branch `chore/project-excellence-foundations`, restacked on `origin/main` (bbfad20). The fiscal-runtime-foundations commits below it keep their own chained PRs (#35-#39, slice 6 has no PR yet); this feature is the slice on top and ships as its own PR.
+Branch `chore/project-excellence-foundations` was originally restacked on `origin/main` at `bbfad20`. The published review path is now existing #57, fiscal slice 6 (#58), then documentation #59-#67. Original PRs #35-#39 are preserved, not silently closed. A later non-pruning fetch found `origin/main` at `9972039` after externally merged #68-#70; fiscal slices 1-4 are now contained in main. See `git-delivery-recovery.md` for the guarded cleanup audit.
 
 | Task | Commit |
 | --- | --- |
@@ -204,11 +210,19 @@ Each new PR targets its immediate predecessor's branch, not `main`. Sizes count 
 - GREEN: focused search/sync tests, full `go test ./...`, and staged diff check all exited 0 (job 11). Repair commit: `4f256ec`. Native assessment: medium, `reviewDue=false` (`under_budget`), self-verification required and satisfied, no independent verifier required.
 - Propagated ancestry to #59-#67 using merge commits, not rebases. `git merge-tree` and tree IDs proved every downstream file tree unchanged. Each updated head descends from its old head and its corrected immediate predecessor.
 - Ordinary atomic push and exact remote-head readback succeeded (job 13); no force push. Final propagated head: `7999d37`. The temporary repair worktree was removed after success; the fingerprint of the user's unrelated store-test diff remained unchanged.
-- Fresh CI for the corrected candidates is pending; prior green checks are not reused as proof for new commit identities. The scoped worker was unavailable once; the parent performed the bounded repair without retrying it.
+- Fresh CI for the corrected candidates completed: job 16 exited 0, with a successful public-check result for every PR #58-#67, including the previously failing fiscal tests and race job. The tested final published tip was `6e57f93`. The scoped worker was unavailable once; the parent performed the bounded repair without retrying it.
+
+## Review-slicing follow-up
+
+The user selected splitting oversized drafts. One read-only exploration pass identified file-scoped splits for guides, reference/index, and contribution guidance. CLI/HTTP adapters, decoder refactoring, and runtime-gate integration have individual historical changes of 520, 495, 560, and 751 lines; the gate also requires its 12-line legacy-fixture correction. Splitting security integration at arbitrary line boundaries would repeat the independently-red snapshot problem or separate enforcement from its tests. README (481 lines) and ROADMAP (554 lines by itself) are coherent replacements, not merely long additions.
+
+The single candidate pass (job 17) preserved the final file tree and produced candidate units of 219, 239, 352, 68, 359, and 554 lines. Intermediate Markdown checks failed (exit 1): `DOCS.md` references the not-yet-added `docs/README.md`, and `docs/COMPATIBILITY.md` references `../README.md#maturity` before the landing-page replacement supplies that anchor. Five candidate boundaries passed the limited changed-Markdown path/anchor check; that is not proof that the complete replacement chain is valid.
+
+No split branches or replacement PRs were published, and the existing green remote snapshots remain unchanged. Candidate metadata is retained only in `.git/odd-doc-split-plan.json`. No size exception is presumed. A user decision is required on permitting coordinated link/section reorganization or accepting the remaining cohesive overages; do not repeat the failed slicing check without an authorized change.
 
 ## Next step
 
-Publication and the ordering repair are complete, not merge acceptance. Complete CI, resolve the live reviewer-model selection, and resume native lineage `review-a1c054860cb98751` with fresh bound STATUS. The last capture still selected unavailable `openai/gpt-6.1-terra` despite the saved OpenAI profile correction. Accept or split oversized slices before merging in dependency order; Docker execution and Node 26 crypto failures remain explicit limitations.
+Publication and the ordering repair are complete, and fresh CI passed all ten corrected snapshots (#58-#67, job 16 exit 0). This is not merge acceptance. Resolve the live reviewer-model selection and resume native lineage `review-a1c054860cb98751` with fresh bound STATUS. The last capture still selected unavailable `openai/gpt-6.1-terra` despite the saved OpenAI profile correction. Accept or split oversized slices before merging in dependency order; Docker execution and Node 26 crypto failures remain explicit limitations.
 
 ## Log
 
@@ -224,4 +238,7 @@ Publication and the ordering repair are complete, not merge acceptance. Complete
 - Decision: the user affirmed both required ecosystem/non-authorization issue-form declarations. Issue #56 was created once; subsequent host readback established its identity.
 - L7 (host evidence): GitHub issue comment `6485633662` by maintainer `Dreamcoder08` explicitly approved the scope and the `status:approved` action for #56; the protected label was applied atomically and verified.
 - Delivery evidence: background job 6 exited 0 after creating and verifying draft PRs #58-#67. This is publication evidence, not an independent code-review verdict.
-- Correction evidence: initial CI exposed a missing prerequisite in #58; jobs 10/11 observed RED/GREEN for the exact existing test-helper fix, and job 13 published only fast-forward updates. New CI and native MCP review remain separate acceptance checks.
+- Correction evidence: initial CI exposed a missing prerequisite in #58; jobs 10/11 observed RED/GREEN for the exact existing test-helper fix, and job 13 published only fast-forward updates. Fresh CI job 16 subsequently exited 0 for all ten corrected PRs. Native MCP review remains a separate acceptance check.
+- L8 (user selection, verbatim): "Dividir los PRs grandes (recomendado)".
+- Slicing decision: perform one bounded pass; do not manufacture smaller diffs by deleting content, splitting security enforcement from its tests, or weakening gates.
+- Slicing evidence: job 17 exited 1 on intermediate documentation links while verifying unchanged final content. DOC-013 is blocked, not completed. No new split PRs or remote updates occurred. The prior repaired-chain CI remains green; the user's unrelated store-test diff fingerprint remains unchanged.
