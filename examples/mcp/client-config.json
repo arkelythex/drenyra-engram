@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "drenyra-engram": {
+      "command": "drenyra-engram",
+      "args": ["mcp", "--db", "/absolute/path/to/engram.db"],
+      "env": {
+        "DRENYRA_FISCAL_RUNTIME_MODE": "enforce",
+        "DRENYRA_DEFAULT_SCOPE": "{\"kind\":\"company\",\"organizationId\":\"<organization-id>\",\"companyId\":\"<company-id>\",\"ruc\":\"<11-digit-ruc>\",\"period\":\"<YYYYMM>\"}"
+      }
+    }
+  }
+}
