@@ -7,9 +7,79 @@ All notable changes to Drenyra Engram will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to the version policy in [RELEASING.md](RELEASING.md).
 
-## Unreleased
+## How to read this file
 
-## v0.9.0 — 2026-10-27 (GitHub release)
+- **`[Unreleased]`** lists changes merged after the latest tag. Nothing under it
+  is available as a tagged release.
+- **A dated `v…` heading with "tag" or "GitHub release"** is a Go engine release
+  that exists as a git tag. The tags in this repository are `v0.2.0`, `v0.2.1`,
+  and `v0.9.0` (`git tag -l`).
+- **A `v…` heading marked "not tagged"** records a milestone that was delivered
+  but never tagged on its own; it shipped inside the first tag that follows it
+  (see the `v0.9.0` entry).
+- **`0.0.1-prealpha.x` headings** are the TypeScript reference package track
+  (see [RELEASING.md](RELEASING.md) → Version policy), not engine tags.
+- Entries below the `v0.9.0` heading keep their original wording. Where an
+  original status statement ("released", "unreleased", "not yet released")
+  contradicted the git tags, only that status wording changed.
+- Milestone-by-milestone detail lives in [ROADMAP.md](ROADMAP.md) and the
+  contracts under [`contracts/`](contracts/README.md).
+
+## [Unreleased]
+
+### Added
+
+- **Schema v18 (additive).** `fiscal_scope_bindings` and `fiscal_binding_links`
+  tables. The tagged `v0.9.0` engine is schema v17.
+- **Fiscal operation scope binding v1.** A ten-element, canonically hashed
+  binding (tenant, organization, company, fiscal period, ledger book, operation
+  type, source snapshot, policy version, actor, authority level) with SUNAT
+  modulo-11 RUC validation and tri-state review acknowledgement types, specified
+  in [`contracts/fiscal-scope-v1.md`](contracts/fiscal-scope-v1.md). Go and
+  TypeScript implementations share the `fiscal-ruc-v1` and `fiscal-scope-v1`
+  vectors under `testdata/golden/`.
+- **Immutable act-evidence linkage.** Save, supersede, evidence/rule linking,
+  and evidence-object storage persist one immutable `fiscal_binding_links` row
+  atomically with the act; a v1-bound subject's envelope hash commits to it.
+  Direct store bypass fails closed with no partial state.
+- **Protected write paths accept the strict v1 binding** on the CLI `approve`
+  command, the HTTP approval route, and the `engram_save` MCP tool.
+
+### Fixed
+
+- **MCP `inputSchema` now matches the argument decoders.** `accounting_approve`,
+  `accounting_review_detail`, `accounting_review_reject`, and
+  `accounting_review_return` advertised camelCase properties (`memoryId`,
+  `expectedEnvelopeHash`, `requestId`) that their decoders rejected (`-32602`)
+  or silently dropped. They now advertise the snake_case names specified in
+  `contracts/approval.md`; clients already sending snake_case are unaffected.
+  `TestMCPInputSchemaMatchesDecoder` pins every advertised property of every
+  tool to its decoder.
+- **Sync and search tests select `legacy_compat` explicitly**, so
+  `go test ./...` no longer fails closed under the default `shadow` runtime mode.
+
+### Changed
+
+- **`DRENYRA_FISCAL_RUNTIME_MODE` gates company-scoped protected writes** (save,
+  approve, supersede, link evidence, store object). Values: `shadow`, `enforce`,
+  `legacy_compat`, `read_only`. **When unset, the mode is `shadow` and every
+  company-scoped protected write fails closed with `FISCAL_WRITE_GATE_CLOSED`**;
+  the CLI prints a warning on stderr naming the mode. `enforce` accepts only
+  writes carrying a v1 binding (legacy writes fail with
+  `SCOPE_BINDING_REQUIRED`); `legacy_compat` accepts only legacy writes;
+  `read_only` accepts none. `doctor` reports `fiscalRuntimeMode`. Deployments
+  upgrading from `v0.9.0` must set the mode explicitly to keep writing. See
+  [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#runtime-mode).
+
+### Documentation
+
+- Landing-page README, task-oriented guides (`docs/GETTING-STARTED.md`,
+  `docs/PRODUCT.md`, `docs/DATA-SECURITY-PRIVACY.md`,
+  `docs/TROUBLESHOOTING.md`), and runnable synthetic-data `examples/`.
+- `ROADMAP.md` refocused on future outcomes and readiness gates; `CONTRIBUTING.md`
+  gains a first-contribution path and a contract-change flow.
+
+## [v0.9.0] — 2026-10-27 (GitHub release)
 
 First tagged Go engine release since `v0.2.1`. It ships every milestone
 delivered on `main` since then: v0.3.0 Accounting Memory Kernel, v0.4.0
@@ -38,7 +108,6 @@ recorded here as "released-on-main" or "unreleased" but were never tagged, so
 
 The TypeScript reference package keeps its own `0.0.1-prealpha.x` track
 (`RELEASING.md` → Version policy) and is not part of this tag.
-
 
 ### Workflow — SDD/OpenSpec retired, ODD is the only workflow
 
@@ -96,7 +165,8 @@ cents), `core.ParseCDRXML`, `server.IngestComprobante` (WORM store), CLI
 
 `drenyra-engram serve` can now validate OpenID Connect access tokens as a first
 production identity slice on the HTTP surface, alongside the session-based CLI
-path. Implemented but not yet released.
+path. Implemented but not yet released when first recorded here; shipped in
+`v0.9.0`.
 
 - **Stateless RS256 access-token validation** ([internal/auth/oidc.go](internal/auth/oidc.go)): `alg` pinned to RS256 (no algorithm confusion); `kid` required and resolved from an in-memory JWKS cache (unknown `kid` triggers exactly ONE refresh, then fails closed); the `iss` and `aud` claims must match the configured settings exactly; `sub` and the tenant/company custom claims are required; `exp`, `nbf` and `iat` are enforced with a bounded clock skew. Raw tokens are never persisted, logged or hashed.
 - **DB membership/scope cross-check**: the verified `(sub, tenant, company)` tuple must exist in `memberships` (`LookupMembershipByScope`); missing → `PRINCIPAL_INVALID`, inactive → `MEMBERSHIP_INACTIVE`. Claims alone never mint membership.
@@ -168,7 +238,66 @@ deployments unchanged). `sync` refuses to copy an encrypted source into a
 plaintext sink (`SYNC_ENCRYPTION_MISMATCH`); both-encrypted sync re-encrypts
 on the target via `ImportObservation`.
 
-## v0.4.0 — Evidence, Conflict and Judgment (unreleased)
+### Delivery references and readiness evidence (moved from ROADMAP.md)
+
+These facts were recorded only in `ROADMAP.md` before it was refocused on future
+outcomes. They are kept here unchanged in substance.
+
+- **Implementation commit ranges.** v0.4.0 Step 1 `9d4211c..65af686`, Step 2
+  `0333a29..b49436f`, Step 3 `5e07d90..1eb9055`, Step 4 `c1ddfee..36b39f1`;
+  v0.5.0 `3eab1e1..2fe6a7e`.
+- **v0.4.0 acceptance criteria (12, all closed).** 1 an agent proposes a
+  contradiction but cannot confirm it · 2 an authenticated human without
+  company access cannot approve · 3 an authorized accountant approves exactly
+  the envelope reviewed · 4 the memory changes between review and approval →
+  optimistic conflict · 5 the approval emits an offline-verifiable Ed25519
+  receipt · 6 a modified signature fails · 7 a removed evidence is detected by
+  verification · 8 a confirmed judgment can be superseded, never edited · 9 Go
+  signs and TS verifies · 10 TS canonicalizes and Go verifies · 11 an approved
+  superseded memory produces a new `pending_review` revision · 12 the verifier
+  never presents cryptographic integrity as accounting correctness.
+- **v0.6.0 rule links and impact.** `SaveInput.ruleLinks[]` pins the exact rule
+  revision at the decision instant (schema v14: `rule_links.version` +
+  `effective_at` + `idx_rule_links_ref`) with `RULE_LINK_VERSION_CONFLICT`
+  idempotency and the closed-period gate; `RuleImpact` unions structured pins
+  with legacy bare refs and fails with `RULE_CHAIN_AMBIGUOUS` on an ambiguous
+  chain; `ResolveRuleVersionFromChain` returns `RULE_NOT_IN_FORCE`,
+  `RULE_VIGENCIA_OVERLAP`, `RULE_VERSION_MISMATCH`, or `RULE_STATUS_INVALID`;
+  legacy refs are skipped by the `rule version/vigencia` verification layer and
+  an invalid pin fails it. Design: docs/architecture/fiscal-policy-memory-v0.6.md.
+- **v0.7.0 object store behavior.** The object id is the SHA-256 hex of the
+  bytes; storing identical bytes again is a no-op (`created=false`, no
+  receipt); there is no overwrite or delete API; a path escape fails closed as
+  corruption with no silent repair. The v7→v8 migration runs in one
+  transaction and copies and swaps `receipts` to extend the subject and action
+  CHECK constraints. Architecture: docs/architecture/evidence-object-v0.7.md.
+- **Reconstructible-close demo fixture (2026-08-10).** The deterministic
+  fictional drill `TestReconstructibleCloseFixture` proves the chain balance →
+  ledger ref → entry → evidence object → rule + vigencia → judgment → approval
+  → offline verification without the original agent
+  (docs/demo/reconstructible-close.md). It advanced gate G-2 to PARTIAL; a real
+  or anonymized close is still required. It also fixed a verifier gap:
+  `evidence_linked` provenance now resolves by (memory, timestamp, ref), so
+  same-second XML+CDR pairs are unambiguous.
+- **v1-readiness engineering evidence (2026-08-11).** G-6: Go fuzz targets
+  (comprobante XML, receipt payload canonicalization, search tokenizer), 21
+  committed seeds, `make fuzz-ci` (3×30s bounded), doctor SQLite health checks
+  (quick, integrity drill-only, foreign-key, cell-size), a copy-only corruption
+  drill (marked copy, detection-required, `STORE_WRITE_FROZEN` retry-proof
+  latch, byte-preserved evidence), and a restore drill (`VACUUM INTO` + 4-check
+  verify + 6-case negative matrix); the fuzz harnesses found and fixed a parser
+  bug that silently accepted trailing garbage in amounts. G-7:
+  docs/security/key-compromise-response.md (NIST SP 800-57, 8 steps), a gap
+  analysis showing implementation matches the contract, and the FZ-3 cutoff
+  boundary matrix as a permanent regression. G-10: the read-only
+  reconstructibility surface (CLI/MCP/HTTP) scoring material decisions
+  reconstructible to evidence + rule + approval, with frozen
+  eligibility/classifier semantics and golden Go↔TS vectors.
+- **Test counts at the time of delivery** (not current): v0.2.0 foundation 40 Go
+  tests; v0.3.0 kernel 280 Go tests; v0.6.0 Go 9/9 packages and 360 TS tests;
+  v0.7.0 360 TS tests in 25 files; v0.9.0 Go 9/9 packages and 352 TS tests.
+
+## v0.4.0 — Evidence, Conflict and Judgment (not tagged; shipped in v0.9.0)
 
 ### Step 1 — ApprovalPrincipal autenticado (DONE)
 
@@ -223,7 +352,7 @@ reproducible policy against the exact envelope version that was reviewed.
   `sessions`, `authentication_method='service_assertion'`); no self-declared
   JWT claims until a signed-assertion trust contract exists. OIDC recognized
   but not resolvable in Step 1 — superseded by the stateless OIDC
-  access-token slice in Unreleased above.
+  access-token slice in the v0.9.0 section above.
 - **Materiality is a declared level** (`materialityLevel`: normal | material |
   critical, set by the writing agent); the policy never reinterprets the
   `Materiality *int64` threshold field.
@@ -344,7 +473,7 @@ revisada, y una cadena de receipts Ed25519 verificable offline que prueba que
 ningún acto fue alterado — sin jamás afirmar que la decisión contable sea
 correcta.
 
-## v0.5.0 — Close Intelligence (released-on-main)
+## v0.5.0 — Close Intelligence (not tagged; shipped in v0.9.0)
 
 Monthly close with an ENFORCEABLE period gate, first-class adjudicated
 reconciliations, period-over-period comparison and automatic agent context.
@@ -375,7 +504,7 @@ reconciliations, period-over-period comparison and automatic agent context.
 - Contracts frozen: contracts/closing.md, contracts/reconciliation.md,
   contracts/period-comparison.md; contracts/lifecycle.md updated to 0.5.
 
-## v0.3.0 — Accounting Memory Kernel (released)
+## v0.3.0 — Accounting Memory Kernel (not tagged; shipped in v0.9.0)
 
 > **Nomenclature note:** the original vision's "V0.2 Evidence and Judgment" is
 > NOT closed by this release — adjudicated contradictions, cryptographic
@@ -495,7 +624,13 @@ reconciliations, period-over-period comparison and automatic agent context.
   statuses) is replaced by the v2 approval-gated machine. Legacy JSON reads
   and the migration preserve historical data.
 
-## v0.2.0 — 2026-08-03 (GitHub release)
+## [v0.2.1] — 2026-08-03 (tag)
+
+- Tag annotation: "chore(docker): publish engine image to GHCR (Dockerfile +
+  workflow)". No changelog entry was written when this tag was cut. The
+  `v0.9.0` entry records `v0.2.1` as the last installable engine before it.
+
+## [v0.2.0] — 2026-08-03 (GitHub release)
 
 ### Released — Go engine Phase 2 complete (ADR-001)
 
@@ -530,7 +665,7 @@ reconciliations, period-over-period comparison and automatic agent context.
 
 - **`drenyra-engram sync --from <src-db> --to <dst-db>`** — additive,
   provenance-preserving, conflict-visible reconciliation
-  (docs/architecture.md sync semantics). Imports the source's FULL revision
+  (docs/SYSTEM-BOUNDARIES.md sync semantics). Imports the source's FULL revision
   history, relations and lifecycle audit trail into the sink with original
   ids, revisions and provenance (store `ImportObservation`/`TransitionExists`
   — verbatim, validated, idempotent; never a re-save that would fabricate
@@ -619,3 +754,8 @@ reconciliations, period-over-period comparison and automatic agent context.
 
   - Pre-alpha: contracts beyond the frozen-for-0.1 semantics are not frozen; relations, sync, and surfaces (MCP/CLI/HTTP/TUI) are planned in the ROADMAP.
   - Version policy: `0.0.1-prealpha.x` until the first frozen contract, then `0.1.0`.
+
+[Unreleased]: https://github.com/arkelythex/drenyra-engram/compare/v0.9.0...HEAD
+[v0.9.0]: https://github.com/arkelythex/drenyra-engram/compare/v0.2.1...v0.9.0
+[v0.2.1]: https://github.com/arkelythex/drenyra-engram/compare/v0.2.0...v0.2.1
+[v0.2.0]: https://github.com/arkelythex/drenyra-engram/releases/tag/v0.2.0
