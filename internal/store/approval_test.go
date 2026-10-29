@@ -139,6 +139,10 @@ func currentEnvelope(saved core.WriteResult) string {
 // two INDEPENDENT stores against ONE WAL database file).
 func openTestStorePath(t *testing.T, path string) *SQLiteStore {
 	t.Helper()
+	// None of openTestStorePath's callers (concurrency tests opening two
+	// independent handles on one WAL file, plus a couple of tenant tests)
+	// ever pass a FiscalIntent — all legacy-class writes, so legacy_compat.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("open store at %s: %v", path, err)

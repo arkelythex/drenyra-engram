@@ -208,10 +208,17 @@ func TestPrincipalProvenanceMapsVerifiedClaim(t *testing.T) {
 }
 
 // TestApproveMemoryCommandCarriesNoPrincipalFields is the compile-level
-// contract (ADR-003): the command shape is EXACTLY the four syntax fields. If a
-// principal field ever sneaks in, this reflection check fails — transport
-// payloads can never carry authority. ReviewChecks is reviewer acknowledgement
-// (anti-rubber-stamp, review-workspace v0.9), never authority.
+// contract (ADR-003): the command shape is EXACTLY the frozen syntax fields
+// plus the Slice 5 additive FiscalIntent. If a principal field ever sneaks
+// in, this reflection check fails — transport payloads can never carry
+// authority. ReviewChecks is reviewer acknowledgement (anti-rubber-stamp,
+// review-workspace v0.9 / Slice 5 tri-state), never authority. FiscalIntent
+// is scope METADATA (design.md: "actor and authorityLevel ... MUST NOT grant
+// roles, assurance, membership, approval ... authority"), the same
+// non-authority extension already frozen on core.SaveInput.FiscalIntent and
+// core.TransitionMeta.FiscalIntent in Slice 3 — its presence here is a
+// deliberate, spec-required additive change to this list, not a weakening of
+// the guarantee the test enforces.
 func TestApproveMemoryCommandCarriesNoPrincipalFields(t *testing.T) {
 	typ := reflect.TypeOf(core.ApproveMemoryCommand{})
 	got := make([]string, 0, typ.NumField())
@@ -219,7 +226,7 @@ func TestApproveMemoryCommandCarriesNoPrincipalFields(t *testing.T) {
 		got = append(got, typ.Field(i).Name)
 	}
 	sort.Strings(got)
-	want := []string{"ExpectedEnvelopeHash", "MemoryID", "Reason", "RequestID", "ReviewChecks"}
+	want := []string{"ExpectedEnvelopeHash", "FiscalIntent", "MemoryID", "Reason", "RequestID", "ReviewChecks"}
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command fields = %v, want exactly %v — principal fields are forbidden in the payload (ADR-003)", got, want)

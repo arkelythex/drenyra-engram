@@ -51,6 +51,7 @@ import (
 // used so callers can assert against it.
 func seedLiveStore(t *testing.T, path string, scope core.Scope, n int) string {
 	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	s, err := Open(path)
 	if err != nil {
 		t.Fatalf("open live store %s: %v", path, err)

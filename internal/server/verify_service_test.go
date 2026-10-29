@@ -27,6 +27,16 @@ import (
 // every covered act emits an Ed25519 receipt.
 func verifyStore(t *testing.T) (*store.SQLiteStore, string) {
 	t.Helper()
+	return verifyStoreMode(t, "legacy_compat")
+}
+
+// verifyStoreMode is verifyStore with an explicit DRENYRA_FISCAL_RUNTIME_MODE
+// (design.md "Runtime and downgrade modes"), for a test whose saves are
+// homogeneously v1 (carry a FiscalIntent) rather than the plain legacy
+// fixtures verifyStore's callers otherwise use.
+func verifyStoreMode(t *testing.T, mode string) (*store.SQLiteStore, string) {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
 	keyringPath := t.TempDir() + "/signing-keys.json"
 	if _, err := receipts.EnsureActiveKey(keyringPath); err != nil {
 		t.Fatalf("ensure keyring: %v", err)
@@ -243,7 +253,7 @@ func TestVerifyServiceMemoryFiscalLayerV1BoundPasses(t *testing.T) {
 	// deterministic act count and the report ends with the mandatory
 	// non-authorization conclusion (spec.md "Offline v1 verification is
 	// complete").
-	st, _ := verifyStore(t)
+	st, _ := verifyStoreMode(t, "enforce")
 	saved, err := st.Save(core.SaveInput{
 		TopicKey: "verify/fiscal-bound",
 		Title:    "bound save",

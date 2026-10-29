@@ -3,7 +3,11 @@
 > How the engine is designed: position, trust model, the fiscal memory
 > pipeline, the non-authorization boundary, and the storage layout. Contract-
 > level detail lives in [contracts/](../contracts/README.md); the ADR trail
-> lives in [docs/decisions/](../decisions/).
+> lives in [decisions/](decisions/). Boundary rules: [SYSTEM-BOUNDARIES.md](SYSTEM-BOUNDARIES.md).
+>
+> **Runtime:** the Go binary is the shipped engine and the authority. The
+> TypeScript package is a reference mirror used for contract parity, not a
+> runtime ([compatibility](COMPATIBILITY.md#typescript-reference-mirror)).
 
 ## Position in the ecosystem
 
@@ -58,8 +62,9 @@ an immutable event and an Ed25519-signed receipt.
 
 **Drenyra Engram does not authorize operations.** The approval gate is the
 professional review of a *memory*, never authorization of a declaration,
-payment, or filing. There is no `authorize`/`approve`/`allow`/`execute` tool,
-no journal-entry posting, no SUNAT filing surface. Every verification report
+payment, or filing. There is no `authorize`/`allow`/`execute` tool, no
+journal-entry posting, no SUNAT filing surface. `accounting_approve` is the
+memory-review approval: it needs an authenticated session. Every verification report
 ends with exactly **"Accounting correctness: NOT ASSERTED"**.
 
 ## Storage layout
@@ -84,16 +89,18 @@ decisions run inside `BEGIN IMMEDIATE` transactions.
 
 ## Surfaces
 
-One engine, three adapters: **CLI** (scripts, humans), **MCP** (agents, 57
-tools), **HTTP** (programs). The MCP catalog has no authorization tools; the
-HTTP approval routes are authenticated; the CLI `approve`/`review reject`/
-`review return` require a session. Scope-first reads never require a
+One engine, three adapters: **CLI** (scripts, humans), **MCP** (agents, 58
+tools), **HTTP** (programs). The MCP catalog has no authorization tools;
+`accounting_approve` and the other decision tools derive identity only from an
+authenticated session and fail closed on stdio. The HTTP approval routes are
+authenticated; the CLI `approve`/`review reject`/`review return` require a
+session. Scope-first reads never require a
 principal — reads never authorize.
 
 ## Key architectural decisions (ADR trail)
 
-- **ADR-001** — standalone Go engine (TS reference retired by parity)
+- **ADR-001** — standalone Go engine (the TypeScript reference mirrors it for parity)
 - **ADR-002** — local-first SQLite; PostgreSQL is the ecosystem's authoritative store
 - **ADR-003** — authenticated ApprovalPrincipal (identity never caller-declared)
 - **ADR-004** — Apache-2.0 open-source licensing
-- plus the per-milestone architecture docs under [docs/architecture/](../architecture/)
+- plus the per-milestone architecture docs under [architecture/](architecture/)

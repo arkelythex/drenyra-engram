@@ -153,7 +153,7 @@ under "Product answers that are already safe to state").
 **Repository evidence:**
 
 - Non-authorization boundary is the defining invariant —
-  [docs/architecture.md](../architecture.md),
+  [docs/SYSTEM-BOUNDARIES.md](../SYSTEM-BOUNDARIES.md),
   [docs/architecture/trust-model.md](../architecture/trust-model.md),
   [docs/architecture/ecosystem-boundaries.md](../architecture/ecosystem-boundaries.md),
   [contracts/provenance.md](../../contracts/provenance.md).

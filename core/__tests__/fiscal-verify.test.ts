@@ -1,6 +1,7 @@
 /**
- * Delivery Slice 4 (openspec/changes/fiscal-runtime-foundations) — the pure
- * "fiscal scope binding" verification layer (design.md "Verification and
+ * Delivery Slice 4 (specs/fiscal-runtime-foundations/spec.md) — the pure
+ * "fiscal scope binding" verification layer (see
+ * docs/decisions/fiscal-runtime-foundations-design.md, "Verification and
  * audit"). Mirrors internal/core/verify_test.go's
  * TestVerifyFiscalScopeBinding* suite case-for-case for Go↔TS semantic
  * parity.

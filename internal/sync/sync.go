@@ -4,7 +4,7 @@
 // money value is merged or computed here.
 //
 // Sync — additive, provenance-preserving, conflict-visible reconciliation.
-// docs/architecture.md: "Local and cloud stores sync with explicit semantics:
+// docs/SYSTEM-BOUNDARIES.md: "Local and cloud stores sync with explicit semantics:
 // tombstone-aware, provenance-preserving, and conflict-visible (conflicts are
 // surfaced for human/relation review — never silently resolved)."
 //

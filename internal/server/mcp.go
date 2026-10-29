@@ -405,6 +405,13 @@ func ToolCatalog() []map[string]any {
 					"actorKind": stringSchema("human|agent|system (required)"),
 					"session":   stringSchema("optional session id"),
 				}, "system", "actorKind"),
+				// Delivery Slice 6 (docs/decisions/fiscal-runtime-foundations-design.md,
+				// "Public contracts > MCP"): OPTIONAL strict v1 fiscal
+				// scope binding JSON string. No identity/role/assurance field is
+				// advertised — the binding is scope metadata (never authority)
+				// and a malformed/incomplete document fails closed before any
+				// mutation.
+				"fiscalScope": stringSchema(`optional strict v1 fiscal scope binding JSON: {"version":"v1","tenant":"...","organization":"...","company":"11-digit checksum-valid RUC","fiscalPeriod":"YYYYMM","ledgerBook":"...","operationType":"memory.save","sourceSnapshot":"64-hex sha256","policyVersion":"...","actor":"...","authorityLevel":"PREPARE"}`),
 			}, "topicKey", "title", "kind", "fiscalEffect", "scope", "content", "source"),
 		},
 		{
@@ -546,11 +553,11 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_approve",
 			"description": "Approve a pending_review memory against the envelope hash the reviewer actually saw (v0.4.0 Step 1, ADR-003). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("human-readable justification (required)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("human-readable justification (required)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		// ── accounting_review_* (v0.9.0 review workspace, design §3/§5/§7): queue
 		// and detail are SCOPE-FIRST READS whose exact scope tuple is part of the
@@ -572,29 +579,29 @@ func ToolCatalog() []map[string]any {
 			"name":        "accounting_review_detail",
 			"description": "Compose the review of ONE pending revision (v0.9.0 review workspace, design §4), scope-guarded: the full pending revision, the structured content diff vs its chain predecessor, the evidence state with WORM availability, the best-effort rule state, the open proposed judgments, the review metadata (H1 to sign, proposer, risk class) and the boundary notice. Reads never authorize.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId": stringSchema("memory id (required)"),
-				"scope":    stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
-			}, "memoryId", "scope"),
+				"memory_id": stringSchema("memory id (required)"),
+				"scope":     stringSchema(`JSON exact company scope: {"kind":"company","organizationId":"...","companyId":"...","ruc":"11 digits","period":"YYYYMM"} (required)`),
+			}, "memory_id", "scope"),
 		},
 		{
 			"name":        "accounting_review_reject",
 			"description": "Reject a pending_review memory (v0.9.0 review workspace, design §5): pending_review → rejected (terminal), authenticated + idempotent by (tenant, requestId) + hash-guarded, with the human reason in the decision event and the memory_rejected receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("human rejection reason (required for material/critical or closing/declaration/sunat_filing; optional otherwise; always persisted)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("human rejection reason (required for material/critical or closing/declaration/sunat_filing; optional otherwise; always persisted)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		{
 			"name":        "accounting_review_return",
 			"description": "Return a pending_review memory to its proposer for correction (v0.9.0 review workspace, design §5): pending_review → returned (NON-terminal — an agent Save on the returned memory creates a NEW revision that re-enters pending_review). Authenticated + idempotent + hash-guarded; the reason is REQUIRED (a correction request — the reason tells the agent what to fix) and lands in the decision event and the memory_returned receipt (payload v0.10.0). Requires an authenticated session binding; tool arguments NEVER supply identity. The current stdio MCP server has no session binding, so the tool fails closed with AUTHENTICATION_REQUIRED.",
 			"inputSchema": objectSchema(map[string]any{
-				"memoryId":             stringSchema("memory id"),
-				"expectedEnvelopeHash": stringSchema("envelope hash the reviewer actually saw (required)"),
-				"reason":               stringSchema("correction request reason (REQUIRED)"),
-				"requestId":            stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
-			}, "memoryId", "expectedEnvelopeHash", "reason", "requestId"),
+				"memory_id":              stringSchema("memory id"),
+				"expected_envelope_hash": stringSchema("envelope hash the reviewer actually saw (required)"),
+				"reason":                 stringSchema("correction request reason (REQUIRED)"),
+				"request_id":             stringSchema("idempotency key scoped to (tenant, requestId) (required)"),
+			}, "memory_id", "expected_envelope_hash", "reason", "request_id"),
 		},
 		// ── accounting_rule_* (v0.6.0 fiscal policy memory, design §6): show and
 		// history are SCOPE-FIRST READS (the exact scope tuple is part of the
@@ -1074,9 +1081,28 @@ func (m *MCPServer) handleToolsCall(ctx context.Context, params json.RawMessage)
 
 	switch call.Name {
 	case "engram_save":
-		var input core.SaveInput
-		if err := decodeArguments(call.Arguments, &input); err != nil {
+		// Delivery Slice 6: the OPTIONAL fiscalScope member decodes ALONGSIDE
+		// core.SaveInput's own fields (embedding, not a separate top-level
+		// arguments shape) — core.SaveInput.FiscalIntent carries json:"-" so it
+		// never round-trips itself; this is the one MCP-facing seam that turns
+		// caller JSON into the pure core.FiscalWriteIntent value. A malformed
+		// binding fails closed with the SAME typed *core.FiscalScopeError the
+		// core/store boundary raises — in-band (isError=true), never a
+		// mutation.
+		var wrapper struct {
+			core.SaveInput
+			FiscalScope string `json:"fiscalScope,omitempty"`
+		}
+		if err := decodeArguments(call.Arguments, &wrapper); err != nil {
 			return nil, err
+		}
+		input := wrapper.SaveInput
+		if strings.TrimSpace(wrapper.FiscalScope) != "" {
+			intent, err := core.DecodeFiscalWriteIntentJSON([]byte(wrapper.FiscalScope))
+			if err != nil {
+				return errTextContent(err), nil
+			}
+			input.FiscalIntent = intent
 		}
 		// scope-param-rollout FR-SPR-2: a bound principal's save scope MUST be
 		// inside its membership before dispatch (typed denial otherwise).

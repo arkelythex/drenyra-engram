@@ -3,6 +3,11 @@
 > How the repository is organized and how to think about it. A mental model
 > for contributors: where each invariant lives, how a feature flows through
 > the layers, and where to look first for any given concern.
+>
+> **Runtime:** Go under `cmd/` and `internal/` is the shipped engine and the
+> authority. The TypeScript at the repository root (`core/`, `store/`,
+> `authz/`, `lifecycle/`, …) is a reference mirror kept in golden-vector parity;
+> it is not a runtime ([compatibility](COMPATIBILITY.md#typescript-reference-mirror)).
 
 ## Repository layout
 
@@ -10,7 +15,7 @@
 cmd/drenyra-engram/   CLI entrypoint (save, review, rule, object, verify, mcp, serve, …)
 internal/core/        Domain model + PURE logic: memories, lifecycle, receipts,
                       verification layers, rule resolution, comprobante parsing
-internal/store/       SQLite store (pure Go, immutable history, schema v14,
+internal/store/       SQLite store (pure Go, immutable history, schema v18,
                       migrations, atomic transactions)
 internal/search/      Scope-first token-overlap search + the deterministic
                       benchmark harness (internal/search/bench/)
@@ -21,9 +26,9 @@ internal/authz/       Versioned policies: approval, judgment, evidence lifecycle
 internal/sync/        Additive local-store reconciliation
 contracts/            The frozen contract set (memory, scope, lifecycle, provenance,
                       receipts, verification, approval, judgment, closing, …)
-core/  store/  authz/  lifecycle/   TypeScript reference + parity mirrors
+core/  store/  authz/  lifecycle/   TypeScript reference mirror (parity only, not a runtime)
 testdata/golden/      Go↔TS golden vectors (byte-identical across runtimes)
-docs/                 Architecture, decisions, product, demo, benchmark, security
+docs/                 Documentation index: see docs/README.md
 ```
 
 ## Mental model
@@ -39,12 +44,12 @@ docs/                 Architecture, decisions, product, demo, benchmark, securit
 2. **The store (internal/store)** — the only place that touches SQLite. Every
    write is a single-writer transaction; every mutation is immutable
    (revisions, not edits); every act emits a receipt in the same transaction.
-   Schema migrations are fail-closed and versioned (v14 today).
+   Schema migrations are fail-closed and versioned (v18 today).
 
 3. **The adapters (internal/server + cmd)** — thin, stateless surfaces over
    the domain and store: MCP tools, HTTP routes, CLI commands. **They never
    invent authority** — the principal is derived only from the session
-   (ADR-003), and the tool catalog has no authorize/allow operations.
+   (ADR-003), and the tool catalog has no authorize/allow operations. `accounting_approve` is a memory-review approval that takes identity only from an authenticated session.
 
 **The invariant that ties them together:** *memory guides, policy restricts,
 evidence demonstrates, receipt certifies, a professional authorizes.* If you
@@ -72,9 +77,9 @@ violates the non-authorization boundary.
 ## Testing and quality gates
 
 ```bash
-go test ./...            # full Go suite (10 packages)
+go test ./...            # full Go suite
 go test ./internal/search/bench -v   # search benchmark (Recall/MRR/leakage)
-npm test                 # TypeScript suite (360 tests)
+npm test                 # TypeScript reference suite
 npm run typecheck        # tsc --noEmit
 go vet ./...             # vet
 gofmt -l .               # formatting

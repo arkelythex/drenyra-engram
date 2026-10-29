@@ -24,6 +24,10 @@ const (
 
 func newTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
+	// These tests exercise legacy-class (unbound) saves. Since the store
+	// defaults DRENYRA_FISCAL_RUNTIME_MODE to the fail-closed shadow mode,
+	// select legacy_compat explicitly, as the server and CLI suites do.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := store.Open(path)
 	if err != nil {

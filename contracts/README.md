@@ -2,6 +2,12 @@
 
 > **Status: draft (pre-alpha) with a frozen-for-0.1 subset.** These contracts define the memory engine's public surface. Engine/storage decisions are frozen by [ADR-001](../docs/decisions/ADR-001-engine-strategy.md) (engine strategy) and [ADR-002](../docs/decisions/ADR-002-storage-authority.md) (storage authority). The bullets marked **frozen-for-0.1** in each contract are normative; the rest stay draft until Phase 1 of the [ROADMAP](../ROADMAP.md) completes.
 
+> **Runtime:** the contracts are the durable surface. The Go binary
+> (`cmd/`, `internal/`) is the shipped engine and implements them; the
+> TypeScript package at the repository root is a reference mirror kept in
+> golden-vector parity, not a runtime. See
+> [docs/COMPATIBILITY.md](../docs/COMPATIBILITY.md#typescript-reference-mirror).
+
 ## Index
 
 | Contract                    | Version | Status | Governs                          |

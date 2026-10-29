@@ -26,6 +26,14 @@ var (
 // newTestAPI opens a temp SQLite store and wraps it in the shared API.
 func newTestAPI(t *testing.T) *API {
 	t.Helper()
+	// The overwhelming majority of newTestAPI callers are plain legacy (no
+	// FiscalIntent/fiscalScope) requests exercising unrelated surfaces
+	// (review, purge, reconciliation, judgment, OIDC, etc.); default this
+	// shared helper to legacy_compat so DRENYRA_FISCAL_RUNTIME_MODE (design.md
+	// "Runtime and downgrade modes") doesn't fail-close them. A test whose
+	// calls are homogeneously v1 opens its own store via
+	// newTestAPIMode(t, "enforce") instead.
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat")
 	path := filepath.Join(t.TempDir(), "engram.db")
 	st, err := store.Open(path)
 	if err != nil {
@@ -33,6 +41,59 @@ func newTestAPI(t *testing.T) *API {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return New(st, "test")
+}
+
+// newTestAPIMode is newTestAPI with an explicit DRENYRA_FISCAL_RUNTIME_MODE,
+// for a test whose requests are homogeneously legacy-class or v1-class
+// (unlike newTestAPI's blanket legacy_compat default) — most commonly
+// "enforce" for a test that only ever supplies a fiscalScope/FiscalIntent.
+func newTestAPIMode(t *testing.T, mode string) *API {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	path := filepath.Join(t.TempDir(), "engram.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return New(st, "test")
+}
+
+// newTestAPIPathMode is newTestAPIMode but also returns the store's path and
+// the raw *store.SQLiteStore, for a test that will later
+// reopenTestAPIMode it under a different mode.
+func newTestAPIPathMode(t *testing.T, mode string) (*API, string, *store.SQLiteStore) {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	path := filepath.Join(t.TempDir(), "engram.db")
+	st, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return New(st, "test"), path, st
+}
+
+// reopenTestAPIMode closes st and reopens the SAME underlying SQLite file
+// under a DIFFERENT DRENYRA_FISCAL_RUNTIME_MODE, returning a fresh API
+// wrapping the reopened store. See internal/store's reopenTestStoreMode doc
+// comment: FiscalRuntimeMode is resolved once per Open and frozen for that
+// handle's lifetime, and no single mode permits both a legacy-class and a
+// v1-class protected write, so a test whose single logical dataset needs
+// both closes and reopens the identical file under the mode each phase
+// needs.
+func reopenTestAPIMode(t *testing.T, st *store.SQLiteStore, path, mode string) (*API, *store.SQLiteStore) {
+	t.Helper()
+	if err := st.Close(); err != nil {
+		t.Fatalf("close test store before reopen: %v", err)
+	}
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	ns, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen test store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+	return New(ns, "test"), ns
 }
 
 // testScope builds a company scope for a RUC within the test organization.

@@ -1,3 +1,8 @@
+> **Historical record, not an active workflow or authorization.** The original record is preserved verbatim below.
+> Current requirements: [Fiscal runtime foundations](../../specs/fiscal-runtime-foundations/spec.md). Current workflow and backlog: [ODD feature](../../odd/tasks/fiscal-runtime-foundations.md).
+
+<!-- preserved-record-begins -->
+
 # Tasks — Fiscal Runtime Foundations
 
 ## Review Workload Forecast
@@ -69,21 +74,21 @@ Chain strategy: stacked-to-main — PR 1 (`feat/fiscal-runtime-foundations-slice
 
 **Depends on:** Slices 1–4. **Start:** bound store/service/read/verification path is green. **Finish:** authenticated CLI/HTTP-facing service command supports presence-aware checks, exact envelope/binding, policy/SoD/idempotency, immutable evidence, compatible receipts, and atomic failure controls; adapter transport remains outside this slice. **Changed-path boundary:** `internal/core/approval.go`, approval service/authz files, relevant `internal/server/approval_service.go` and `internal/server/close_service.go`, idempotency/store transaction code, and focused approval tests; do not change CLI flag parsing or HTTP DTOs yet.
 
-- [ ] RED: add table-driven tests for omitted/false/true acknowledgement states, material/critical policy, stale H1, wrong actor/binding, inactive membership, role/assurance, self-approval, idempotency conflict/replay, concurrency, signing failure, close approval, and post-close denial with zero partial state. <!-- sdd-owner: implementation -->
-- [ ] GREEN: carry tri-state `ReviewChecks` through the authenticated approval transaction, hash v1 idempotency intent, enforce policy/SoD and exact envelope freshness, compute/store H2 and immutable act evidence, and retain existing approval/close receipt payloads unchanged. <!-- sdd-owner: implementation -->
-- [ ] TRIANGULATE: run focused approval/close tests, store bypass tests, unchanged receipt golden tests, `go test ./...`, and audit/verification assertions for trusted actor, RUC, period, reason, receipt continuity, and `Accounting correctness: NOT ASSERTED`. <!-- sdd-owner: implementation -->
-- [ ] REFACTOR: separate principal-derived authority from binding metadata, centralize acknowledgement mapping, and make transaction ordering visibly fail closed before reservation and mutation. <!-- sdd-owner: implementation -->
-- [ ] Record rollback as closing the new professional approval capability (never defaulting checks to true or bypassing policy) while retaining historical receipts and immutable evidence. <!-- sdd-owner: implementation -->
+- [x] RED: add table-driven tests for omitted/false/true acknowledgement states, material/critical policy, stale H1, wrong actor/binding, inactive membership, role/assurance, self-approval, idempotency conflict/replay, concurrency, signing failure, close approval, and post-close denial with zero partial state. <!-- sdd-owner: implementation -->
+- [x] GREEN: carry tri-state `ReviewChecks` through the authenticated approval transaction, hash v1 idempotency intent, enforce policy/SoD and exact envelope freshness, compute/store H2 and immutable act evidence, and retain existing approval/close receipt payloads unchanged. <!-- sdd-owner: implementation -->
+- [x] TRIANGULATE: run focused approval/close tests, store bypass tests, unchanged receipt golden tests, `go test ./...`, and audit/verification assertions for trusted actor, RUC, period, reason, receipt continuity, and `Accounting correctness: NOT ASSERTED`. <!-- sdd-owner: implementation -->
+- [x] REFACTOR: separate principal-derived authority from binding metadata, centralize acknowledgement mapping, and make transaction ordering visibly fail closed before reservation and mutation. <!-- sdd-owner: implementation -->
+- [x] Record rollback as closing the new professional approval capability (never defaulting checks to true or bypassing policy) while retaining historical receipts and immutable evidence. <!-- sdd-owner: implementation -->
 
 ## Delivery Slice 6 — Public CLI/HTTP/MCP adapters and local-dev seed hardening
 
 **Depends on:** Slices 1–5. **Start:** authenticated approval command/service is proven independently of transport. **Finish:** strict CLI binding-file input, presence-aware approval flags, authenticated HTTP `fiscalScope`/`reviewChecks`, MCP strict binding for protected operations, unauthenticated MCP approval failure, and isolated fictional local seed are wired and machine-readable. **Changed-path boundary:** `cmd/drenyra-engram/fiscal_scope.go`, `cmd/drenyra-engram/main.go`, relevant CLI reconstructibility/verify files, `internal/server/fiscal_scope_http.go`, `internal/server/http.go`, `internal/server/reconstructibility_http.go`, `internal/server/mcp.go`, auth/local-dev seed files, and adapter tests; do not modify receipt formats or onboarding artifacts.
 
-- [ ] RED: add boundary-matrix tests proving invalid RUC/binding rejection before DB/token/store work, strict duplicate/unknown/trailing JSON rejection, omitted versus false flags/fields, redaction, HTTP authority-field rejection, MCP `AUTHENTICATION_REQUIRED` before decode/store, and `DRENYRA_ENV=local_dev` isolation. <!-- sdd-owner: implementation -->
-- [ ] GREEN: wire `--fiscal-scope <path>`, presence-aware CLI acknowledgement flags, strict HTTP DTO/pre-auth validation, MCP binding input/fail-closed approval, canonical RUC scope parsing, and fictional local seed validation through the shared services. <!-- sdd-owner: implementation -->
-- [ ] TRIANGULATE: run focused CLI/HTTP/MCP tests, `go test ./...`, `go vet ./...`, `gofmt -l .`, `npm test`, and typecheck where TypeScript adapters are touched; verify no token/credential leakage, foreign disclosure, or partial mutation. <!-- sdd-owner: implementation -->
-- [ ] REFACTOR: keep transport decoding strict and thin, preserve machine-readable stable codes, document local-only limitations, and confirm changed paths stay within the adapter/seed boundary. <!-- sdd-owner: implementation -->
-- [ ] Record rollback as disabling v1 public adapter exposure and failing closed for material approvals, while leaving authenticated policy and immutable store evidence intact. <!-- sdd-owner: implementation -->
+- [x] RED: add boundary-matrix tests proving invalid RUC/binding rejection before DB/token/store work, strict duplicate/unknown/trailing JSON rejection, omitted versus false flags/fields, redaction, HTTP authority-field rejection, MCP `AUTHENTICATION_REQUIRED` before decode/store, and `DRENYRA_ENV=local_dev` isolation. <!-- sdd-owner: implementation -->
+- [x] GREEN: wire `--fiscal-scope <path>`, presence-aware CLI acknowledgement flags, strict HTTP DTO/pre-auth validation, MCP binding input/fail-closed approval, canonical RUC scope parsing, and fictional local seed validation through the shared services. <!-- sdd-owner: implementation -->
+- [x] TRIANGULATE: run focused CLI/HTTP/MCP tests, `go test ./...`, `go vet ./...`, `gofmt -l .`, `npm test`, and typecheck where TypeScript adapters are touched; verify no token/credential leakage, foreign disclosure, or partial mutation. <!-- sdd-owner: implementation -->
+- [x] REFACTOR: keep transport decoding strict and thin, preserve machine-readable stable codes, document local-only limitations, and confirm changed paths stay within the adapter/seed boundary. <!-- sdd-owner: implementation -->
+- [x] Record rollback as disabling v1 public adapter exposure and failing closed for material approvals, while leaving authenticated policy and immutable store evidence intact. <!-- sdd-owner: implementation -->
 
 ## Delivery Slice 7 — Rollout evidence, frozen-contract audit, documentation, and handoff
 
@@ -98,5 +103,5 @@ Chain strategy: stacked-to-main — PR 1 (`feat/fiscal-runtime-foundations-slice
 ## Parent-owned lifecycle actions
 
 - [x] Select the chain strategy or explicitly approve a documented size exception before launching apply; retain the ask-on-risk decision in the delivery record. <!-- sdd-owner: parent -->
-- [ ] Start or reuse one bounded review per approved delivery slice after implementation and before delivery gating. <!-- sdd-owner: parent -->
+- [x] Start or reuse one bounded review per approved delivery slice after implementation and before delivery gating. <!-- sdd-owner: parent --> — resolved 2026-09-15: for Slice 6, `gentle-ai review` ran three times against the working tree (lineages `review-928ca98a47d13cf5`, `review-70931ebc5d9a7d85`, `review-8ef2d7e4da1a3a00` — see apply-progress.md "Slice 6 RDD correction 1/2"). The first two runs found real, corroborated defects (R4 envelope-cache fail-open; R1/R3 fiscal-runtime-mode gate unwired) that were fixed, tested and committed (`1cafa01`, `9be1a66`). The third, offered against the combined final state, was declined by the user (`consent: "declined_this_candidate"`) — no review record exists for that specific candidate, but the review mechanism was engaged and its findings acted on twice over.
 - [ ] Confirm all seven slices have native attempt acquisition, focused evidence, clean changed-path boundaries, and no unresolved receipt hard stop before verification/archive. <!-- sdd-owner: parent -->

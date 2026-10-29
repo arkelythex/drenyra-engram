@@ -4,6 +4,8 @@ A single static Go binary — no Node.js, no Python, no Docker required for the
 core engine. SQLite is pure Go (`modernc.org/sqlite`), so there are no CGO
 dependencies.
 
+See [COMPATIBILITY.md](COMPATIBILITY.md) for supported platforms and versions.
+
 ## Prerequisites
 
 - **Go 1.26+** to build from source (Go 1.26 is the current release).
@@ -23,19 +25,24 @@ The binary lands in `$(go env GOPATH)/bin`; add it to your `PATH` if needed.
 GitHub releases ship static binaries for `linux`/`darwin`/`windows` ×
 `amd64`/`arm64`, each with an SPDX SBOM and a SHA-256 `checksums.txt`:
 
+Each release publishes `drenyra-engram_<version>_<os>_<arch>.tar.gz`
+(`.zip` on Windows) for `linux`, `darwin`, and `windows` on `amd64` and
+`arm64`, a `checksums.txt`, and an SPDX SBOM per archive.
+
 ```bash
-# Example (linux/amd64) — adapt the version
-curl -fsSL -o drenyra-engram \
-  https://github.com/arkelythex/drenyra-engram/releases/download/v0.7.0/drenyra-engram_linux_amd64
-chmod +x drenyra-engram
+# Example: linux/amd64, release v0.9.0
+version=0.9.0
+base=https://github.com/arkelythex/drenyra-engram/releases/download/v$version
+curl -fsSLO "$base/drenyra-engram_${version}_linux_amd64.tar.gz"
+curl -fsSLO "$base/checksums.txt"
+sha256sum --ignore-missing -c checksums.txt
+tar -xzf "drenyra-engram_${version}_linux_amd64.tar.gz" drenyra-engram
 ./drenyra-engram doctor
 ```
 
-Verify integrity:
-
-```bash
-sha256sum -c checksums.txt
-```
+A tagged release contains only what was merged before its tag; check the
+[changelog](../CHANGELOG.md) `[Unreleased]` section for features that need a
+source build.
 
 ## Verify the install
 
@@ -54,7 +61,7 @@ drenyra-engram serve             # HTTP REST /v1 + MCP /mcp on 127.0.0.1:8787
 ## Configuration
 
 Everything is optional and environment-driven — see
-[DOCS.md#environment-variables](DOCS.md#environment-variables):
+[DOCS.md#environment-variables](../DOCS.md#environment-variables):
 
 ```bash
 export DRENYRA_ENGRAM_DB="$HOME/.drenyra/engram.db"     # database path
@@ -82,7 +89,7 @@ docker run -v "$PWD/data:/data" -e DRENYRA_ENGRAM_DB=/data/engram.db \
 
 - The engine is **local-first**: back up the SQLite file and the objects root
   before upgrading.
-- Schema migrations are fail-closed and transactional (v1 → v14 today); a
+- Schema migrations are fail-closed and transactional (v1 → v18 today); a
   migration conflict rolls back and leaves the store untouched.
 - **Roll forward only**: after v0.6+ rows exist, older binaries cannot
   preserve policy metadata / structured links — retain the current database.

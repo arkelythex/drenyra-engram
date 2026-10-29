@@ -120,6 +120,7 @@ func TestDoctorRoutineRunsQuickCheckThenForeignKeyCheck(t *testing.T) {
 // while integrityCheck stays not_run — if integrity_check had run, it would have
 // reported failed on this exact store.
 func TestDoctorRoutineNeverRunsIntegrityCheckOnCorruptStore(t *testing.T) {
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", "legacy_compat") // no FiscalIntent anywhere in this file
 	path := filepath.Join(t.TempDir(), "engram.db")
 	s, err := Open(path)
 	if err != nil {
