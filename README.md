@@ -1,298 +1,263 @@
-<div align="center">
-
-<img width="1200" alt="Drenyra Engram — the institutional archive: effectiveAt, recordedAt, confidence, approved state, evidence, vigent rule, verifiable seal, reconstructible file" src="assets/branding/drenyra-engram-hero-archive.svg" />
-
-<p><code>scoped observation → institutional memory/evidence chain → reconstructible context</code></p>
-
-</div>
+<!-- markdownlint-disable-next-line MD041 -->
+<a id="top"></a>
 
 <div align="center">
 
-**Institutional accounting memory for AI agents**<br>
-<em>One brain for fiscal knowledge. Scope-first, audit-grade, agent-agnostic.</em>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/drenyra-engram-hero-archive-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/drenyra-engram-hero-archive.png" />
+  <img width="100%" alt="Drenyra Engram hero: an institutional archive card for memory 4011 showing effectiveAt, recordedAt, confidence, approved status, three evidence objects, a vigent rule, and a reconstructible seal, beside the tagline Memory guides. Evidence demonstrates. Humans authorize." src="assets/branding/drenyra-engram-hero-archive.png" />
+</picture>
 
-> [!IMPORTANT]
-> **Drenyra Engram is the open component of the Drenyra ecosystem** —
-> licensed under Apache-2.0 and publicly visible, mirroring
-> `Gentleman-Programming/engram`. The commercial core (drenyra-command-center,
-> drenyra-skills, drenyra-guardian-angel) is **private** and proprietary;
-> drenyra-ai and drenyra-pi are publicly visible source under the Drenyra
-> open-core transition intention (intention, not contractual promise), with
-> commercial artifacts and services remaining contractual. Engram informs,
-> never authorizes — memory is context, not authority.
+<h1>Drenyra Engram</h1>
 
-</div>
+<p><strong>Institutional accounting memory for AI agents.</strong></p>
 
-<p align="center">
-  <a href="docs/INSTALLATION.md">Installation</a> &bull;
-  <a href="docs/CONSUMING.md">Agent Setup</a> &bull;
-  <a href="docs/CODEBASE-GUIDE.md">Codebase Guide</a> &bull;
-  <a href="docs/ARCHITECTURE.md">Architecture</a> &bull;
-  <a href="docs/benchmark/search-baseline-v0.1.md">Benchmark</a> &bull;
-  <a href="contracts/README.md">Contracts</a> &bull;
-  <a href="ROADMAP.md">Roadmap</a> &bull;
-  <a href="DOCS.md">Full Docs</a>
+<p>
+<img src="https://img.shields.io/badge/status-alpha-A7471C?style=for-the-badge&labelColor=17120D" alt="Status: alpha">
+<img src="https://img.shields.io/badge/Go-1.26-824F16?style=for-the-badge&labelColor=17120D" alt="Go 1.26">
+<img src="https://img.shields.io/badge/MCP%20tools-58-315B31?style=for-the-badge&labelColor=17120D" alt="58 MCP tools">
+<img src="https://img.shields.io/badge/receipts-Ed25519-0D4A68?style=for-the-badge&labelColor=17120D" alt="Ed25519 receipts">
+<a href="LICENSE"><img src="https://img.shields.io/badge/Apache--2.0-824F16?style=for-the-badge&labelColor=17120D" alt="License: Apache-2.0"></a>
 </p>
+
+<p>
+<a href="#start-in-60-seconds"><strong>Quickstart</strong></a> &bull;
+<a href="docs/README.md"><strong>Docs</strong></a> &bull;
+<a href="examples/README.md"><strong>Examples</strong></a> &bull;
+<a href="DOCS.md"><strong>Reference</strong></a> &bull;
+<a href="contracts/README.md"><strong>Contracts</strong></a> &bull;
+<a href="ROADMAP.md"><strong>Roadmap</strong></a>
+</p>
+
+<br/>
+
+<p>
+Six months after a close, someone asks <em>why</em> account 4011 ended where it did.<br/>
+The agent that did the work is gone. The chat is gone. The context is gone.<br/>
+<strong>Drenyra Engram keeps it, scoped, signed, and reconstructible.</strong>
+</p>
+
+<p><sub>Scope-first · immutable history · offline verification · one Go binary · local SQLite</sub></p>
+
+</div>
 
 ---
 
-> **engram** `/ˈen.ɡræm/` — _neuroscience_: the physical trace of a memory in the brain.
+## What it is, and what it is not
 
-When an accounting professional leaves — or the agent that drafted a closing
-entry is gone — **so is the WHY**. The balance is on the ledger, but the
-reasoning, the evidence, the rule that was applied, the professional who
-approved it: unrecoverable. Auditors call this a reconstruction problem. Drenyra
-Engram turns it into a query.
+Drenyra Engram is a local Go engine for recording, retrieving, and reviewing
+scope-bound accounting memories. It keeps immutable revision chains, links
+context to evidence and rules, and exposes one engine through a CLI, MCP, and
+HTTP. It preserves the context around an accounting decision after the
+original agent, session, or contributor is gone.
 
-Every observation carries an explicit `confidence` 0..1 (required since
-schema v17) — memory informs proposals, never authorizes; confidence is never
-evidence.
+| Engram is | Engram is not |
+| --- | --- |
+| A scope-first store for accounting memories, revisions, evidence links, rule links, and review state | A general ledger or the source of truth for balances |
+| A local engine with CLI, MCP, and HTTP adapters | A journal-posting, payment, declaration, or SUNAT filing system |
+| A record of its own immutable acts, with Ed25519 receipts and offline verification | A claim that a decision, accounting treatment, or tax outcome is correct |
+| A human-gated review workflow for fiscally material memories | A replacement for professional judgment, compliance review, or business authorization |
 
-A **single Go binary** with a scope-first SQLite store, Ed25519 receipts and
-offline verification — exposed via CLI, HTTP API, and MCP. Works with **any
-agent** that supports MCP. Agents observe and propose. Professionals approve.
-The memory becomes **institutional** — it outlives every session, every agent,
-every departure.
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/drenyra-engram-reconstructible-context-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/drenyra-engram-reconstructible-context.png" />
+  <img width="100%" alt="Reconstruction diagram: account 4011 closing balance for period 2026-01 rebuilt from a chain of fact, rule, adjustment, evidence, late exception, and receipt, reconstructible without the original agent" src="assets/branding/drenyra-engram-reconstructible-context.png" />
+</picture>
+</p>
 
+## The trust boundary
+
+> **Memory guides. Evidence demonstrates. Policy restricts. A professional
+> approves a memory review.**
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/drenyra-engram-trust-boundary-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/drenyra-engram-trust-boundary.png" />
+  <img width="100%" alt="Trust model diagram: Memory guides proposals, Evidence demonstrates with content-addressed WORM objects, Authority is a human decision by an authenticated professional; memory never authorizes, approves, posts journals, or files with SUNAT, and integrity is not accounting correctness" src="assets/branding/drenyra-engram-trust-boundary.png" />
+</picture>
+</p>
+
+An agent can record a proposal or context; it cannot supply authority. A
+fiscally material memory enters `pending_review`. A verified professional may
+approve that specific review envelope, subject to membership, scope, role,
+assurance, separation-of-duties, and policy checks. The engine records the
+review; it does not authorize a business operation.
+
+`accounting_approve` is a **memory-review approval** tool, not a
+business-authorization tool. Its arguments never carry identity: the principal
+comes from an authenticated session. The stdio MCP server has no session, so
+the tool fails closed there with `AUTHENTICATION_REQUIRED`. An agent cannot
+turn a claimed identity into approval authority, and
+[`examples/mcp`](examples/mcp/quickstart.sh) shows it trying.
+
+## Start in 60 seconds
+
+You need Go 1.26 or later and `curl`. Build the binary from a clone, then run
+every adapter against a throwaway workspace with synthetic data:
+
+```bash
+git clone https://github.com/arkelythex/drenyra-engram.git
+cd drenyra-engram
+bin_dir="$(mktemp -d)"
+go build -o "$bin_dir/drenyra-engram" ./cmd/drenyra-engram
+DRENYRA_ENGRAM_BIN="$bin_dir/drenyra-engram" bash examples/run-all.sh
 ```
-Agent (any MCP client: Claude, pi, OpenCode, Gemini CLI, Codex, ...)
-    ↓ MCP stdio
-Drenyra Engram (single Go binary)
-    ↓
-SQLite — scope-first (RUC / period) + immutable history + Ed25519 receipts
-    ↓
-WORM evidence objects (XML / CDR / PDF) — content-addressed, unalterable
-```
 
-## The critical rule
+You will see a scoped save and search, a scope miss in another period, a
+signed receipt verified offline, 58 MCP tools listed, an agent approval
+refused, and the HTTP adapter rejecting a request without its token. Nothing
+outside the temporary directory is touched.
+
+| Next | Read |
+| --- | --- |
+| A guided first result, step by step | [Getting started](docs/GETTING-STARTED.md) |
+| Connect an MCP client or HTTP program | [Connecting agents and programs](docs/CONSUMING.md) · [client config](examples/mcp/client-config.json) |
+| Choose a runtime mode before writing data | [Troubleshooting → runtime mode](docs/TROUBLESHOOTING.md#runtime-mode) |
+| Release binaries and containers | [Installation](docs/INSTALLATION.md) |
+
+> **Runtime mode matters.** With `DRENYRA_FISCAL_RUNTIME_MODE` unset, the
+> store starts in fail-closed `shadow` mode and rejects company-scoped
+> protected writes. Deployments choose `enforce`; the examples use
+> `legacy_compat` locally and say so.
+
+## How a memory lives
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/drenyra-engram-memory-lifecycle-dark.png" />
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/drenyra-engram-memory-lifecycle.png" />
+  <img width="100%" alt="Memory lifecycle diagram: observe, pending review for fiscal effects, human review queue, approve or reject as an explicit act, promote to institutional memory, supersede without mutating, and reconstruct later context; memory informs, policy restricts, evidence demonstrates, receipt certifies, professional authorizes" src="assets/branding/drenyra-engram-memory-lifecycle.png" />
+</picture>
+</p>
+
+- **Scope is structural.** Organization, company, RUC, and period form the
+  exact scope. Reads and mutations apply it before search ranking or state
+  changes; a query for one company never ranks another company's memory.
+- **History is immutable.** A change is a new revision or a supersession,
+  never an edit. Terminal states do not reopen.
+- **Time is explicit.** `effectiveAt`, `recordedAt`, and `observedAt` keep a
+  late event affecting a closed period visible as late.
+- **Evidence is content-addressed.** Artifact bytes live in a local WORM store
+  keyed by SHA-256, with policy-backed retention, holds, and approved purge.
+
+## Verify, don't trust
+
+Covered acts get an Ed25519-signed receipt in a per-subject hash chain.
+`verify` checks them offline and read-only, layer by layer:
 
 ```text
-Memoria orienta.      Memory guides.
-Política restringe.   Policy restricts.
-Evidencia demuestra.  Evidence demonstrates.
-Receipt certifica.    Receipt certifies.
-Profesional autoriza. A professional authorizes.
+payload canonicalization · envelope integrity · signature · signing-key validity
+tenant/company scope · chain link · principal provenance · supersession chain
+evidence availability · object availability · rule availability · fiscal scope binding
 ```
 
-**Drenyra Engram never authorizes operations.** It records what happened, why,
-with which evidence, and who approved it — and it makes that chain
-reconstructible offline. It is **not** a ledger, it does **not** post journal
-entries, and it does **not** file anything with SUNAT. A signature proves nobody
-altered the act — never that the professional decision was correct.
+Every report ends the same way:
 
-<img width="1200" alt="Trust boundary — memory guides, evidence demonstrates, a professional authorizes; no authorize, no approve, no journal posting, no SUNAT filing" src="assets/branding/drenyra-engram-trust-boundary.svg" />
+```json
+"accountingCorrectness": "Accounting correctness: NOT ASSERTED"
+```
 
-### Drenyra Dominion Program
+A valid receipt proves that nobody altered the act and who performed it. It
+never proves that the accounting is right. That judgment stays with a
+professional. See the [verification contract](contracts/verification.md).
 
-Drenyra Engram is a participant in the [Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion) — the federated program master that fixes vision, authority, contracts, dependencies, gates, and sequencing across every Drenyra repository. A single master SDD governs the ecosystem while vertical SDDs deliver complete, implementable capabilities across the repositories they need; each repository keeps its own implementation, versioning, and tests and references the master instead of copying its specs.
+## One engine, three adapters
 
-| SDD | Role | Engram's one-line role |
+```text
+CLI ──────┐
+MCP ──────┼──> shared Go API ──> scope-first SQLite store (schema v18)
+HTTP ─────┘                        ├── immutable memory revisions
+                                   ├── Ed25519-signed receipts
+                                   └── content-addressed evidence objects
+```
+
+One binary, pure-Go SQLite, no CGO and no external services. All three
+adapters call the same engine, so there is one authorization model rather
+than three. Schema migrations are additive, and a store written by a newer
+engine is refused rather than guessed at.
+
+| Surface | Start it | Reference |
 | --- | --- | --- |
-| [SDD-080 — Engram Institutional Memory](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-080-engram) | Useful, persistent memory that informs missions but never authorizes them | Institutional memory — prior decisions and context, scope-first and offline-verifiable (this repository) |
-| [SDD-050 — Peruvian Monthly Close](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-050-monthly-close) | First complete vertical: ERP/SIRE/banks → verifiable close | Consumes Engram's prior-decision context for the close journey (informs only) |
+| CLI | `drenyra-engram <command>` | [CLI reference](DOCS.md#cli-reference) |
+| MCP (stdio) | `drenyra-engram mcp --db <path>` | [MCP tools](DOCS.md#mcp-tools) |
+| HTTP + MCP over HTTP | `drenyra-engram serve --token <secret>` | [HTTP API](DOCS.md#http-api) |
 
-Engram's ecosystem-side evidence for the Dominion cuts (SDD-010 release-train
-manifest, SDD-050 close context, SDD-060 isolation, SDD-100 Review Workspace API,
-SDD-110 production readiness) is maintained in
-docs/ecosystem/ — [capabilities-and-conformance.md](docs/ecosystem/capabilities-and-conformance.md)
-and [dominion-integration.md](docs/ecosystem/dominion-integration.md).
+## For agents
 
-Memory is **not** evidence — only a verifiable external response proves — Engram's non-authorization boundary is enforced at every surface (the MCP catalog, CLI, and HTTP API expose no `authorize`/`approve`/`allow` command), and Engram remains the **open** component (Apache-2.0) while the commercial core stays private.
+An agent connected over MCP should treat Engram as institutional memory with
+hard edges:
 
-- **AccountingMemory v2** — structured institutional accounting memory with
-  eight kinds (`fact`, `evidence`, `decision`, `rule`, `exception`,
-  `control`, `obligation`, `summary`).
-- **Human approval gate** — memories with a fiscal effect
-  (`journal_entry`, `declaration`, `closing`, `adjustment`,
-  `reclassification`, `approval`, `sunat_filing`) are saved `pending_review`
-  and only a HUMAN actor can approve them (`GATE_REQUIRES_HUMAN` otherwise).
-- **Triple timestamps** — `effectiveAt` (when it happened accounting-wise),
-  `recordedAt` (when it entered the system), `observedAt` (when detected):
-  a late event affecting a previous closed period is visible as such.
-- **Evidence-backed relations** — 17 relations (`supports`, `contradicts`,
-  `explains`, `reconciles`, `reverses`, `approved_by`, …) turn memory into
-  an accounting knowledge graph.
-- **Local-first evidence objects (v0.7.0)** — immutable artifact bytes
-  (XML/PDF/CDR/extracto) stored WRITE-ONCE-READ-MANY under a
-  content-addressed layout (`objects/<sha[0:2]>/<sha[2:4]>/<sha256>`); the
-  object id IS the SHA-256 of the bytes (identical bytes → duplicate NO-OP),
-  schema-v8 immutable metadata, `object_stored` receipts, scoped store/get,
-  and `verify object` re-hashing stored bytes. Deferred: retention, legal
-  hold, export, purge, cloud storage.
-- **Canonical content hashes** — `contentHash` identifies the immutable
-  content; history never mutates, supersession is explicit and atomic.
-- **Institutional knowledge** — policies, conventions, and precedents that
-  outlive sessions.
-- **Mission summaries and learnings** — persisted for cross-session recovery.
-- **Vigencia** — effective/expiry semantics so stale knowledge is visible,
-  not silently trusted.
-- **Scope-first search** — company/RUC/period filters are first-class, not
-  post-filters; cross-tenant isolation is structural.
-- **Explainable period summary** — the killer demo: why did account 4011 end
-  with this balance (facts, approved adjustments, rules applied, evidence,
-  late exceptions — ordered by accounting-effective date).
-- **MCP, HTTP, CLI** — same engine, multiple surfaces (58 MCP tools: 45
-  `accounting_*` + 13 `engram_*`).
+1. **Always pass the exact scope.** `organizationId`, `companyId`, `ruc`, and
+   `period`. Missing scope fails; a wrong scope finds nothing, by design.
+2. **Record the why, not just the what.** `content` carries `what`, `why`,
+   `where`, and `learned`; a future reviewer reconstructs the decision from it.
+3. **Propose; never decide.** Judgments and reconciliations are proposals. Any
+   fiscal effect other than `none` sends the memory to human review.
+4. **Read before you write.** Search the scope and the topic history first, so
+   a new memory supersedes the right chain instead of forking it.
+5. **Never treat confidence as evidence.** Confidence is context; evidence
+   objects and receipts are what demonstrate.
 
-## Quick start
+The 58 tools are grouped by family in the [MCP reference](DOCS.md#mcp-tools).
 
-### Install
+## Maturity
 
-```bash
-go install github.com/arkelythex/drenyra-engram/cmd/drenyra-engram@latest
-```
+**Status: alpha.** The repository demonstrates a local accounting-memory
+kernel: scoped storage, immutable lifecycle records, authenticated professional
+review paths, receipts, offline verification, and local evidence objects. It
+does not demonstrate production readiness, a validated customer workflow,
+regulatory compliance, a certification, or an ERP or SUNAT integration.
 
-Linux, macOS, Windows binaries and Docker → [docs/INSTALLATION.md](docs/INSTALLATION.md)
-
-### Save, review, reconstruct
-
-<img width="1200" alt="Reconstructible context — why did account 4011 end here: fact → rule → adjustment → evidence → late exception → receipt" src="assets/branding/drenyra-engram-reconstructible-context.svg" />
-
-```bash
-# An agent records an observation (scope-first: RUC + period).
-drenyra-engram save --company 20100039201 --period 202601 fixture.json
-
-# A professional sees the review queue — prioritized by materiality.
-drenyra-engram review queue 20100039201 --period 202601
-
-# ... approves against the exact envelope they reviewed (SoD enforced).
-drenyra-engram review approve <memory-id> --expected-envelope <hash> --reason "..."
-```
-
-Monetary values are **whole int64 cents** — never floats (the domain contract).
-
-### Point an agent at it
-
-```bash
-drenyra-engram mcp     # MCP server over stdio (Claude, pi, OpenCode, Codex, ...)
-drenyra-engram serve   # HTTP REST /v1 + MCP /mcp (127.0.0.1:8787)
-```
-
-Full per-agent setup, the HTTP API and the CLI → [docs/CONSUMING.md](docs/CONSUMING.md)
-
-## How it works
-
-<img width="1200" alt="Memory lifecycle — observe → pending review → review → approve / reject → promote → supersede (never mutate) → reconstruct" src="assets/branding/drenyra-engram-memory-lifecycle.svg" />
-
-```
-1. An agent observes — a fact, an evidence link, a proposed decision.
-2. Fiscally material observations land in pending_review (the human gate).
-3. A professional reviews the queue — diff, evidence state, applicable rule.
-4. Approve / reject / return with reason — every act is signed and receipted.
-5. The memory becomes institutional — it survives sessions and agents.
-6. Later: reconstruct any material balance from evidence + rule + approval.
-```
-
-The killer demo: **explain account 4011** — why it ended with this balance,
-ordered by accounting-effective date, with the facts, approved adjustments,
-rules applied, evidence objects and late exceptions — **without the original
-agent**. Reproduced end-to-end in `TestReconstructibleCloseFixture`
-([docs/demo/reconstructible-close.md](docs/demo/reconstructible-close.md)).
-
-## What it provides
-
-| Capability | Why it matters |
-| --- | --- |
-| **Scope-first memory** | RUC / company / period are structural filters, never post-filters — cross-tenant isolation is impossible to bypass, not a convention |
-| **Immutable history** | Revisions never mutate; supersession is explicit and atomic |
-| **Human approval gate** | Only an authenticated professional can approve a fiscally material memory — never an agent, never a caller-declared `"human"` |
-| **Ed25519 receipts** | Every act is signed and offline-verifiable; integrity is provable without the issuing agent |
-| **Offline verification** | 12 layers end with **"Accounting correctness: NOT ASSERTED"** — provenance, never a rubber stamp |
-| **Evidence objects (WORM)** | XML / CDR / PDF bytes stored content-addressed; the object id IS the SHA-256 of the bytes; retention, holds and purge are policy-backed |
-| **Review workspace** | A scope-first professional queue with diff, evidence state, open judgments, SoD and anti-rubber-stamp gates |
-| **Fiscal policy memory** | Versioned rules with vigencia + jurisdiction; regulatory-change impact; rule-version verification in every report |
-| **Explainable period summary** | The 4011 killer demo — reconstruction without the original agent |
-| **Institutional knowledge** | Policies, conventions and precedents that outlive sessions and teams |
-
-## Surfaces
-
-### MCP (57 tools)
-
-| Family | Tools |
-| --- | --- |
-| **engram_** (13) | `save`, `get`, `get_by_topic`, `chain`, `search`, `context`, `compare`, `doctor`, `review`, `promote`, `supersede`, `relations`, `transitions` |
-| **accounting_** (44) | record/search/timeline, approve, close, judgments, reconciliations, review queue/detail/reject/return, rule show/history/impact, object store/get/ingest, retention/holds/purge/export, period comparison |
-
-The catalog has **no authorize/approve/allow tool** — memory never authorizes.
-
-### Production identity (OIDC)
-
-`drenyra-engram serve` can validate OpenID Connect access tokens as a first
-production identity slice: stateless RS256 JWT validation with exact
-issuer/audience, a DB membership/scope cross-check, and standard assurance
-only (no MFA elevation, no revocation beyond DB membership). Enable it with
-`DRENYRA_OIDC_ISSUER` and `DRENYRA_OIDC_AUDIENCE`; a partial
-`DRENYRA_OIDC_*` set fails startup. See
-[docs/architecture/oidc-access-token-identity.md](docs/architecture/oidc-access-token-identity.md).
-
-### At-rest content encryption (opt-in)
-
-Set `DRENYRA_ENCRYPTION_MASTER_KEY` (32 bytes, hex or base64) to encrypt the
-CONTENT narrative of company-scope observations at rest with per-tenant
-derived keys (HKDF-SHA256 + AES-256-GCM, schema v15): each tenant's key
-material is separable (right-to-delete posture), reads fail closed without
-the key (`ENCRYPTION_REQUIRED`) or with a wrong one (`DECRYPTION_FAILED`),
-and legacy plaintext rows stay readable. `drenyra-engram encrypt --apply`
-    re-encrypts legacy plaintext rows (dry-run default; one transaction, hashes
-    untouched). `sync` refuses to copy an encrypted
-source into a plaintext store (`SYNC_ENCRYPTION_MISMATCH`). Default OFF —
-existing deployments are unchanged. (sdd-060 §5)
-
-### CLI
-
-`save · search · context · doctor · compare · approve · reject · review queue|detail|reject|return · rule show|history|impact · judge · reconcile · object store|get|ingest · verify memory|judgment|receipt|object · close · period-summary · tenant list|consolidate · encrypt · keys · auth · sync · mcp · serve`
-
-### HTTP
-
-`/v1/*` (observations, topic, chain, search, context, compare) · `/accounting/*`
-(approve, review, judgments, reconciliations, rules, objects, retention, holds,
-purge, export, closings, period comparison). Error envelope:
-`{"error": {"code", "message"}}`.
-
-## FAQ
-
-**Is Drenyra Engram a ledger?** No. It records and explains institutional
-accounting memory; the deployment-selected ledger remains the source of truth.
-
-**Can an agent approve anything?** No. The approval gate is a human-only,
-authenticated, envelope-hash-guarded act — and the proposer can never approve
-their own proposal (SoD).
-
-**Does a valid receipt prove the accounting is right?** No. Every verification
-report ends with **"Accounting correctness: NOT ASSERTED"**.
-
-**What about SUNAT?** The comprobante ingestion **adapter contract** is
-defined (parse + WORM store, `object ingest`), but no production SUNAT/ERP
-integration exists — no credentials, no retries, no filings.
-
-**Is it multi-tenant?** Structurally. Every read and mutation is scoped by
-organization / company / RUC / period; a company-A query can never see
-company-B memory — this is a tested invariant, not a filter.
+The [roadmap](ROADMAP.md) lists the open readiness gates and explicit
+deferrals; the [compatibility guide](docs/COMPATIBILITY.md) states what is
+supported today.
 
 ## Documentation
 
-- [DOCS.md](DOCS.md) — technical reference: environment variables, CLI, MCP tools, HTTP endpoints, scope
-- [docs/INSTALLATION.md](docs/INSTALLATION.md) — build, install, Docker
-- [docs/CONSUMING.md](docs/CONSUMING.md) — connect any MCP agent, HTTP API, CLI
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — design, trust model, boundaries
-- [docs/CODEBASE-GUIDE.md](docs/CODEBASE-GUIDE.md) — repository layout and mental model
-- [contracts/](contracts/README.md) — the frozen contract set (memory, scope, lifecycle, provenance, receipts, verification, approval, closing)
-- [ROADMAP.md](ROADMAP.md) — delivered milestones and the v1.0 gate
-- [docs/due-diligence/2026-08-product-architecture-audit.md](docs/due-diligence/2026-08-product-architecture-audit.md) — evidence-based product audit
-- [Ecosystem diagram convention](https://github.com/arkelythex/drenyra-ai/blob/main/docs/documentation-standard.md#5-diagrams) — how diagrams are authored, validated and delivered
-
-## Ecosystem
-
-| Project | Role |
+| You are | Start here |
 | --- | --- |
-| [Drenyra Command Center](https://github.com/arkelythex/drenyra-command-center) | Command Center — web application (consumes memory) |
-| [Drenyra AI](https://github.com/arkelythex/drenyra-ai) | Agent ecosystem (may integrate) |
-| [Drenyra Pi](https://github.com/arkelythex/drenyra-pi) | Pi-native harness (reads context) |
+| Evaluating whether it fits | [Product](docs/PRODUCT.md) · [Getting started](docs/GETTING-STARTED.md) · [Data, security, and privacy](docs/DATA-SECURITY-PRIVACY.md) |
+| Integrating a client or service | [Installation](docs/INSTALLATION.md) · [Consuming Engram](docs/CONSUMING.md) · [Examples](examples/README.md) · [Reference](DOCS.md) |
+| An accounting professional or reviewer | [Approval contract](contracts/approval.md) · [Verification contract](contracts/verification.md) · [Trust model](docs/architecture/trust-model.md) |
+| Operating a deployment | [Data, security, and privacy](docs/DATA-SECURITY-PRIVACY.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [Compatibility](docs/COMPATIBILITY.md) |
+| Contributing | [Contributing](CONTRIBUTING.md) · [Architecture](docs/ARCHITECTURE.md) · [Codebase guide](docs/CODEBASE-GUIDE.md) · [Contracts](contracts/README.md) |
 
-**Direction rule:** Drenyra Engram is independent. It has no dependencies on
-Drenyra, Drenyra AI, or Drenyra Pi, and it never authorizes operations in any
-of them.
+The full map, by audience and content type, is the
+[documentation index](docs/README.md).
+
+## Part of the Drenyra ecosystem
+
+Drenyra Engram participates in the
+[Drenyra Dominion Program](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion),
+the federated program master that fixes vision, authority, contracts,
+dependencies, gates, and sequencing across Drenyra repositories. Each
+repository keeps its own implementation, versioning, and tests, and references
+the master instead of copying its specs.
+
+| SDD | Engram's role |
+| --- | --- |
+| [SDD-080 — Engram Institutional Memory](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-080-engram) | Institutional memory: prior decisions and context, scope-first and offline-verifiable (this repository) |
+| [SDD-050 — Peruvian Monthly Close](https://github.com/arkelythex/drenyra-ai/tree/main/program/drenyra-dominion/sdds/sdd-050-monthly-close) | Supplies prior-decision context to the close journey; informs only |
+
+Ecosystem-side evidence lives in
+[capabilities and conformance](docs/ecosystem/capabilities-and-conformance.md)
+and [Dominion integration](docs/ecosystem/dominion-integration.md). Diagrams
+follow the
+[ecosystem diagram convention](https://github.com/arkelythex/drenyra-ai/blob/main/docs/documentation-standard.md#5-diagrams).
+
+## Contributing and security
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change: contracts,
+the Go engine, the TypeScript reference mirror, and golden vectors move
+together. Use synthetic data only, everywhere. Report vulnerabilities
+privately as described in [SECURITY.md](SECURITY.md). Participation follows
+the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-Apache License 2.0. © 2026 Arkelythex. See [LICENSE](LICENSE).
+[Apache License 2.0](LICENSE).
+
+<div align="center"><sub><a href="#top">Back to top ↑</a></sub></div>
