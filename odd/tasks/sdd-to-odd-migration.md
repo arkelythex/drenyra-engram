@@ -1,7 +1,7 @@
 # Feature: sdd-to-odd-migration
 
 **Objective:** retire the SDD/OpenSpec workflow in Drenyra Engram and make ODD the only workflow, as Drenyra Shell already did.
-**Branch:** `chore/purge-sdd-full-odd` · **Origin:** the ecosystem request to sync Drenyra AI, Drenyra Shell, and Drenyra Engram, and to remove legacy SDD in favour of full ODD.
+**Original branch:** `chore/purge-sdd-full-odd` · **Follow-up branch:** `chore/project-excellence-foundations` · **Origin:** the ecosystem request to sync Drenyra AI, Drenyra Shell, and Drenyra Engram, and to remove legacy SDD in favour of full ODD.
 
 ## Specs
 
@@ -20,9 +20,9 @@
 - [x] **T2** — `AGENTS.md` with the conventions and verification order; ODD in `CONTRIBUTING.md`. *(S3)*
 - [x] **T3** — Fix the 3 local `openspec/` references; CHANGELOG entry. *(S5)*
 - [x] **T4** — Verify unchecked tasks against the code. *(S4)*
-- [x] **T5** — Migrate the fiscal requirements verbatim to `specs/`, historical records to `docs/decisions/`, and unfinished work to an ODD feature document. *(S2, S4, S6–S8)* — done; route: parent; commit: pending work-unit closure. All five payload hashes matched; five unfinished Slice 7 outcomes and final evidence gap retained.
-- [x] **T6** — Repoint active comment references and workflow guidance without changing executable code or historical IDs. *(S3, S5, S7–S8)* — done; route: parent; commit: pending work-unit closure. Eleven changed source files have identical executable code; the sole protected historical citation is explicitly documented.
-- [x] **T7** — Verify byte preservation, pending-work continuity, links, unchanged code/contracts/goldens/user edits, and the absence of an active OpenSpec tree. *(S2–S8)* — done; route: parent; commit: pending work-unit closure. Structural checks and focused public checks passed; no native verdict is implied.
+- [x] **T5** — Migrate the fiscal requirements verbatim to `specs/`, historical records to `docs/decisions/`, and unfinished work to an ODD feature document. *(S2, S4, S6–S8)* — done; route: parent; commit: `34748450340af73b98ae5eb2365f2c174a8ca032`. All five payload hashes matched; five unfinished Slice 7 outcomes and final evidence gap retained.
+- [x] **T6** — Repoint active comment references and workflow guidance without changing executable code or historical IDs. *(S3, S5, S7–S8)* — done; route: parent; commit: `34748450340af73b98ae5eb2365f2c174a8ca032`. Eleven changed source files have identical executable code; the sole protected historical citation is explicitly documented.
+- [x] **T7** — Verify byte preservation, pending-work continuity, links, unchanged code/contracts/goldens/user edits, and the absence of an active OpenSpec tree. *(S2–S8)* — done; route: parent; commit: `34748450340af73b98ae5eb2365f2c174a8ca032`. Structural checks and focused public checks passed; no native verdict is implied.
 
 ## Log
 
@@ -72,3 +72,9 @@ The first T6 structural check exited 1: the initial map omitted six source comme
 - Full runtime suites were not rerun: executable code is byte-identical. No meaningful RED applies to this documentation/comment-only change. The previously reported Node 26 crypto issue is not claimed fixed.
 - The human-owned RDD switch reads on. Native assessment uses the committed work-unit range to exclude unrelated unstaged user edits; no review verdict or delivery approval is asserted by these functional checks.
 - Risk: none — source changes are comments only, with executable-byte invariance proved; no shared parser, option, guard, contract, concurrency, data, or environment behavior changes.
+
+### L10 — Work-unit evidence and native assessment
+
+Implementation and functional evidence are committed in `34748450340af73b98ae5eb2365f2c174a8ca032`, based on `645721ff7c551fe26844eeda707a65ec08925748`. Git rename detection reports 23 files and 179 authored diff lines (137 insertions, 42 deletions); the five record moves preserve their payloads.
+
+Committed-only native assessment returned `nativeRisk: medium`, `reviewDue: false`, `reviewDueReason: under_budget`, `writerSelfVerification: true`, and `independentVerifier: false`. Native accounting reports 28 changed paths and 3,399 changed lines without Git's rename-aware presentation; this is a different metric, not hidden review workload. No review was started, no native verdict or authority was created/consumed, and the unrelated MCP lineage is still unresolved. The implementation and this closure record remain local: no push, PR mutation, branch deletion, or history rewrite is part of this follow-up.
