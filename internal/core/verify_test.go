@@ -1115,3 +1115,199 @@ func TestVerifyParityFixture(t *testing.T) {
 		})
 	}
 }
+
+// ──────────────────────────────────────────────
+// Fiscal scope binding (Delivery Slice 4 — design.md "Verification and audit")
+// ──────────────────────────────────────────────
+
+// fiscalVerifyBinding is a complete, structurally VALID v1 binding fixture
+// (checksum-valid RUC, shared with the store package's Slice 3 fixtures) — the
+// starting point every fiscal verification test case mutates from.
+func fiscalVerifyBinding() core.FiscalScopeBinding {
+	return core.FiscalScopeBinding{
+		Version:        "v1",
+		Tenant:         "tenant-1",
+		Organization:   "acme",
+		Company:        "20100070970", // checksum-valid SUNAT RUC
+		FiscalPeriod:   "202401",
+		LedgerBook:     "purchases",
+		OperationType:  "memory.save",
+		SourceSnapshot: strings.Repeat("a", 64),
+		PolicyVersion:  "fiscal-v1",
+		Actor:          "agent-1",
+		AuthorityLevel: core.AuthorityLevelPrepare,
+	}
+}
+
+// fiscalVerifyLink builds one structurally-consistent link over the given
+// binding: the binding hash, canonical bytes and act-evidence hash are all
+// freshly recomputed from the SAME binding/ReviewChecks the caller supplies,
+// so a test case that wants a FAILURE mutates exactly one field afterward.
+func fiscalVerifyLink(sequence int, binding core.FiscalScopeBinding, reviewedEnvelopeHash, resultingEnvelopeHash string, evidenceInspected, ruleInspected core.ReviewAcknowledgement) core.FiscalBindingLinkEvidence {
+	hash := core.FiscalScopeHash(binding)
+	return core.FiscalBindingLinkEvidence{
+		Sequence:              sequence,
+		Binding:               binding,
+		BindingHash:           hash,
+		CanonicalBytes:        core.CanonicalFiscalScopeBytes(binding),
+		ActEvidenceHash:       core.ComputeActEvidenceHash(hash, reviewedEnvelopeHash, evidenceInspected, ruleInspected),
+		ReviewedEnvelopeHash:  reviewedEnvelopeHash,
+		ResultingEnvelopeHash: resultingEnvelopeHash,
+		EvidenceInspected:     evidenceInspected,
+		RuleInspected:         ruleInspected,
+		AuditAnchorResolved:   true,
+	}
+}
+
+// TestVerifyFiscalScopeBindingNoLinksIsLegacySkipped covers spec.md "Legacy
+// rows remain readable but are not upgraded by inference": a subject with NO
+// persisted fiscal binding links is SKIPPED/legacy, never failed and never a
+// v1 pass.
+func TestVerifyFiscalScopeBindingNoLinksIsLegacySkipped(t *testing.T) {
+	layer := core.VerifyFiscalScopeBinding(nil, "envelope-hash")
+	if layer.Status != core.VerificationSkipped {
+		t.Fatalf("status = %s, want skipped", layer.Status)
+	}
+	if layer.Name != core.LayerFiscalScopeBinding {
+		t.Fatalf("name = %q, want %q", layer.Name, core.LayerFiscalScopeBinding)
+	}
+	if layer.Detail != "legacy/unbound: no v1 fiscal binding evidence" {
+		t.Fatalf("detail = %q", layer.Detail)
+	}
+}
+
+// TestVerifyFiscalScopeBindingCompleteEvidencePasses covers spec.md "Offline
+// v1 verification is complete": one complete, hash-consistent, audit-anchored
+// link whose resulting envelope hash matches the subject's current envelope
+// hash PASSES with a deterministic act count.
+func TestVerifyFiscalScopeBindingCompleteEvidencePasses(t *testing.T) {
+	binding := fiscalVerifyBinding()
+	link := fiscalVerifyLink(1, binding, "", "envelope-hash-2", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+	layer := core.VerifyFiscalScopeBinding([]core.FiscalBindingLinkEvidence{link}, "envelope-hash-2")
+	if layer.Status != core.VerificationPassed {
+		t.Fatalf("status = %s, detail = %q, want passed", layer.Status, layer.Detail)
+	}
+	if !strings.Contains(layer.Detail, "1 act(s)") {
+		t.Fatalf("detail = %q, want a deterministic act count of 1", layer.Detail)
+	}
+}
+
+// TestVerifyFiscalScopeBindingCompleteEvidencePassesAcrossMultipleActs
+// (TRIANGULATE): two legitimate, sequential acts (a different actor is a
+// realistic second act — see apply-progress.md's Slice 3 open question) both
+// verify and the deterministic act count reflects both.
+func TestVerifyFiscalScopeBindingCompleteEvidencePassesAcrossMultipleActs(t *testing.T) {
+	first := fiscalVerifyBinding()
+	second := fiscalVerifyBinding()
+	second.Actor = "agent-2"
+	links := []core.FiscalBindingLinkEvidence{
+		fiscalVerifyLink(1, first, "", "envelope-hash-2", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{}),
+		fiscalVerifyLink(2, second, "", "envelope-hash-3", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{}),
+	}
+	layer := core.VerifyFiscalScopeBinding(links, "envelope-hash-3")
+	if layer.Status != core.VerificationPassed {
+		t.Fatalf("status = %s, detail = %q, want passed", layer.Status, layer.Detail)
+	}
+	if !strings.Contains(layer.Detail, "2 act(s)") {
+		t.Fatalf("detail = %q, want a deterministic act count of 2", layer.Detail)
+	}
+}
+
+// TestVerifyFiscalScopeBindingFailureCases (spec.md "Missing evidence is not
+// a pass" and "Reload detects binding tampering"): every listed corruption
+// FAILS closed — never a silent skip, never a v1 pass.
+func TestVerifyFiscalScopeBindingFailureCases(t *testing.T) {
+	base := fiscalVerifyBinding()
+	baseLink := func() core.FiscalBindingLinkEvidence {
+		return fiscalVerifyLink(1, base, "", "envelope-hash-2", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+	}
+
+	cases := []struct {
+		name   string
+		mutate func(core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence
+	}{
+		{
+			name: "sequence gap",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.Sequence = 2
+				return l
+			},
+		},
+		{
+			name: "invalid binding (checksum-invalid RUC)",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.Binding.Company = "11111111111"
+				return l
+			},
+		},
+		{
+			name: "binding hash mismatch (tampering)",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.BindingHash = strings.Repeat("f", 64)
+				return l
+			},
+		},
+		{
+			name: "canonical bytes mismatch (tampering)",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.CanonicalBytes = append([]byte(nil), l.CanonicalBytes...)
+				l.CanonicalBytes[0] ^= 0xFF
+				return l
+			},
+		},
+		{
+			name: "act-evidence hash mismatch",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.ActEvidenceHash = strings.Repeat("e", 64)
+				return l
+			},
+		},
+		{
+			name: "unresolved audit anchor",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				l.AuditAnchorResolved = false
+				return l
+			},
+		},
+		{
+			name: "envelope mismatch",
+			mutate: func(l core.FiscalBindingLinkEvidence) core.FiscalBindingLinkEvidence {
+				return l // unchanged link; the report-level currentEnvelopeHash below differs
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			link := tc.mutate(baseLink())
+			currentEnvelopeHash := "envelope-hash-2"
+			if tc.name == "envelope mismatch" {
+				currentEnvelopeHash = "a-different-envelope-hash"
+			}
+			layer := core.VerifyFiscalScopeBinding([]core.FiscalBindingLinkEvidence{link}, currentEnvelopeHash)
+			if layer.Status != core.VerificationFailed {
+				t.Fatalf("status = %s, detail = %q, want failed", layer.Status, layer.Detail)
+			}
+			if layer.Name != core.LayerFiscalScopeBinding {
+				t.Fatalf("name = %q, want %q", layer.Name, core.LayerFiscalScopeBinding)
+			}
+		})
+	}
+}
+
+// TestVerifyFiscalScopeBindingNeverDisclosesForeignValues (spec.md "Cross-
+// scope probes disclose nothing"): a cross-tenant/RUC mismatch detail never
+// echoes the foreign tenant/RUC value verbatim.
+func TestVerifyFiscalScopeBindingNeverDisclosesForeignValues(t *testing.T) {
+	binding := fiscalVerifyBinding()
+	binding.Tenant = "foreign-tenant-should-not-leak"
+	binding.Company = "11111111111" // fails checksum — triggers the invalid-binding branch
+	link := fiscalVerifyLink(1, binding, "", "envelope-hash-2", core.ReviewAcknowledgement{}, core.ReviewAcknowledgement{})
+	layer := core.VerifyFiscalScopeBinding([]core.FiscalBindingLinkEvidence{link}, "envelope-hash-2")
+	if layer.Status != core.VerificationFailed {
+		t.Fatalf("status = %s, want failed", layer.Status)
+	}
+	if strings.Contains(layer.Detail, "foreign-tenant-should-not-leak") {
+		t.Fatalf("detail leaks the foreign tenant value: %q", layer.Detail)
+	}
+}
