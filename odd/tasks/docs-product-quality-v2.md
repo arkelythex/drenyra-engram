@@ -183,8 +183,8 @@ Branch `chore/project-excellence-foundations`, restacked on `origin/main` (bbfad
 
 | PR | Work unit | Changed text lines |
 | --- | --- | ---: |
-| [#58](https://github.com/arkelythex/drenyra-engram/pull/58) | Fiscal slice 6; depends on existing #57 | 2727 |
-| [#59](https://github.com/arkelythex/drenyra-engram/pull/59) | Engineering foundations and legacy test stores | 248 |
+| [#58](https://github.com/arkelythex/drenyra-engram/pull/58) | Fiscal slice 6 and its required legacy test-store correction; depends on existing #57 | 2739 |
+| [#59](https://github.com/arkelythex/drenyra-engram/pull/59) | Engineering foundations; test-store correction inherited from #58 | 236 |
 | [#60](https://github.com/arkelythex/drenyra-engram/pull/60) | MCP schema/decoder alignment | 137 |
 | [#61](https://github.com/arkelythex/drenyra-engram/pull/61) | Boundary-document rename and Dreamcoder dark visuals | 333 |
 | [#62](https://github.com/arkelythex/drenyra-engram/pull/62) | Executable examples and troubleshooting | 503 |
@@ -196,9 +196,19 @@ Branch `chore/project-excellence-foundations`, restacked on `origin/main` (bbfad
 
 Each new PR targets its immediate predecessor's branch, not `main`. Sizes count additions plus deletions and exclude binary payloads. Oversized drafts explicitly require a bounded split or maintainer acceptance before merge; no `size:exception` approval was inferred. Recorded final-tip local checks do not establish that every intermediate slice independently passes.
 
+## CI ordering repair
+
+- Initial CI completed: #59-#67 passed all checks; #58 failed Go Tests and Go Race Detector with `FISCAL_WRITE_GATE_CLOSED` in search/sync test fixtures. The race job's failure was not evidence of a data race.
+- Cause: the fiscal snapshot introduced the fail-closed default before the existing test-helper correction in #59. This was a delivery-ordering defect, not a production-gate defect.
+- Reproduced RED at `c82b63c` in an isolated same-clone worktree (focused search/sync tests, exit 1), then applied exactly the 12 test-only lines from `a0e48e1`. Corrected staged blobs matched that historical fix.
+- GREEN: focused search/sync tests, full `go test ./...`, and staged diff check all exited 0 (job 11). Repair commit: `4f256ec`. Native assessment: medium, `reviewDue=false` (`under_budget`), self-verification required and satisfied, no independent verifier required.
+- Propagated ancestry to #59-#67 using merge commits, not rebases. `git merge-tree` and tree IDs proved every downstream file tree unchanged. Each updated head descends from its old head and its corrected immediate predecessor.
+- Ordinary atomic push and exact remote-head readback succeeded (job 13); no force push. Final propagated head: `7999d37`. The temporary repair worktree was removed after success; the fingerprint of the user's unrelated store-test diff remained unchanged.
+- Fresh CI for the corrected candidates is pending; prior green checks are not reused as proof for new commit identities. The scoped worker was unavailable once; the parent performed the bounded repair without retrying it.
+
 ## Next step
 
-Publication is complete, not merge acceptance. Complete CI, resolve the live reviewer-model selection, and resume native lineage `review-a1c054860cb98751` with fresh bound STATUS. The last capture still selected unavailable `openai/gpt-6.1-terra` despite the saved OpenAI profile correction. Accept or split oversized slices before merging in dependency order; Docker execution and Node 26 crypto failures remain explicit limitations.
+Publication and the ordering repair are complete, not merge acceptance. Complete CI, resolve the live reviewer-model selection, and resume native lineage `review-a1c054860cb98751` with fresh bound STATUS. The last capture still selected unavailable `openai/gpt-6.1-terra` despite the saved OpenAI profile correction. Accept or split oversized slices before merging in dependency order; Docker execution and Node 26 crypto failures remain explicit limitations.
 
 ## Log
 
@@ -214,3 +224,4 @@ Publication is complete, not merge acceptance. Complete CI, resolve the live rev
 - Decision: the user affirmed both required ecosystem/non-authorization issue-form declarations. Issue #56 was created once; subsequent host readback established its identity.
 - L7 (host evidence): GitHub issue comment `6485633662` by maintainer `Dreamcoder08` explicitly approved the scope and the `status:approved` action for #56; the protected label was applied atomically and verified.
 - Delivery evidence: background job 6 exited 0 after creating and verifying draft PRs #58-#67. This is publication evidence, not an independent code-review verdict.
+- Correction evidence: initial CI exposed a missing prerequisite in #58; jobs 10/11 observed RED/GREEN for the exact existing test-helper fix, and job 13 published only fast-forward updates. New CI and native MCP review remain separate acceptance checks.
