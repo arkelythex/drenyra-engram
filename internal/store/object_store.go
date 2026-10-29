@@ -140,7 +140,7 @@ func (s *SQLiteStore) storeObject(ctx context.Context, input core.ObjectStoreInp
 	// connection is even acquired — before any reservation, byte write or
 	// object access (spec.md "invalid input before reservation/object
 	// access").
-	if err := verifyFiscalIntentAxes(intent, "evidence.store", input.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(intent, "evidence.store", input.Scope, input.Source.ActorID); err != nil {
 		return core.ObjectStoreResult{}, err
 	}
 	objectID := core.ComputeObjectID(input.Bytes)
@@ -208,6 +208,17 @@ func (s *SQLiteStore) storeObject(ctx context.Context, input core.ObjectStoreInp
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return core.ObjectStoreResult{}, fmt.Errorf("persistence error: duplicate object check: %w", err)
+	}
+
+	// design.md "Runtime and downgrade modes": gated ONLY on the genuine
+	// new-object path below — a same-scope duplicate already returned above
+	// (no new act is recorded, so there is nothing to gate) and
+	// AssertValidObjectScope above already guarantees ScopeKindCompany.
+	// Evidence objects are WORM/immutable with no supersede path, so a fresh
+	// object id never carries prior fiscal links: class comes from intent
+	// alone, exactly like a brand-new Save subject.
+	if err := s.checkFiscalRuntimeGate(nil, intent); err != nil {
+		return core.ObjectStoreResult{}, err
 	}
 
 	// WORM byte write (temp + fsync + atomic rename + directory sync). One

@@ -528,6 +528,18 @@ type SQLiteStore struct {
 	// clear it and no unfreeze method exists. It has no authority over any
 	// production database.
 	writeFrozen atomic.Bool
+
+	// fiscalRuntimeMode is the resolved DRENYRA_FISCAL_RUNTIME_MODE (design.md
+	// "Runtime and downgrade modes"), read ONCE at Open and frozen for the
+	// store's lifetime — never re-read per call, so a mode change requires a
+	// restart, matching "unknown values fail startup" and giving every
+	// protected write in one process a single, consistent answer. A store
+	// built by a raw struct literal that bypasses openInternal (a handful of
+	// pre-v18 migration test fixtures) leaves this at its zero value "", which
+	// FiscalRuntimeMode.CheckProtectedWrite treats identically to explicit
+	// FiscalRuntimeShadow — the safe, fail-closed default, never an
+	// accidentally-permissive one.
+	fiscalRuntimeMode FiscalRuntimeMode
 	// drillCopy marks a store handle opened from a MARKED drill copy (see
 	// OpenDrillCopy): the handle is read-only by construction (mode=ro,
 	// query_only) and is the only handle on which the full diagnostic surface
@@ -779,7 +791,20 @@ func openInternal(path, objectsRoot string, opts Options, signers ...ReceiptSign
 		_ = db.Close()
 		return nil, fmt.Errorf("open sqlite store: at most one receipt signer may be attached")
 	}
-	st := &SQLiteStore{db: db, objectsRoot: objectsRoot, encMaster: opts.EncryptionKey}
+
+	// Resolve DRENYRA_FISCAL_RUNTIME_MODE once, here, at the single choke
+	// point every Open/OpenWithOptions/OpenWithObjects/OpenWithObjectsAndOptions
+	// variant funnels through (design.md "Runtime and downgrade modes":
+	// "Unknown values fail startup"). An empty value resolves to the
+	// documented default FiscalRuntimeShadow via ParseFiscalRuntimeMode; only
+	// a genuinely unrecognized value fails Open.
+	fiscalRuntimeMode, err := ParseFiscalRuntimeMode(os.Getenv("DRENYRA_FISCAL_RUNTIME_MODE"))
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	st := &SQLiteStore{db: db, objectsRoot: objectsRoot, encMaster: opts.EncryptionKey, fiscalRuntimeMode: fiscalRuntimeMode}
 	if len(signers) == 1 {
 		st.signer = signers[0]
 	}
@@ -2685,8 +2710,19 @@ func (s *SQLiteStore) Save(input core.SaveInput) (core.WriteResult, error) {
 	if input.CloseSnapshot != nil {
 		expectedFiscalOperation = "close.create"
 	}
-	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(input.FiscalIntent, expectedFiscalOperation, input.Scope, input.Source.ActorID); err != nil {
 		return core.WriteResult{}, err
+	}
+	// design.md "Runtime and downgrade modes" / proposal.md "protected fiscal
+	// operations" scope this gate to COMPANY-scoped save/supersede only —
+	// institutional memories carry no company/RUC/period to classify or
+	// authorize (see the identical ScopeKindCompany exemption in ApproveMemory
+	// below) and stay entirely outside this rollout gate. A brand-new Save
+	// subject has no prior links, so class comes from input.FiscalIntent alone.
+	if input.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(nil, input.FiscalIntent); err != nil {
+			return core.WriteResult{}, err
+		}
 	}
 
 	// Status and RecordedAt are derived by the engine (approval gate + clock),
@@ -3432,6 +3468,27 @@ func ruleLinksQuery(ctx context.Context, q Queryer, memoryID string) []core.Rule
 // persists it on the given connection. The persisted observations.envelope_hash
 // is a cache only: approval always recomputes H1 fresh inside its own locked
 // transaction (design §5 — the cache is not trusted).
+//
+// FiscalLinks deliberately uses the ERROR-PROPAGATING
+// fiscalBindingLinkContributionsTx, not the tolerant …BestEffort form the
+// pre-existing evidence/rule-ref reads above use: on a v18+ schema, a
+// transient read failure on fiscal_binding_links (SQLITE_BUSY, an I/O
+// hiccup) must abort this refresh (the caller's transaction then rolls back,
+// per every current caller already checking this error) rather than silently
+// persist an envelope hash computed as if the subject had no fiscal links.
+// That failure mode would write a masked, incorrect cache value for exactly
+// the class of record (v1 fiscal-bound memories) this feature exists to make
+// tamper-evident, defeating the point of the linkage it caches.
+//
+// A pre-v18 schema (fiscal_binding_links does not exist AT ALL — e.g. a store
+// opened before the v18 migration has run) is a DIFFERENT, non-transient
+// condition and is deliberately NOT treated as a failure: fiscalLinksTable
+// checks the table's existence via sqlite_master first, and its absence
+// degrades to "no links" exactly as the legacy best-effort read always did,
+// so this fix changes nothing for a pre-v18 store. Only a genuine query
+// failure against an EXISTING table now aborts the refresh. A v18+ subject
+// with genuinely zero links is likewise unaffected: the query returns an
+// empty result with no error.
 func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memoryID string) error {
 	memory, err := scanMemory(q.QueryRowContext(ctx, `SELECT `+memoryColumns+` FROM observations WHERE id = ?`, memoryID), s.encMaster)
 	if err != nil {
@@ -3440,12 +3497,34 @@ func (s *SQLiteStore) refreshEnvelopeCache(ctx context.Context, q Queryer, memor
 	memory.EvidenceRefs = mergeRefs(memory.EvidenceRefs, linkRefsQuery(ctx, q, `evidence_links`, memoryID))
 	memory.RuleRefs = mergeRefs(memory.RuleRefs, linkRefsQuery(ctx, q, `rule_links`, memoryID))
 	memory.RuleLinks = ruleLinksQuery(ctx, q, memoryID)
-	memory.FiscalLinks = fiscalBindingLinkContributionsBestEffort(ctx, q, "memory", memoryID)
+	if fiscalLinksTableExists(ctx, q) {
+		fiscalLinks, err := fiscalBindingLinkContributionsTx(ctx, q, "memory", memoryID)
+		if err != nil {
+			return fmt.Errorf("persistence error: refresh envelope cache fiscal links: %w", err)
+		}
+		memory.FiscalLinks = fiscalLinks
+	}
 	hash := core.ComputeEnvelopeHash(memory)
 	if _, err := q.ExecContext(ctx, `UPDATE observations SET envelope_hash = ? WHERE id = ?`, hash, memoryID); err != nil {
 		return fmt.Errorf("persistence error: refresh envelope cache update: %w", err)
 	}
 	return nil
+}
+
+// fiscalLinksTableExists reports whether fiscal_binding_links exists in the
+// schema reachable through q, via a single sqlite_master catalog lookup on
+// the SAME connection/transaction (never s.db directly — q may be mid
+// transaction). This is the unambiguous, driver-upgrade-safe signal for "pre-
+// v18 schema": SQLite's own error for a missing table is the generic
+// SQLITE_ERROR(1) result code, indistinguishable by code alone from any other
+// SQL logic error, so a catalog check is used instead of sniffing the error.
+// Any error from the catalog lookup itself (vanishingly rare) is treated as
+// "table not confirmed present", the conservative choice matching the legacy
+// degrade-to-no-links behavior this helper exists to preserve.
+func fiscalLinksTableExists(ctx context.Context, q Queryer) bool {
+	var name string
+	err := q.QueryRowContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'fiscal_binding_links'`).Scan(&name)
+	return err == nil
 }
 
 // approveCommandHash is the canonical idempotency command hash: SHA-256 hex of
@@ -3761,10 +3840,19 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	if core.IsCloseMemory(memory) {
 		expectedFiscalOperation = "close.approve"
 	}
+	// R3-1 fix: the bypass guard must decide from an error-propagating read of
+	// fiscal_binding_links, never from readMemoryWithLinks' tolerant
+	// best-effort population (a transient read failure there must abort the
+	// approval, not silently wave an already-bound subject through as legacy).
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, conn, cmd.MemoryID)
+	if err != nil {
+		return core.ApprovalResult{}, err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, cmd.FiscalIntent); err != nil {
 		return core.ApprovalResult{}, err
 	}
-	if err := verifyFiscalIntentAxes(cmd.FiscalIntent, expectedFiscalOperation, memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(cmd.FiscalIntent, expectedFiscalOperation, memory.Scope, principal.SubjectID()); err != nil {
 		return core.ApprovalResult{}, err
 	}
 
@@ -3772,6 +3860,13 @@ func (s *SQLiteStore) ApproveMemory(ctx context.Context, cmd core.ApproveMemoryC
 	// claims). Institutional memories have no company to authorize.
 	if memory.Scope.Kind != core.ScopeKindCompany {
 		return core.ApprovalResult{}, auth.New(auth.CodeCompanyScopeDenied, "institutional memories cannot be approved by a company-scoped principal")
+	}
+	// design.md "Runtime and downgrade modes": gated identically to Save,
+	// now that ScopeKindCompany is guaranteed. class comes from the subject's
+	// EXISTING links (loaded above) — an already v1-bound memory stays v1
+	// regardless of what this particular approval intent supplies.
+	if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, cmd.FiscalIntent); err != nil {
+		return core.ApprovalResult{}, err
 	}
 	if principal.TenantID() != memory.Scope.OrganizationID {
 		return core.ApprovalResult{}, auth.New(auth.CodeTenantScopeMismatch, "principal tenant does not match the memory tenant")
@@ -5546,11 +5641,26 @@ func (s *SQLiteStore) SupersedeExplicit(memoryID, successorID string, meta core.
 	// caller (nil intent) or a mismatched binding against an already
 	// v1-bound subject fails closed here, before the closed-period gate or
 	// any exec.
-	if err := verifyFiscalIntentAxes(meta.FiscalIntent, "memory.supersede", memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(meta.FiscalIntent, "memory.supersede", memory.Scope, meta.Actor); err != nil {
 		return core.AccountingMemory{}, err
 	}
+	// R3-1 fix: re-verify with the error-propagating read before the bypass
+	// guard — see verifiedFiscalLinksOrAbort's doc comment.
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, tx, memoryID)
+	if err != nil {
+		return core.AccountingMemory{}, err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, meta.FiscalIntent); err != nil {
 		return core.AccountingMemory{}, err
+	}
+	// design.md "Runtime and downgrade modes" — scoped to company memories
+	// only, matching Save/ApproveMemory; institutional supersession stays
+	// outside this rollout gate.
+	if memory.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, meta.FiscalIntent); err != nil {
+			return core.AccountingMemory{}, err
+		}
 	}
 
 	superseded := memory
@@ -6089,11 +6199,29 @@ func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []st
 		return fmt.Errorf("OBSERVATION_NOT_FOUND: %s", memoryID)
 	}
 	// Slice 3 fiscal guard — before the closed-period gate and any exec.
-	if err := verifyFiscalIntentAxes(intent, operation, memory.Scope); err != nil {
+	if err := verifyFiscalIntentAxes(intent, operation, memory.Scope, actor); err != nil {
 		return err
 	}
+	// R3-1 fix: re-verify with the error-propagating read before the bypass
+	// guard — see verifiedFiscalLinksOrAbort's doc comment. Without this, a
+	// transient fiscal_binding_links read failure makes an already-bound
+	// subject look legacy here, and — because the link-append block below is
+	// itself gated on intent != nil — a nil-intent caller then proceeds to
+	// insert new refs with NO fiscal enforcement and NO error at all.
+	verifiedLinks, err := verifiedFiscalLinksOrAbort(ctx, conn, memoryID)
+	if err != nil {
+		return err
+	}
+	memory.FiscalLinks = verifiedLinks
 	if err := requireFiscalIntentForBoundSubject(memory.FiscalLinks, intent); err != nil {
 		return err
+	}
+	// design.md "Runtime and downgrade modes" — scoped to company memories
+	// only, matching Save/ApproveMemory/SupersedeExplicit.
+	if memory.Scope.Kind == core.ScopeKindCompany {
+		if err := s.checkFiscalRuntimeGate(memory.FiscalLinks, intent); err != nil {
+			return err
+		}
 	}
 	if err := s.assertPeriodWritable(ctx, conn, memory.Scope, "link "+table); err != nil {
 		return err
@@ -6139,7 +6267,22 @@ func (s *SQLiteStore) addLinksBound(table, operation, memoryID string, refs []st
 		linked.FiscalLinks = append(append([]core.FiscalBindingLinkContribution{}, memory.FiscalLinks...), pending)
 		resultingEnvelope := core.ComputeEnvelopeHash(linked)
 		if _, err := appendFiscalBindingLinkTx(ctx, conn, "memory", memoryID, memory.FiscalLinks, *intent, resultingEnvelope, "observation", memoryID, now); err != nil {
-			return err
+			// A second addLinksBound call under the SAME binding, on the SAME
+			// subject, computes an IDENTICAL act_evidence_hash to an earlier
+			// call (ComputeActEvidenceHash folds in no ref content — see
+			// isFiscalActEvidenceConflict's doc comment) and collides on
+			// fiscal_binding_links' UNIQUE constraint. This is a foreseeable,
+			// non-adversarial pattern, not a tamper attempt: the new
+			// evidence/rule refs were ALREADY inserted above (anyInserted is
+			// already true here) and must not be discarded by rolling back
+			// this whole transaction over a redundant evidentiary-commitment
+			// mint. Skip the duplicate link (this exact binding+acknowledgement
+			// commitment is already on record for this subject) and let the
+			// batch complete; refreshEnvelopeCache below still recomputes
+			// envelope_hash from the CURRENT ref set either way.
+			if !isFiscalActEvidenceConflict(err) {
+				return err
+			}
 		}
 	}
 
@@ -7231,6 +7374,16 @@ type DoctorReport struct {
 	ObjectsRoot      string                `json:"objectsRoot"`
 	ObjectFindings   []ObjectDoctorFinding `json:"objectFindings,omitempty"`
 
+	// FiscalRuntimeMode is the DRENYRA_FISCAL_RUNTIME_MODE resolved once at
+	// Open (design.md "Runtime and downgrade modes"). The only other
+	// production signal for this value is a single stderr line at store-open
+	// time (openStoreWithRoot) — invisible to a daemonized serve/mcp process
+	// that does not capture startup stderr. Surfacing it here gives every
+	// doctor call an ONGOING, queryable signal for the entire process
+	// lifetime, closing that observability gap without weakening the gate
+	// itself (read-only).
+	FiscalRuntimeMode string `json:"fiscalRuntimeMode"`
+
 	// Purge lifecycle table counts (design §13.3): every v10–v12 lifecycle
 	// table — the hold ledger, the purge aggregate/decision/event/projection
 	// tables and the immutable execution-attempt ledger.
@@ -7300,9 +7453,10 @@ func (s *SQLiteStore) Doctor(ctx context.Context, opts DoctorOptions) (DoctorRep
 	}
 
 	report := DoctorReport{
-		SchemaVersion: version,
-		Storage:       "sqlite (modernc.org/sqlite)",
-		DBPath:        s.dbPath(),
+		SchemaVersion:     version,
+		Storage:           "sqlite (modernc.org/sqlite)",
+		DBPath:            s.dbPath(),
+		FiscalRuntimeMode: string(s.fiscalRuntimeMode),
 	}
 
 	// G-6 health checks (FZ-4/FR-4). Routine = quick_check then

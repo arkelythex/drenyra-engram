@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/arkelythex/drenyra-engram/internal/auth"
 	"github.com/arkelythex/drenyra-engram/internal/core"
+	sqlite "modernc.org/sqlite"
 	"strings"
 )
 
@@ -247,10 +249,37 @@ type FiscalInventoryReport struct {
 	LegacyCount, V1Count, UnverifiableCount int
 	InvalidLegacyRUCCount                   int
 	InvalidLegacyOpaqueIDs                  []string
+	// Truncated is true when the scan hit fiscalInventoryMaxScan before
+	// exhausting the company-scope observations table: the counts above cover
+	// only the first fiscalInventoryMaxScan rows (ordered by id), never a
+	// silent, unmarked partial result. See fiscalInventoryMaxScan's doc
+	// comment for why this is a hard cap rather than real pagination.
+	Truncated bool
 }
 
+// fiscalInventoryMaxScan bounds FiscalInventory's single-call cost (design.md
+// "Runtime and downgrade modes": inventory is a shadow-mode diagnostic, no
+// production caller exists for it yet). Two constraints shape this as a hard
+// cap rather than streaming or a cursor-based pagination API: (1) the store's
+// *sql.DB is configured with SetMaxOpenConns(1), and ClassifyFiscalSubject
+// issues its OWN separate query per row — running it while THIS function's
+// own rows cursor is still open would deadlock the single connection against
+// itself, so every row must be buffered and the cursor closed BEFORE
+// classifying (the existing, load-bearing shape below); a true streaming
+// rewrite is not a safe drop-in change here. (2) A real pagination contract
+// (cursor semantics, a caller that resumes across calls) has no consumer to
+// design against yet — FiscalInventory has no production caller at all
+// today. A bounded cap converts "unbounded memory growth and an unbounded
+// single-connection hold" into a KNOWN worst case, and Truncated reports
+// honestly when the cap was hit, rather than a silently incomplete result. A
+// full paginated redesign belongs with this function's first real caller.
+// A package-level var, not a const, solely so a test can temporarily lower
+// it (save/restore) to exercise the truncation boundary cheaply instead of
+// creating 10000+ real rows; production code never mutates it.
+var fiscalInventoryMaxScan = 10000
+
 func (s *SQLiteStore) FiscalInventory(ctx context.Context) (FiscalInventoryReport, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,organization_id,ruc FROM observations WHERE scope_kind='company' ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,organization_id,ruc FROM observations WHERE scope_kind='company' ORDER BY id LIMIT ?`, fiscalInventoryMaxScan+1)
 	if err != nil {
 		return FiscalInventoryReport{}, err
 	}
@@ -265,6 +294,10 @@ func (s *SQLiteStore) FiscalInventory(ctx context.Context) (FiscalInventoryRepor
 	}
 	_ = rows.Close()
 	var report FiscalInventoryReport
+	if len(records) > fiscalInventoryMaxScan {
+		report.Truncated = true
+		records = records[:fiscalInventoryMaxScan]
+	}
 	for _, record := range records {
 		class, err := s.ClassifyFiscalSubject(ctx, "memory", record.id)
 		if err != nil {
@@ -295,6 +328,13 @@ const (
 	FiscalRuntimeLegacyCompat FiscalRuntimeMode = "legacy_compat"
 	FiscalRuntimeReadOnly     FiscalRuntimeMode = "read_only"
 )
+
+// FiscalRuntimeMode reports the mode resolved once at Open (design.md
+// "Runtime and downgrade modes") for this store handle. Adapters use it to
+// surface a clear operational diagnostic — e.g. a startup log line when the
+// resolved mode is the (fail-closed) shadow default — WITHOUT weakening the
+// gate itself: this getter is read-only and grants nothing.
+func (s *SQLiteStore) FiscalRuntimeMode() FiscalRuntimeMode { return s.fiscalRuntimeMode }
 
 func ParseFiscalRuntimeMode(raw string) (FiscalRuntimeMode, error) {
 	if raw == "" {
@@ -356,12 +396,15 @@ func fiscalBindingLinkContributionsTx(ctx context.Context, q Queryer, subjectTyp
 }
 
 // fiscalBindingLinkContributionsBestEffort is the tolerant read used to
-// populate AccountingMemory.FiscalLinks for envelope-hash computation
-// (readMemoryWithLinks / refreshEnvelopeCache): a read failure degrades to
-// "no links" (legacy contribution), mirroring linkRefsQuery's existing
-// tolerance for evidence/rule refs. It is NEVER used to decide whether a
-// protected mutation may proceed — that decision always uses the
-// error-propagating form above.
+// populate AccountingMemory.FiscalLinks for a read path only (readMemory /
+// readMemoryWithLinks): a read failure degrades to "no links" (legacy
+// contribution), mirroring linkRefsQuery's existing tolerance for
+// evidence/rule refs. It is NEVER used to decide whether a protected mutation
+// may proceed — that decision always uses the error-propagating form above —
+// and it is NOT used to populate what gets PERSISTED into the envelope-hash
+// cache (refreshEnvelopeCache uses the error-propagating form for exactly
+// that reason: a transient read failure there must abort the refresh, not
+// silently persist a wrong cached hash for a v1 fiscal-bound subject).
 func fiscalBindingLinkContributionsBestEffort(ctx context.Context, q Queryer, subjectType, subjectID string) []core.FiscalBindingLinkContribution {
 	links, err := fiscalBindingLinkContributionsTx(ctx, q, subjectType, subjectID)
 	if err != nil {
@@ -397,12 +440,19 @@ func storeFiscalScopeBindingTx(ctx context.Context, q Queryer, binding core.Fisc
 
 // verifyFiscalIntentAxes validates a caller-supplied intent's SHAPE (a nil
 // intent is always accepted — the legacy path) and, when present, that it
-// names the exact protected boundary being invoked and that its trusted
-// company axes (tenant, organization, company/RUC, fiscal period) agree with
-// the subject's OWN immutable scope. It never inspects or requires any prior
-// binding history — operationType/actor/authorityLevel MAY legitimately
-// differ across acts on the same subject (design.md).
-func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation string, scope core.Scope) error {
+// names the exact protected boundary being invoked, that its trusted company
+// axes (tenant, organization, company/RUC, fiscal period) agree with the
+// subject's OWN immutable scope, and that its Actor matches expectedActor —
+// the trusted provenance identity performing THIS act (input.Source.ActorID
+// for Save/Supersede/link/store paths, the verified principal's SubjectID()
+// for ApproveMemory). A caller-supplied actor never creates authority
+// (proposal.md capability 2, design.md's trusted-comparison table): without
+// this check any authenticated caller could stamp an arbitrary Actor into the
+// immutable fiscal audit trail. It never inspects or requires any prior
+// binding history — operationType/authorityLevel MAY legitimately differ
+// across acts on the same subject (design.md); actor is compared per-act
+// against the trusted identity, never against history.
+func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation string, scope core.Scope, expectedActor string) error {
 	if intent == nil {
 		return nil
 	}
@@ -417,6 +467,9 @@ func verifyFiscalIntentAxes(intent *core.FiscalWriteIntent, expectedOperation st
 		intent.Binding.Company != scope.RUC ||
 		(scope.Period != "" && intent.Binding.FiscalPeriod != scope.Period) {
 		return &core.FiscalScopeError{Code: core.ScopeMismatch, Message: "binding does not match the trusted scope axes"}
+	}
+	if intent.Binding.Actor != expectedActor {
+		return &core.FiscalScopeError{Code: core.ScopeMismatch, Message: "binding actor does not match the trusted provenance actor"}
 	}
 	return nil
 }
@@ -436,6 +489,68 @@ func requireFiscalIntentForBoundSubject(existing []core.FiscalBindingLinkContrib
 		return &core.FiscalScopeError{Code: core.ScopeBindingRequired, Message: "a v1-bound subject requires the complete current binding"}
 	}
 	return nil
+}
+
+// verifiedFiscalLinksOrAbort re-reads a subject's fiscal binding links with
+// the ERROR-PROPAGATING form (fiscalBindingLinkContributionsTx), on the
+// caller's own connection/transaction, immediately before a write path
+// evaluates requireFiscalIntentForBoundSubject / checkFiscalRuntimeGate.
+// Those two guards decide enforcement from "does this subject have existing
+// links", so feeding them memory.FiscalLinks as populated by the read path's
+// TOLERANT fiscalBindingLinkContributionsBestEffort (which degrades ANY
+// transient read failure to nil/"no links") would silently wave an
+// already-bound subject through as legacy — a complete, undetected bypass of
+// fiscal enforcement on a transient error, not a deliberate legacy write.
+// This mirrors the precedent already established for refreshEnvelopeCache:
+// a read failure here aborts the write instead of being tolerated.
+func verifiedFiscalLinksOrAbort(ctx context.Context, q Queryer, subjectID string) ([]core.FiscalBindingLinkContribution, error) {
+	if !fiscalLinksTableExists(ctx, q) {
+		return nil, nil
+	}
+	links, err := fiscalBindingLinkContributionsTx(ctx, q, "memory", subjectID)
+	if err != nil {
+		return nil, fmt.Errorf("persistence error: verify fiscal binding links: %w", err)
+	}
+	return links, nil
+}
+
+// checkFiscalRuntimeGate enforces DRENYRA_FISCAL_RUNTIME_MODE (design.md
+// "Runtime and downgrade modes") at ONE shared choke point reused by every
+// protected write entry point (Save, ApproveMemory, SupersedeExplicit,
+// AddEvidenceLinksBound/AddRuleLinksBound, StoreObjectWithFiscalIntent).
+//
+// class is derived without ClassifyFiscalSubject's extra re-verification
+// query, reusing signals every caller has already loaded: existing
+// (non-empty) fiscalLinks means the subject is ALREADY v1-bound, so the
+// write classifies v1 regardless of whether THIS command also supplies an
+// intent — the same existing-links signal requireFiscalIntentForBoundSubject
+// above already uses. A subject with no existing links (a brand-new Save
+// subject, or any subject never fiscal-bound) classifies by whether THIS
+// command supplies an intent: FiscalScopeV1 if it does, FiscalScopeLegacy
+// otherwise — mirroring Save's pre-existing "a brand-new subject has no
+// prior fiscal links" rule.
+// The drill write-freeze latch (design D-8, store.go's writeFrozen field) is
+// checked FIRST, before the fiscal-mode policy check: freeze is a whole-store
+// operational quarantine (this exact handle is a corruption-drill evidence
+// copy — every write entry point refuses immediately, and no retry clears
+// it), strictly more fundamental than a per-write fiscal-mode policy
+// decision. Checking fiscal mode first would return FISCAL_WRITE_GATE_CLOSED
+// for a frozen drill copy instead of the specific ErrStoreWriteFrozen a
+// caller may depend on to distinguish "this is a quarantined copy" from an
+// ordinary policy denial — misleading precisely when an operator is running
+// a corruption drill. beginWriteTx (the transaction-begin choke point) still
+// re-checks the SAME atomic field right before every transaction as its own
+// independent, authoritative guard; this is an earlier, redundant-by-design
+// read of that one atomic bool, not a second freeze mechanism.
+func (s *SQLiteStore) checkFiscalRuntimeGate(fiscalLinks []core.FiscalBindingLinkContribution, intent *core.FiscalWriteIntent) error {
+	if s.writeFrozen.Load() {
+		return ErrStoreWriteFrozen
+	}
+	class := FiscalScopeLegacy
+	if len(fiscalLinks) > 0 || intent != nil {
+		class = FiscalScopeV1
+	}
+	return s.fiscalRuntimeMode.CheckProtectedWrite(class)
 }
 
 // appendFiscalBindingLinkTx persists the fiscal_scope_bindings row (if new)
@@ -463,4 +578,27 @@ func appendFiscalBindingLinkTx(ctx context.Context, q Queryer, subjectType, subj
 		return core.FiscalBindingLinkContribution{}, fmt.Errorf("persistence error: insert fiscal binding link: %w", err)
 	}
 	return core.FiscalBindingLinkContribution{Sequence: sequence, BindingHash: bindingHash, ActEvidenceHash: actEvidenceHash}, nil
+}
+
+// isFiscalActEvidenceConflict reports whether err is the
+// fiscal_binding_links UNIQUE(subject_type,subject_id,binding_hash,
+// act_evidence_hash) violation (extended result code 2067, the same
+// SQLITE_CONSTRAINT_UNIQUE code isOpenTupleConflict checks for a DIFFERENT
+// index — the message is inspected too, since this table carries a SECOND
+// unique constraint on (subject_type,subject_id,sequence) that shares the
+// same numeric code).
+//
+// This exists because ComputeActEvidenceHash's formula for a non-approval
+// act (design.md: bindingHash + "" + omitted + omitted — no ref content, no
+// timestamp) makes a second genuinely distinct addLinksBound call under the
+// SAME binding on the SAME subject compute an IDENTICAL act_evidence_hash to
+// the first: a foreseeable, non-adversarial pattern (the same
+// reviewer/agent linking more evidence to the same memory later), not a
+// tamper attempt. addLinksBound treats this conflict as "this exact
+// evidentiary commitment — same binding, same acknowledgement state — is
+// already recorded for this subject" and skips minting a duplicate link
+// rather than discarding the already-persisted new refs.
+func isFiscalActEvidenceConflict(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == 2067 && strings.Contains(err.Error(), "act_evidence_hash")
 }

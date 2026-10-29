@@ -36,6 +36,27 @@ type FiscalWriteIntent struct {
 	Binding FiscalScopeBinding
 }
 
+// DecodeFiscalWriteIntentJSON is the SINGLE seam every adapter uses to turn
+// caller-supplied binding JSON into the pure intent value: the CLI's
+// --fiscal-scope file, the HTTP body's fiscalScope member and the MCP tool's
+// fiscalScope argument all land here, so none of them can grow a private,
+// weaker parser or forget to run ValidateFiscalScopeBinding (which
+// DecodeFiscalScopeV1JSON applies before returning).
+//
+// It deliberately does NOT treat an empty document as "no intent": whether a
+// binding was SUPPLIED is a transport question (an unset flag, an absent JSON
+// member, a blank tool argument) that each adapter answers in its own
+// vocabulary before calling. This function only answers whether a supplied
+// binding is VALID, and a nil result therefore always means "invalid", never
+// "absent".
+func DecodeFiscalWriteIntentJSON(raw []byte) (*FiscalWriteIntent, error) {
+	binding, err := DecodeFiscalScopeV1JSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	return &FiscalWriteIntent{Binding: binding}, nil
+}
+
 const fiscalActEvidenceFrame = "drenyra:fiscal-act-evidence:v1\x00"
 
 // ComputeActEvidenceHash canonically covers a versioned act-evidence frame,

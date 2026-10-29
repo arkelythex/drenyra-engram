@@ -34,16 +34,63 @@ import (
 
 // closeAcceptanceStore opens a store with the REAL receipt signer attached (a
 // temp keyring, generated lazily on the first covered act) and wraps it in the
-// shared API.
+// shared API. Every caller of this helper is a plain legacy (no
+// FiscalIntent) fixture, so it defaults DRENYRA_FISCAL_RUNTIME_MODE (design.md
+// "Runtime and downgrade modes") to legacy_compat; a test whose calls are
+// homogeneously v1 uses closeAcceptanceStoreMode(t, "enforce") instead, and a
+// test needing BOTH classes on the SAME dataset uses
+// closeAcceptanceStorePathMode + reopenCloseAcceptanceStoreMode (see
+// internal/store's reopenTestStoreMode doc comment for why: the mode is
+// resolved once per Open and frozen for that handle's lifetime, and no
+// single mode permits both classes at once).
 func closeAcceptanceStore(t *testing.T) *API {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "engram.db"))
+	return closeAcceptanceStoreMode(t, "legacy_compat")
+}
+
+// closeAcceptanceStoreMode is closeAcceptanceStore with an explicit
+// DRENYRA_FISCAL_RUNTIME_MODE.
+func closeAcceptanceStoreMode(t *testing.T, mode string) *API {
+	t.Helper()
+	api, _, _ := closeAcceptanceStorePathMode(t, mode)
+	return api
+}
+
+// closeAcceptanceStorePathMode is closeAcceptanceStoreMode but also returns
+// the store's path and signing-keys path, for a test that will later
+// reopenCloseAcceptanceStoreMode it under a different mode.
+func closeAcceptanceStorePathMode(t *testing.T, mode string) (*API, string, string) {
+	t.Helper()
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	path := filepath.Join(t.TempDir(), "engram.db")
+	keysPath := filepath.Join(t.TempDir(), "signing-keys.json")
+	st, err := store.Open(path)
 	if err != nil {
 		t.Fatalf("open acceptance store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	st.SetReceiptSigner(receipts.NewSigner(st, filepath.Join(t.TempDir(), "signing-keys.json")))
-	return New(st, "test")
+	st.SetReceiptSigner(receipts.NewSigner(st, keysPath))
+	return New(st, "test"), path, keysPath
+}
+
+// reopenCloseAcceptanceStoreMode closes the store behind api and reopens the
+// SAME underlying SQLite file (and the SAME signing-keys file, so the signer
+// keeps its existing key rather than minting a new one) under a DIFFERENT
+// DRENYRA_FISCAL_RUNTIME_MODE.
+func reopenCloseAcceptanceStoreMode(t *testing.T, api *API, path, keysPath, mode string) *API {
+	t.Helper()
+	st := api.Store.(*store.SQLiteStore)
+	if err := st.Close(); err != nil {
+		t.Fatalf("close acceptance store before reopen: %v", err)
+	}
+	t.Setenv("DRENYRA_FISCAL_RUNTIME_MODE", mode)
+	ns, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen acceptance store (mode=%s): %v", mode, err)
+	}
+	t.Cleanup(func() { _ = ns.Close() })
+	ns.SetReceiptSigner(receipts.NewSigner(ns, keysPath))
+	return New(ns, "test")
 }
 
 // resolvePrincipal mints the REAL verified principal for a seeded session token
